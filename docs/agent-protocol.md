@@ -84,3 +84,28 @@ Errors are RFC 7807 problem-details with a `correlationId` extension. The
 agent treats `401/403` as "credential invalid — do not retry with the same
 credential", `409` as "identity conflict — surface to operator", and `5xx`
 with exponential backoff + jitter.
+
+### `GET /agent/v1/tasks` — implemented
+Requires `X-Agent-Credential`. Claims every task queued for the device, oldest
+first, up to twenty per poll, and returns `AgentTaskListResponse`. Claiming
+marks each task **Delivered** under a row version (`xmin`), so two overlapping
+polls cannot both receive the same task: the loser's write fails, it returns an
+empty list, and the agent simply polls again. A task whose deadline has already
+passed is marked **Expired** at claim time and is never returned.
+
+Each `AgentTask` carries `taskId`, `type`, `payloadJson` and `expiresAt` — the
+server's UTC deadline. The server never hands out a task past it, so the field
+exists for the agent's own belt-and-braces check on destructive executors:
+`RestartDevice` refuses a task whose `expiresAt` has passed rather than
+restarting a machine nobody is still expecting to go down. Agents that predate
+the field ignore it; it is optional and last.
+
+### `POST /agent/v1/tasks/{taskId}/result` — implemented
+Requires `X-Agent-Credential`. Body: `AgentTaskResult` (`succeeded`, `message`,
+optional `resultJson`; never secrets). Accepted only while the task is
+Delivered, so a stale or replayed result cannot overwrite a terminal outcome.
+For a restart the `resultJson` is `{graceSeconds, restartAt, outcome, code}`:
+`restartAt` is the moment Windows will act, as the agent computed it when the
+shutdown API accepted the request; `outcome` is `Scheduled`, `Expired`,
+`AlreadyInProgress` or `Failed`. A successful result means Windows accepted the
+restart — not that the device has restarted; its next heartbeat is the proof.

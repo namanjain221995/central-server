@@ -173,7 +173,16 @@ are reverted automatically.
   restart/shutdown/lock/sign-out as typed tasks via Win32 IDeviceControl;
   dashboard Actions + Tasks tabs. Pipeline verified live with the benign
   Ping type; destructive executors unit-tested, not live-fired (need an
-  elevated Windows host).
+  elevated Windows host). **Restart Device carries a timer** (see
+  [device-restart.md](device-restart.md)): the administrator chooses now or a
+  delay of 30 s–1 h, which becomes the task's `graceSeconds` — the one number
+  every deployed agent already hands to `InitiateSystemShutdownEx`, so Windows
+  owns the countdown and the agent never sleeps. The server refuses anything
+  the agent would clamp; the agent refuses a task past its `expiresAt` (now on
+  the wire) and reports a Windows refusal as the failure it is; the console
+  shows *Scheduled* until the moment Windows said it would act, never
+  "restarted". Power/session actions are device-scope-checked, matching every
+  other device route.
 - **Phase 7 (software inventory): complete.** Installed apps read from the
   Windows uninstall registry (read-only), ingested with the inventory snapshot,
   device Software tab plus a fleet-wide Software page (search, publisher filter,

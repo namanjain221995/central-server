@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text.Json;
 using EndpointAgent.Core.Abstractions;
 using EndpointPlatform.Contracts.Agent;
@@ -78,17 +79,120 @@ public abstract class DeviceControlTaskExecutor(IDeviceControl deviceControl, IL
     }
 }
 
-public sealed class RestartTaskExecutor(IDeviceControl deviceControl, ILogger<RestartTaskExecutor> logger)
+/// <summary>
+/// Restarts the device after the grace period the task names, through the
+/// Windows shutdown API -- which owns the countdown from the moment this
+/// returns.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>The countdown starts here, on the device, when the task is executed.</b>
+/// That is the whole timer: <c>InitiateSystemShutdownEx</c> is handed the grace
+/// period and Windows counts it down itself, surviving anything that happens to
+/// this process in between. The agent never sleeps on a timer of its own -- a
+/// second scheduler would have to agree with the first, and would be lost if
+/// the service restarted mid-wait. The result is reported as soon as Windows has
+/// accepted the request, which is before the restart happens; "Succeeded" means
+/// scheduled and accepted, never "the machine has restarted", and the message
+/// says exactly when Windows will act.
+/// </para>
+/// <para>
+/// <b>Three refusals, all honest.</b> A task whose server deadline has passed
+/// is refused without touching the machine: the server never hands out an
+/// expired task, so reaching this means a long stall or a skewed clock, and a
+/// restart nobody is expecting is worse than one that has to be re-issued. A
+/// Windows refusal is reported as the failure it is, with the Win32 error --
+/// never as success because the call was attempted. And a restart or shutdown
+/// already in progress (<c>ERROR_SHUTDOWN_IN_PROGRESS</c>) is a distinct
+/// failure, because the timing this task asked for was not applied.
+/// </para>
+/// </remarks>
+public sealed class RestartTaskExecutor(
+    IDeviceControl deviceControl,
+    ILogger<RestartTaskExecutor> logger,
+    TimeProvider? timeProvider = null)
     : DeviceControlTaskExecutor(deviceControl, logger)
 {
+    /// <summary>Windows: a system shutdown has already been scheduled.</summary>
+    internal const int ErrorShutdownInProgress = 1115;
+
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
+
     public override string TaskType => "RestartDevice";
 
     public override async Task<AgentTaskResult> ExecuteAsync(AgentTask task, CancellationToken cancellationToken = default)
     {
+        var now = _time.GetUtcNow();
+
+        if (task.ExpiresAt is { } deadline && now >= deadline)
+        {
+            Logger.LogWarning(
+                "Restart task {TaskId} refused: its deadline {Deadline:u} passed before execution (now {Now:u}).",
+                task.TaskId, deadline, now);
+            return new AgentTaskResult(
+                false,
+                $"Restart refused: the task expired at {deadline:u} before the device executed it; nothing was restarted.",
+                ResultJson(0, null, "Expired"));
+        }
+
         var (grace, message) = ParseGrace(task.PayloadJson);
-        await DeviceControl.RestartAsync(grace, message, cancellationToken);
-        return new AgentTaskResult(true, $"Restart scheduled in {grace}s.", null);
+
+        try
+        {
+            await DeviceControl.RestartAsync(grace, message, cancellationToken);
+        }
+        catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorShutdownInProgress)
+        {
+            Logger.LogWarning(
+                "Restart task {TaskId} not applied: a restart or shutdown is already in progress on this device.",
+                task.TaskId);
+            return new AgentTaskResult(
+                false,
+                "Restart not applied: a restart or shutdown is already in progress on this device.",
+                ResultJson(grace, null, "AlreadyInProgress", ex.NativeErrorCode));
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        {
+            // The API said no. Reporting the attempt as success would tell an
+            // operator the machine is about to restart when Windows has already
+            // declined to do so.
+            Logger.LogError(ex, "Restart task {TaskId} failed: Windows refused the shutdown request.", task.TaskId);
+            var code = (ex as Win32Exception)?.NativeErrorCode;
+            return new AgentTaskResult(
+                false,
+                $"Restart failed: {ex.Message.Trim().TrimEnd('.')}.",
+                ResultJson(grace, null, "Failed", code));
+        }
+
+        // Windows counts the grace period itself from the moment the call
+        // returned, so the time it will act is this, not anything the server
+        // computed when the task was queued.
+        var restartAt = now.AddSeconds(grace);
+
+        Logger.LogWarning(
+            "Restart task {TaskId} accepted by Windows: the device restarts at {RestartAt:u} ({Grace}s grace).",
+            task.TaskId, restartAt, grace);
+
+        return new AgentTaskResult(
+            true,
+            grace == 0
+                ? "Restart accepted by Windows: the device is restarting now."
+                : $"Restart accepted by Windows: the device restarts at {restartAt:u}, {grace}s from when it received the task.",
+            ResultJson(grace, restartAt, "Scheduled"));
     }
+
+    /// <summary>
+    /// The structured result the console reads: what was asked for, when
+    /// Windows will act, and which of the three outcomes this was.
+    /// </summary>
+    private static string ResultJson(int graceSeconds, DateTimeOffset? restartAt, string outcome, int? code = null) =>
+        JsonSerializer.Serialize(new
+        {
+            graceSeconds,
+            restartAt,
+            outcome,
+            code,
+        });
 }
 
 public sealed class ShutdownTaskExecutor(IDeviceControl deviceControl, ILogger<ShutdownTaskExecutor> logger)

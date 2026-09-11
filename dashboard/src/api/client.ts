@@ -289,7 +289,16 @@ export interface DeviceTaskItem {
   createdAt: string
   deliveredAt: string | null
   completedAt: string | null
+  /** The server's deadline for the device to pick the task up. Absent from older servers. */
+  expiresAt?: string | null
   resultMessage: string | null
+  /**
+   * The agent's structured result, when the executor produced one. For a
+   * restart it carries `restartAt`, the moment Windows will act — what lets the
+   * page say "scheduled" instead of "succeeded" for a machine still up. Absent
+   * from older servers.
+   */
+  resultJson?: string | null
 }
 
 export async function controlService(
@@ -434,6 +443,34 @@ export async function queueDeviceAction(
   return request<{ taskId: string }>(
     `/admin/v1/devices/${encodeURIComponent(deviceId)}/actions/${action}`,
     { method: 'POST' },
+  )
+}
+
+/** What the server accepted when a restart was queued. */
+export interface RestartQueued {
+  taskId: string
+  status: string
+  /** The grace period the device will hand to Windows, in seconds. */
+  graceSeconds: number
+  /** When the task expires if the device has not picked it up by then. */
+  expiresAt: string
+}
+
+/**
+ * Restarts a device now (`delaySeconds` 0) or after a delay, as one typed
+ * RestartDevice task.
+ *
+ * The delay is the only timing sent. It becomes the grace period the device
+ * hands to Windows, which counts it down itself from the moment the device
+ * executes the task — so "in 10 minutes" means ten minutes after the device
+ * receives it, not after this call. The server validates the value; what this
+ * sends is a request, not a decision. A restart already queued or in progress
+ * for the device is answered 409 rather than queued twice.
+ */
+export function restartDevice(deviceId: string, delaySeconds: number): Promise<RestartQueued> {
+  return request<RestartQueued>(
+    `/admin/v1/devices/${encodeURIComponent(deviceId)}/actions/restart`,
+    { method: 'POST', body: JSON.stringify({ delaySeconds }) },
   )
 }
 

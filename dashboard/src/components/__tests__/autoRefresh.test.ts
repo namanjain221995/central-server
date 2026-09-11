@@ -111,6 +111,55 @@ describe('decideSettlement', () => {
     expect(d).toMatchObject({ kind: 'settled', succeeded: true, chaseInventory: false })
   })
 
+  /**
+   * A restart Windows accepted is a success the machine has not acted on yet.
+   * The banner must say "Scheduled" and when, not "Succeeded" — an operator
+   * looking at a device that is still up would rightly call the latter a lie.
+   */
+  it('a restart Windows accepted settles as Scheduled while the countdown runs', () => {
+    const restartAt = new Date(Date.now() + 5 * 60_000).toISOString()
+    const task = {
+      type: 'RestartDevice',
+      resultJson: `{"graceSeconds":300,"restartAt":"${restartAt}","outcome":"Scheduled","code":null}`,
+    }
+
+    const d = decideSettlement('Succeeded', 'Restart accepted by Windows.', false, task)
+
+    expect(d).toMatchObject({ kind: 'settled', succeeded: true, chaseInventory: false, message: null })
+    expect((d as { stage: string }).stage).toMatch(/^Scheduled — Windows will restart the device at /)
+  })
+
+  it('a restart whose moment has passed settles as Succeeded without claiming the device came back', () => {
+    const restartAt = new Date(Date.now() - 60_000).toISOString()
+    const task = {
+      type: 'RestartDevice',
+      resultJson: `{"graceSeconds":30,"restartAt":"${restartAt}","outcome":"Scheduled","code":null}`,
+    }
+
+    const d = decideSettlement('Succeeded', null, false, task)
+
+    expect((d as { stage: string }).stage).toBe(
+      'Succeeded — Windows accepted the restart; the device’s next heartbeat confirms it came back',
+    )
+  })
+
+  it('a restart success from an older server, with no structured result, keeps the generic wording', () => {
+    const d = decideSettlement('Succeeded', 'Restart scheduled in 30s.', false, { type: 'RestartDevice', resultJson: null })
+
+    expect(d).toMatchObject({ kind: 'settled', succeeded: true, stage: 'Succeeded', message: 'Restart scheduled in 30s.' })
+  })
+
+  it('a refused restart is a failure with the agent’s reason, never Scheduled', () => {
+    const task = {
+      type: 'RestartDevice',
+      resultJson: '{"graceSeconds":0,"restartAt":null,"outcome":"Expired","code":null}',
+    }
+
+    const d = decideSettlement('Failed', 'Restart refused: the task expired before the device executed it.', false, task)
+
+    expect(d).toMatchObject({ kind: 'settled', succeeded: false, stage: 'Failed' })
+  })
+
   it('a failure never chases inventory — the machine was not changed', () => {
     // Even when the caller asked for a sync: a failed stop left the service
     // running, and waiting for "fresh" data would just delay saying so.

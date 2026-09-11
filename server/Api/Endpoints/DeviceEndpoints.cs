@@ -36,25 +36,23 @@ public static class DeviceEndpoints
             .WithName("RequestDeviceInventoryRefresh")
             .RequirePermission(Domain.Authorization.Permissions.Device.RefreshInventory);
 
-        group.MapPost("/{deviceId:guid}/actions/restart", (Guid deviceId, HttpContext ctx, DeviceTaskService svc, CancellationToken ct)
-                => QueueActionAsync(deviceId, DeviceTaskType.RestartDevice,
-                    new TaskPayloads.RestartOrShutdown(30, "Your IT administrator initiated a restart."), ctx, svc, ct))
+        group.MapPost("/{deviceId:guid}/actions/restart", RestartAsync)
             .WithName("RestartDevice")
             .RequirePermission(Domain.Authorization.Permissions.Device.Restart);
 
-        group.MapPost("/{deviceId:guid}/actions/shutdown", (Guid deviceId, HttpContext ctx, DeviceTaskService svc, CancellationToken ct)
+        group.MapPost("/{deviceId:guid}/actions/shutdown", (Guid deviceId, HttpContext ctx, DeviceTaskService svc, DeviceScopeAuthorizer scope, CancellationToken ct)
                 => QueueActionAsync(deviceId, DeviceTaskType.ShutdownDevice,
-                    new TaskPayloads.RestartOrShutdown(30, "Your IT administrator initiated a shutdown."), ctx, svc, ct))
+                    new TaskPayloads.RestartOrShutdown(30, "Your IT administrator initiated a shutdown."), ctx, svc, scope, ct))
             .WithName("ShutdownDevice")
             .RequirePermission(Domain.Authorization.Permissions.Device.Shutdown);
 
-        group.MapPost("/{deviceId:guid}/actions/lock", (Guid deviceId, HttpContext ctx, DeviceTaskService svc, CancellationToken ct)
-                => QueueActionAsync(deviceId, DeviceTaskType.LockDevice, null, ctx, svc, ct))
+        group.MapPost("/{deviceId:guid}/actions/lock", (Guid deviceId, HttpContext ctx, DeviceTaskService svc, DeviceScopeAuthorizer scope, CancellationToken ct)
+                => QueueActionAsync(deviceId, DeviceTaskType.LockDevice, null, ctx, svc, scope, ct))
             .WithName("LockDevice")
             .RequirePermission(Domain.Authorization.Permissions.Device.Lock);
 
-        group.MapPost("/{deviceId:guid}/actions/signout", (Guid deviceId, HttpContext ctx, DeviceTaskService svc, CancellationToken ct)
-                => QueueActionAsync(deviceId, DeviceTaskType.SignOutUser, null, ctx, svc, ct))
+        group.MapPost("/{deviceId:guid}/actions/signout", (Guid deviceId, HttpContext ctx, DeviceTaskService svc, DeviceScopeAuthorizer scope, CancellationToken ct)
+                => QueueActionAsync(deviceId, DeviceTaskType.SignOutUser, null, ctx, svc, scope, ct))
             .WithName("SignOutUser")
             .RequirePermission(Domain.Authorization.Permissions.Device.SignOutUser);
 
@@ -221,15 +219,172 @@ public static class DeviceEndpoints
         return task is null ? Results.NotFound() : Results.Accepted($"/admin/v1/devices/{deviceId}/tasks", new { taskId = task.Id });
     }
 
+    /// <summary>
+    /// Restarts a device now, or after a delay the administrator chose.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The delay is the task's grace period, and nothing else.</b> The queued
+    /// payload is the same <see cref="TaskPayloads.RestartOrShutdown"/> every
+    /// deployed agent already reads: Windows is handed the grace period through
+    /// <c>InitiateSystemShutdownEx</c> and counts it down itself, from the moment
+    /// the device executes the task. There is deliberately no second
+    /// representation of the time -- no absolute deadline the agent would have to
+    /// reconcile against a clock of its own.
+    /// </para>
+    /// <para>
+    /// <b>The ceiling is the deployed agent's, not an opinion.</b> Every agent in
+    /// the field clamps the grace period to <see cref="MaxRestartDelaySeconds"/>
+    /// before calling Windows. A server that accepted more would be promising a
+    /// later restart than any endpoint would deliver, and the machine would go
+    /// down earlier than the administrator was told. So the server refuses what
+    /// the agent would silently shorten.
+    /// </para>
+    /// <para>
+    /// <b>"Now" is a thirty-second warning, not zero.</b> An immediate restart
+    /// still lets the signed-in user save their work and lets the agent record
+    /// the result before the machine goes down; zero would do neither. Delays
+    /// below that floor are refused rather than silently raised to it.
+    /// </para>
+    /// <para>
+    /// The task's own expiry (fifteen minutes, from the catalogue) bounds only
+    /// how long the device has to <em>receive</em> the task. An unclaimed task
+    /// expires and restarts nothing. A claimed one hands the countdown to
+    /// Windows and reports back immediately, so the expiry never races the
+    /// countdown.
+    /// </para>
+    /// </remarks>
+    private static async Task<IResult> RestartAsync(
+        Guid deviceId,
+        HttpContext httpContext,
+        DeviceTaskService taskService,
+        DeviceScopeAuthorizer scope,
+        EndpointPlatformDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var actor = AdminActor.Required(httpContext.User);
+
+        // Scope before anything else: a device outside the caller's scope is
+        // invisible, the same answer the read endpoints give.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
+        // The body is optional: a bare POST means "now", which is what this
+        // route always meant. It is read by hand rather than bound, so that a
+        // caller without a body -- every existing caller -- is not answered 400.
+        var request = await ReadOptionalBodyAsync<RestartRequest>(httpContext, cancellationToken);
+        if (request.Malformed)
+        {
+            return Results.Problem("The request body must be JSON with an optional integer delaySeconds.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var delay = request.Value?.DelaySeconds ?? 0;
+        var grace = RestartGrace.FromDelay(delay);
+        if (grace is null)
+        {
+            return Results.Problem(
+                $"delaySeconds must be 0 (restart now, after a {RestartGrace.ImmediateSeconds}-second warning) " +
+                $"or between {RestartGrace.MinimumDelaySeconds} and {RestartGrace.MaximumDelaySeconds} seconds.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        // One restart in flight per device. Two would not restart the machine
+        // twice -- Windows refuses a second shutdown while one is scheduled, and
+        // the agent reports that refusal honestly -- but the second task would
+        // sit in the list as a failure the operator did not mean to create. This
+        // check is a courtesy ahead of that guard, not a substitute for it: the
+        // atomic claim and Windows itself are what make a double restart
+        // impossible.
+        var inFlight = await dbContext.DeviceTasks
+            .AsNoTracking()
+            .Where(t => t.DeviceId == deviceId
+                        && t.Type == DeviceTaskType.RestartDevice
+                        && (t.Status == DeviceTaskStatus.Queued || t.Status == DeviceTaskStatus.Delivered))
+            .Select(t => new { t.Id, t.Status })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (inFlight is not null)
+        {
+            return Results.Problem(
+                "A restart is already queued or in progress for this device.",
+                statusCode: StatusCodes.Status409Conflict,
+                extensions: new Dictionary<string, object?>
+                {
+                    ["taskId"] = inFlight.Id,
+                    ["status"] = inFlight.Status.ToString(),
+                });
+        }
+
+        var message = grace.Value == RestartGrace.ImmediateSeconds
+            ? "Your IT administrator initiated a restart."
+            : $"Your IT administrator scheduled a restart in {RestartGrace.Describe(grace.Value)}.";
+
+        var task = await taskService.QueueAsync(
+            actor.OrganizationId, deviceId, DeviceTaskType.RestartDevice,
+            new TaskPayloads.RestartOrShutdown(grace.Value, message),
+            actor.UserId, actor.Email, cancellationToken);
+
+        return task is null
+            ? Results.NotFound()
+            : Results.Accepted($"/admin/v1/devices/{deviceId}/tasks", new
+            {
+                taskId = task.Id,
+                status = task.Status.ToString(),
+                graceSeconds = grace.Value,
+                expiresAt = task.ExpiresAt,
+            });
+    }
+
+    /// <summary>
+    /// A JSON body if one was sent, none if the request had no body, and a
+    /// malformed marker if what was sent could not be read as the type.
+    /// </summary>
+    private static async Task<(T? Value, bool Malformed)> ReadOptionalBodyAsync<T>(
+        HttpContext httpContext, CancellationToken cancellationToken) where T : class
+    {
+        var request = httpContext.Request;
+        if (request.ContentLength is null or 0)
+        {
+            return (null, false);
+        }
+
+        if (!request.HasJsonContentType())
+        {
+            return (null, true);
+        }
+
+        try
+        {
+            return (await request.ReadFromJsonAsync<T>(cancellationToken), false);
+        }
+        catch (JsonException)
+        {
+            return (null, true);
+        }
+    }
+
     private static async Task<IResult> QueueActionAsync(
         Guid deviceId,
         DeviceTaskType type,
         object? payload,
         HttpContext httpContext,
         DeviceTaskService taskService,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
+
+        // Scope, not only permission: an administrator restricted to a group
+        // must not be able to act on a device outside it by knowing its id. The
+        // device is reported as not there, the same answer the read endpoints
+        // give, so scope never reveals that a device it excludes exists.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
 
         var task = await taskService.QueueAsync(
             actor.OrganizationId, deviceId, type, payload, actor.UserId, actor.Email, cancellationToken);
@@ -305,7 +460,13 @@ public static class DeviceEndpoints
                 t.CreatedAt,
                 t.DeliveredAt,
                 t.CompletedAt,
+                t.ExpiresAt,
                 t.ResultMessage,
+                // The agent's structured result. For a restart it carries the
+                // moment Windows will act, which is what lets the console show
+                // "scheduled" rather than a bare "succeeded" for a machine that
+                // has not gone down yet. Results never carry secrets, by contract.
+                t.ResultJson,
             })
             .ToListAsync(cancellationToken);
 
@@ -657,3 +818,14 @@ public static class DeviceEndpoints
         return Results.Accepted();
     }
 }
+
+/// <summary>
+/// The optional body of a restart request.
+/// </summary>
+/// <param name="DelaySeconds">
+/// Seconds until the restart, counted from the moment the device executes the
+/// task. 0 or absent means now -- after the standard thirty-second warning.
+/// Validated by <see cref="RestartGrace"/>; the accepted range is that class's
+/// to state, not this record's.
+/// </param>
+public sealed record RestartRequest(int? DelaySeconds);

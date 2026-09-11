@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getDeviceTasks, type DeviceTaskItem } from '../api/client'
+import { describeAcceptedRestart, restartResult } from '../pages/restartView'
 import { waitForFreshInventory } from './inventorySync'
 
 const POLL_MS = 3_000
@@ -42,13 +43,31 @@ export function decideSettlement(
   status: DeviceTaskItem['status'],
   resultMessage: string | null,
   syncInventoryRequested: boolean,
+  /**
+   * The task's type and structured result, when the caller has them. A restart
+   * that Windows accepted is a success the machine has not acted on yet, and
+   * the stage must say so rather than "Succeeded"; without these two it falls
+   * back to the generic wording, which is what older servers get.
+   */
+  task?: Pick<DeviceTaskItem, 'type' | 'resultJson'>,
+  now: Date = new Date(),
 ): SettleDecision {
   switch (status) {
     case 'Queued':
       return { kind: 'wait' }
     case 'Delivered':
       return { kind: 'running' }
-    case 'Succeeded':
+    case 'Succeeded': {
+      const accepted = task ? restartResult(task) : null
+      if (accepted?.outcome === 'Scheduled') {
+        return {
+          kind: 'settled',
+          succeeded: true,
+          stage: describeAcceptedRestart(accepted, now),
+          message: null,
+          chaseInventory: false,
+        }
+      }
       return {
         kind: 'settled',
         succeeded: true,
@@ -58,6 +77,7 @@ export function decideSettlement(
         // left it as it was, so there is nothing fresher to wait for.
         chaseInventory: syncInventoryRequested,
       }
+    }
     case 'Failed':
       return { kind: 'settled', succeeded: false, stage: 'Failed', message: resultMessage, chaseInventory: false }
     case 'Expired':
@@ -200,7 +220,7 @@ export function useTaskTracker(
           const task = tasks.find((x) => x.id === t.taskId)
           if (!task) continue
 
-          const decision = decideSettlement(task.status, task.resultMessage, syncRequested.current.has(t.taskId))
+          const decision = decideSettlement(task.status, task.resultMessage, syncRequested.current.has(t.taskId), task)
           if (decision.kind === 'running') {
             setTracked((current) =>
               current.map((x) => (x.taskId === t.taskId ? { ...x, stage: 'Running on Windows…' } : x)),

@@ -19,7 +19,12 @@ import {
   softwareRowKey,
   type RunningFilter,
 } from './softwareView'
-import { forceStopApplication } from '../api/client'
+import { forceStopApplication, restartDevice } from '../api/client'
+import {
+  RESTART_DELAY_OPTIONS,
+  describeRestartTiming,
+  restartStage,
+} from './restartView'
 import { useAuth } from '../auth/AuthContext'
 import { RowActionsMenu } from '../components/RowActionsMenu'
 import { DeviceUsersPanel } from './DeviceUsersPanel'
@@ -138,6 +143,10 @@ export function DeviceDetailPage() {
   const [device, setDevice] = useState<DeviceDetail | null>(null)
   const [tasks, setTasks] = useState<DeviceTaskItem[]>([])
   const [confirm, setConfirm] = useState<null | 'restart' | 'shutdown' | 'lock' | 'signout'>(null)
+  // The delay chosen in the restart dialog, in seconds; 0 is "now". Reset each
+  // time the dialog opens so a timer picked for one restart never carries over
+  // silently to the next.
+  const [restartDelay, setRestartDelay] = useState(0)
   const [actionMsg, setActionMsg] = useState<string | null>(null)
   const [editingName, setEditingName] = useState(false)
   const [latestAgent, setLatestAgent] = useState<LatestAgentRelease | null>(null)
@@ -211,11 +220,21 @@ export function DeviceDetailPage() {
     setConfirm(null)
     setActionMsg(null)
     try {
-      const { taskId } = await queueDeviceAction(deviceId, action)
+      // Restart carries the chosen delay; the other three carry nothing. The
+      // task is tracked from the id either way, so the banner reports what
+      // Windows did, never merely that the server accepted a request.
+      const { taskId } = action === 'restart'
+        ? await restartDevice(deviceId, restartDelay)
+        : await queueDeviceAction(deviceId, action)
       track(taskId, ACTION_LABELS[action])
       await load()
-    } catch {
-      setActionMsg(`Could not queue "${action}".`)
+    } catch (e) {
+      // The server's own reason when it gave one: a restart already queued
+      // for this device is a 409 that names it, and a refused delay is a 400
+      // that says what is accepted. Neither is "could not queue".
+      setActionMsg(e instanceof ApiError && e.detail
+        ? `Could not queue "${action}": ${e.detail}`
+        : `Could not queue "${action}".`)
     }
   }
 
@@ -445,7 +464,15 @@ export function DeviceDetailPage() {
         key={a.key}
         type="button"
         className={a.confirm ? 'btn-warning' : undefined}
-        onClick={() => (a.confirm ? setConfirm(a.key) : void runAction(a.key))}
+        onClick={() => {
+          if (!a.confirm) {
+            void runAction(a.key)
+            return
+          }
+          // Every restart starts from "now"; a timer is chosen deliberately each time.
+          if (a.key === 'restart') setRestartDelay(0)
+          setConfirm(a.key)
+        }}
       >
         {a.label}
       </button>
@@ -482,7 +509,44 @@ export function DeviceDetailPage() {
         />
       )}
 
-      {confirm && (
+      {confirm === 'restart' && (
+        <ConfirmDialog
+          title={`Restart ${deviceName(device)}?`}
+          confirmLabel="Yes, restart"
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => void runAction('restart')}
+        >
+          <>
+            {/* The timer is chosen here, in the open, and repeated back in a
+                sentence before the destructive button. What is chosen becomes
+                the grace period the device hands to Windows; nothing about the
+                timing is decided anywhere else. */}
+            <fieldset className="choice-group" style={{ border: 0, padding: 0, margin: '0 0 12px' }}>
+              <legend className="muted" style={{ marginBottom: 6 }}>When</legend>
+              {RESTART_DELAY_OPTIONS.map((o) => (
+                <label key={o.seconds} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginRight: 14 }}>
+                  <input
+                    type="radio"
+                    name="restart-delay"
+                    value={o.seconds}
+                    checked={restartDelay === o.seconds}
+                    onChange={() => setRestartDelay(o.seconds)}
+                  />
+                  {o.label}
+                </label>
+              ))}
+            </fieldset>
+            <p style={{ margin: '0 0 8px' }}>
+              <strong className="secondary">{describeRestartTiming(restartDelay)}</strong>
+            </p>
+            The device performs this on its next check-in; if it has not checked in within 15
+            minutes the task expires and nothing restarts. Unsaved work on the device is lost.
+            This action is audited.
+          </>
+        </ConfirmDialog>
+      )}
+
+      {confirm && confirm !== 'restart' && (
         <ConfirmDialog
           title={`Confirm ${confirm}`}
           confirmLabel={`Yes, ${confirm}`}
@@ -1266,7 +1330,13 @@ export function DeviceDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {tasks.map((t) => (
+                  {tasks.map((t) => {
+                    // A restart has one stage the generic model lacks: Windows
+                    // accepted it and the machine is still up. That is
+                    // "Scheduled", amber, not a green "Succeeded". Every other
+                    // type shows the server's status as it is.
+                    const stage = t.type === 'RestartDevice' ? restartStage(t, new Date()) : t.status
+                    return (
                     <tr key={t.id}>
                       <td>{t.type}</td>
                       <td>
@@ -1274,16 +1344,16 @@ export function DeviceDetailPage() {
                             task has not happened on the machine yet. */}
                         <span
                           className={`badge ${
-                            t.status === 'Succeeded'
+                            stage === 'Succeeded'
                               ? 'ok'
-                              : t.status === 'Failed' || t.status === 'Expired'
+                              : stage === 'Failed' || stage === 'Expired'
                                 ? 'crit'
-                                : t.status === 'Cancelled'
+                                : stage === 'Cancelled'
                                   ? 'neutral'
                                   : 'warn'
                           }`}
                         >
-                          {t.status}
+                          {stage}
                         </span>
                       </td>
                       <td>{t.createdByDisplay}</td>
@@ -1303,7 +1373,8 @@ export function DeviceDetailPage() {
                         )}
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

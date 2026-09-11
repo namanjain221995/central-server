@@ -368,7 +368,7 @@ public static class AgentEndpoints
         var claimed = await taskService.ClaimForDeviceAsync(auth.Device!.Id, cancellationToken);
 
         var tasks = claimed
-            .Select(t => new AgentTask(t.Id, t.Type.ToString(), t.PayloadJson))
+            .Select(t => new AgentTask(t.Id, t.Type.ToString(), t.PayloadJson, t.ExpiresAt))
             .ToArray();
 
         return Results.Ok(new AgentTaskListResponse(tasks));

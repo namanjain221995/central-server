@@ -4,6 +4,7 @@ import {
   forceStopApplication,
   getAgentReleases,
   previewDeployment,
+  restartDevice,
   revokeUsbAccess,
 } from '../../api/client'
 // The file itself, as text, via Vite's ?raw import -- typed by vite/client, so no
@@ -70,6 +71,8 @@ describe('JSON request bodies declare their media type', () => {
   /** The calls that reached production without it, and their neighbours. */
   it.each([
     ['forceStopApplication', () => forceStopApplication([DEVICE], 'Google Chrome', 'Google LLC')],
+    // Restart carries its delay as a JSON body; a bare POST would silently mean "now".
+    ['restartDevice', () => restartDevice(DEVICE, 600)],
     ['previewDeployment', () => previewDeployment(PACKAGE, [DEVICE], [])],
     ['createDeployment', () => createDeployment(PACKAGE, [DEVICE], [])],
     // One that always set it explicitly, to show the helper agrees with it.
