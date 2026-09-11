@@ -621,52 +621,6 @@ export function forceStopApplication(
   })
 }
 
-/** How a device uninstalls an application: the Windows Installer service, or the AppX deployment engine. */
-export type RemoveMethod = 'WindowsInstaller' | 'Package'
-
-/**
- * Why a device will not remove an application. `PerUserInstall`: the agent runs
- * as SYSTEM and cannot see another account's per-user product. `SystemComponent`:
- * part of Windows. `ProtectedAgent`: the endpoint agent itself. `NoInstallerIdentity`:
- * its uninstaller is a program, which the agent does not launch.
- */
-export type RemoveReason = 'PerUserInstall' | 'SystemComponent' | 'ProtectedAgent' | 'NoInstallerIdentity'
-
-/** What Remove did on one device. */
-export interface RemoveDeviceOutcome {
-  deviceId: string
-  hostname: string
-  outcome: 'Queued' | 'NotInstalled' | 'NotRemovable' | 'NotEligible'
-  /** Set only when the outcome is NotRemovable. */
-  reason: RemoveReason | string | null
-  /** Set only when a task was queued. */
-  method: RemoveMethod | string | null
-  /** The queued task, so the page can follow it to its result. */
-  taskId: string | null
-}
-
-export interface RemoveResult {
-  devicesQueued: number
-  devices: RemoveDeviceOutcome[]
-}
-
-/**
- * Removes a named installed application from the given devices: the device
- * stops it if it is running, then uninstalls it, as one task.
- *
- * Like Force Stop this sends an application, never a product code, package name
- * or path: the server resolves those from its own inventory and decides whether
- * the row is one the agent can remove at all. `version` pins the request to one
- * row when the same application is installed at two versions.
- */
-export function removeApplication(
-  deviceIds: string[], name: string, publisher: string | null, version: string | null,
-): Promise<RemoveResult> {
-  return request<RemoveResult>('/admin/v1/software/remove', {
-    method: 'POST',
-    body: JSON.stringify({ deviceIds, name, publisher, version }),
-  })
-}
 
 /**
  * Which installations to list by running state, as the last inventory saw it:

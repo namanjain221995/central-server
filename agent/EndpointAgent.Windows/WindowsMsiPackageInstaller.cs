@@ -19,9 +19,7 @@ namespace EndpointAgent.Windows;
 /// driven by <c>MsiInstallProduct</c>, product detection by
 /// <c>MsiQueryProductState</c>, both direct API calls. This is what lets the
 /// agent gain a real install capability without reintroducing the arbitrary
-/// -execution surface the whole design is built to avoid. The same
-/// <c>msi.dll</c> bindings serve <see cref="WindowsApplicationRemover"/>, which
-/// is why removal's entry points are declared here rather than in a second copy.
+/// -execution surface the whole design is built to avoid.
 /// </para>
 /// <para>
 /// Two independent gates protect the install: the caller has already verified the
@@ -146,10 +144,12 @@ public sealed class WindowsMsiPackageInstaller(ILogger<WindowsMsiPackageInstalle
         }
     }
 
-    // One set of msi.dll bindings for the agent's two software-state changers:
-    // the installer above and WindowsApplicationRemover. Internal, not private,
-    // for exactly that second caller.
-    internal static class NativeMethods
+    // The msi.dll bindings the installer needs, and only those. It was briefly a
+    // shared set with an application remover; that feature was withdrawn, and the
+    // bindings it alone used (MsiConfigureProductEx, MsiGetProductInfo,
+    // MsiEnumRelatedProducts) went with it rather than being left declared for a
+    // caller that no longer exists.
+    private static class NativeMethods
     {
         // msi.dll exports the Unicode string entry points with a W suffix; name them
         // explicitly rather than relying on marshaller name-mangling.
@@ -163,26 +163,5 @@ public sealed class WindowsMsiPackageInstaller(ILogger<WindowsMsiPackageInstalle
         [DllImport("msi.dll", ExactSpelling = true)]
         internal static extern uint MsiSetInternalUI(uint dwUILevel, IntPtr phWnd);
 
-        // Removal is the same call shape as installation: a typed product code,
-        // two integer enums and an agent-authored property string. INSTALLSTATE
-        // _ABSENT (2) with INSTALLLEVEL_DEFAULT (0) removes the whole product.
-        [DllImport("msi.dll", EntryPoint = "MsiConfigureProductExW", CharSet = CharSet.Unicode, ExactSpelling = true)]
-        internal static extern uint MsiConfigureProductEx(
-            string szProduct, int iInstallLevel, int eInstallState, string szCommandLine);
-
-        // Two-call buffer protocol: pcchValueBuf is the buffer size in characters
-        // on the way in and the value length on the way out; a null buffer asks
-        // for the size, ERROR_MORE_DATA (234) says the one given was too small.
-        [DllImport("msi.dll", EntryPoint = "MsiGetProductInfoW", CharSet = CharSet.Unicode, ExactSpelling = true)]
-        internal static extern uint MsiGetProductInfo(
-            string szProduct, string szAttribute, StringBuilder? lpValueBuf, ref uint pcchValueBuf);
-
-        // The products registered under an upgrade code, by index, until
-        // ERROR_NO_MORE_ITEMS (259). This is the documented direction of the
-        // lookup: MsiGetProductInfo has no upgrade-code attribute. The buffer
-        // must hold 39 characters (a braced GUID and its terminator).
-        [DllImport("msi.dll", EntryPoint = "MsiEnumRelatedProductsW", CharSet = CharSet.Unicode, ExactSpelling = true)]
-        internal static extern uint MsiEnumRelatedProducts(
-            string lpUpgradeCode, uint dwReserved, uint iProductIndex, StringBuilder lpProductBuf);
     }
 }

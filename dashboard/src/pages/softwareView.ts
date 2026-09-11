@@ -1,12 +1,9 @@
 import type {
   DeviceSoftwareItem,
-  RemoveMethod,
-  RemoveReason,
   RunningFilter,
   SoftwareInstallation,
   SoftwareTitle,
 } from '../api/client'
-import { compareVersions } from './agentUpdateView'
 
 export type { RunningFilter } from '../api/client'
 
@@ -368,189 +365,9 @@ export function emptySoftwareListMessage(input: EmptySoftwareListInput): EmptySo
   }
 }
 
-/** The client-side hint of whether Remove can be offered, and why not when it cannot. */
-export interface Removability {
-  removable: boolean
-  method: RemoveMethod | null
-  reason: RemoveReason | null
-}
-
-/** The fields removability is decided on; the same ones the server reads. */
-export type RemovabilityInput = Pick<
-  DeviceSoftwareItem,
-  'name' | 'identityKind' | 'productCode' | 'installationScope' | 'packageFamilyName' | 'category'
->
-
-/** The display name the agent installs under. Refused on both sides; this side only stops offering it. */
-const AGENT_PRODUCT_NAME = 'Endpoint Platform Agent'
-
-/** The publisher id every Windows inbox package family ends in. */
-const WINDOWS_INBOX_PUBLISHER_ID = 'cw5n1h2txyewy'
-
-/**
- * Whether the agent has a way to uninstall this row, mirroring the server's
- * table. A hint only: the server re-evaluates and is the authority. This
- * exists so the menu can say why Remove is unavailable instead of offering an
- * action that is certain to be refused.
- *
- * The agent removes exactly two kinds of thing: a machine-scope Windows
- * Installer product, through the Windows Installer service, and an MSIX/AppX
- * package, through the deployment engine. A per-user product is invisible to a
- * service running as SYSTEM; an inbox or system package is Windows itself; the
- * agent must not remove the agent; and everything else — an EXE installer's
- * registration, a portable executable, an observed process — has an
- * uninstaller that is a program, which the agent does not launch (ADR-0005).
- */
-export function removability(item: RemovabilityInput): Removability {
-  if (item.name === AGENT_PRODUCT_NAME) {
-    return { removable: false, method: null, reason: 'ProtectedAgent' }
-  }
-
-  if (item.identityKind === 'WindowsInstaller' && item.productCode) {
-    return item.installationScope === 'Machine'
-      ? { removable: true, method: 'WindowsInstaller', reason: null }
-      : { removable: false, method: null, reason: 'PerUserInstall' }
-  }
-
-  if (item.identityKind === 'Package') {
-    const inbox = (item.packageFamilyName ?? '').endsWith(`_${WINDOWS_INBOX_PUBLISHER_ID}`)
-    const system = item.category !== null && item.category !== undefined && SYSTEM_CATEGORIES.includes(item.category)
-    return inbox || system
-      ? { removable: false, method: null, reason: 'SystemComponent' }
-      : { removable: true, method: 'Package', reason: null }
-  }
-
-  return { removable: false, method: null, reason: 'NoInstallerIdentity' }
-}
-
-/**
- * Why an application cannot be removed, in words. A reason the console does
- * not know is shown as itself rather than swallowed: a newer server's refusal
- * is still information.
- */
-export function removeReasonLabel(reason: string | null | undefined): string {
-  switch (reason) {
-    case 'PerUserInstall':
-      return 'it was installed for one user, and the agent cannot uninstall another account’s per-user software'
-    case 'SystemComponent':
-      return 'it is part of Windows'
-    case 'ProtectedAgent':
-      return 'it is the endpoint agent'
-    case 'NoInstallerIdentity':
-      return 'its uninstaller is a program, which the agent does not launch'
-    case null:
-    case undefined:
-      return 'no reason was given'
-    default:
-      return reason
-  }
-}
-
-/**
- * The oldest agent that can actually carry out a removal.
- *
- * Must match `MinimumAgentVersion` for `RemoveApplication` in
- * server/Domain/Tasks/DeviceTaskCatalog.cs. That is the gate the server
- * enforces: below it the endpoint has no RemoveApplicationExecutor, so the
- * queue request is refused as NotEligible.
- *
- * Deliberately NOT 1.9.0, the other agent boundary in this feature, and the two
- * must never be reconciled into one:
- *
- *   - 1.9.0 is where application discovery shipped, so `identityKind`,
- *     `packageFullName`, `category` and RunningProcess evidence exist only from
- *     then. Below it the platform cannot tell what a row *is*, which is why
- *     `removability` answers NoInstallerIdentity and `runningState` answers
- *     unknown. A fact about the INVENTORY.
- *   - 1.10.0 is where the executor shipped. A fact about what the endpoint can
- *     DO, and the only one that decides whether a removal can run.
- *
- * A device on 1.9.x sits between them: its inventory is rich enough for
- * `removability` to say "removable", and it still cannot remove anything. That
- * device is the whole reason this constant exists — without it the console
- * offered Remove, took a confirmation for a destructive action, and only then
- * relayed the server's refusal.
- */
-export const MINIMUM_REMOVE_AGENT_VERSION = '1.10.0'
-
-/** What the device's reported agent version says about its ability to remove software. */
-export type RemoveAgentSupport = 'supported' | 'too-old' | 'unreadable'
-
-/**
- * Whether this device's agent can execute a removal.
- *
- * Reuses `compareVersions` from agentUpdateView — the console's one mirror of
- * the server's `AgentVersionNumber` — rather than growing a second comparator
- * that could drift from it.
- *
- * It is stricter than the server's `DeviceTaskCatalog.IsSupportedBy`, which
- * trims a pre-release or build suffix and then accepts two-, three- or
- * four-part versions through `Version.TryParse`; `compareVersions` drops a
- * `+build` suffix and requires exactly three numeric parts, so "1.10", "1.10.0.0"
- * and "1.10.0-rc.1" are unreadable here and supported there. The divergence
- * only ever makes the console refuse what the server would have accepted, never
- * the reverse, which is the safe direction for a destructive action — and the
- * refusal is worded as "could not be read" rather than as a verdict on the
- * version, so nothing here claims a fact it has not established.
- *
- * Unknown and unparseable both fail closed. An agent that will not say what it
- * is has not demonstrated it can do the work — the same rule, and the same
- * reasoning, as the server's gate.
- */
-export function removeAgentSupport(agentVersion: string | null | undefined): RemoveAgentSupport {
-  if (agentVersion === null || agentVersion === undefined) return 'unreadable'
-
-  const order = compareVersions(agentVersion, MINIMUM_REMOVE_AGENT_VERSION)
-  if (order === null) return 'unreadable'
-
-  return order >= 0 ? 'supported' : 'too-old'
-}
-
-/**
- * Why the device's agent cannot remove software, in words.
- *
- * Names the version and what shipped in it, so the reason cannot be mistaken
- * for one of the row-based refusals in `removeReasonLabel`: those are facts
- * about the application and no upgrade changes them, this one is about the
- * machine and an agent update fixes it for every row at once.
- */
-export function removeAgentReasonLabel(support: RemoveAgentSupport): string | null {
-  switch (support) {
-    case 'supported':
-      return null
-    case 'too-old':
-      return `the device’s agent is older than ${MINIMUM_REMOVE_AGENT_VERSION}, which is the release that can remove applications`
-    case 'unreadable':
-      return `the device’s agent version could not be read, and removing an application needs ${MINIMUM_REMOVE_AGENT_VERSION} or newer`
-  }
-}
-
-/**
- * What a Remove request did, in words.
- *
- * Queued is worded as queued: the device stops and uninstalls on its next
- * check-in and reports back through the task, so nothing here may claim the
- * application is gone. NotRemovable carries the server's reason, because that
- * is the one outcome an operator can do nothing about from this page.
- */
-export function removeMessage(application: string, outcome: string, reason: string | null): string {
-  switch (outcome) {
-    case 'Queued':
-      return `Removal of ${application} was queued. The device stops it if it is running, then uninstalls it.`
-    case 'NotInstalled':
-      return `${application} is not installed on this device.`
-    case 'NotRemovable':
-      return `${application} cannot be removed: ${removeReasonLabel(reason)}.`
-    case 'NotEligible':
-      return `${application} could not be removed: the device is retired or its agent is too old.`
-    default:
-      return `${application} could not be removed.`
-  }
-}
-
 /** One entry in a software row's Actions menu. */
 export interface RowAction {
-  key: 'force-stop' | 'remove'
+  key: 'force-stop'
   label: string
   enabled: boolean
   /** Why the action is unavailable, when it is; shown on the disabled item. */
@@ -561,8 +378,6 @@ export interface RowAction {
 export interface RowActionPermissions {
   /** `task.execute`: Force Stop terminates processes, so it needs that, not a software permission. */
   canExecuteTasks: boolean
-  /** `software.deploy`: Remove changes what is installed, the same as deploying does. */
-  canDeploy: boolean
 }
 
 /**
@@ -572,25 +387,10 @@ export interface RowActionPermissions {
  * across the console, and the server enforces it regardless. An action the row
  * cannot support is listed but disabled, with the reason, so an operator learns
  * why rather than wondering where the item went.
- *
- * Remove is decided on two independent facts, and needs both: what the row is
- * (`removability`, read from the inventory) and whether this device's agent has
- * the executor (`removeAgentSupport`, MINIMUM_REMOVE_AGENT_VERSION). Deciding
- * it on the row alone was a real defect — an agent on 1.9.x reports an
- * inventory rich enough to look removable and cannot remove anything, so the
- * console offered a destructive action, confirmed it, and only then relayed the
- * server's NotEligible. A destructive action must not be offered as available
- * when the platform already knows it cannot run.
- *
- * The row's reason is given first when both apply. It is the permanent one:
- * updating the agent will never make a Windows component or another account's
- * per-user install removable, so leading with the version would send an
- * operator to do an upgrade that changes nothing for that row.
  */
 export function rowActions(
-  item: RemovabilityInput & Pick<DeviceSoftwareItem, 'installLocation'>,
+  item: Pick<DeviceSoftwareItem, 'installLocation'>,
   perms: RowActionPermissions,
-  agentVersion: string | null | undefined,
 ): RowAction[] {
   const actions: RowAction[] = []
 
@@ -601,22 +401,6 @@ export function rowActions(
       label: 'Force Stop',
       enabled,
       reason: enabled ? null : 'No install location was reported for this application',
-    })
-  }
-
-  if (perms.canDeploy) {
-    const { removable, reason } = removability(item)
-    const support = removeAgentSupport(agentVersion)
-
-    const blocked = !removable
-      ? removeReasonLabel(reason)
-      : removeAgentReasonLabel(support)
-
-    actions.push({
-      key: 'remove',
-      label: 'Remove…',
-      enabled: blocked === null,
-      reason: blocked === null ? null : `Cannot be removed: ${blocked}`,
     })
   }
 

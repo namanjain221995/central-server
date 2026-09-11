@@ -46,6 +46,13 @@ question that matters, so only production may be asked.
 
 ## What happened on 2026-09-11
 
+The feature being piloted below (application removal) was subsequently withdrawn,
+and its code is gone. The incident and the rule it produced are not: they are
+about piloting an agent build on a machine that already belongs to production,
+which is a hazard of any agent pilot and has nothing to do with what was being
+tested.
+
+
 `DESKTOP-PJCC143`, machine identifier `5A4839FE-996A-4748-9411-7EA29DC6978A`,
 was chosen as the disposable VM for the 1.10.0 RemoveApplication pilot. It was
 already an Active production device (`01a03a45-847f-704c-a3ca-c7c8c4c4dce5`,

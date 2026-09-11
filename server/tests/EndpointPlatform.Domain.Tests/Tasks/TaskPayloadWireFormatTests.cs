@@ -119,46 +119,6 @@ public sealed class TaskPayloadWireFormatTests
         grants.GetArrayLength().ShouldBe(0);
     }
 
-    /// <summary>
-    /// The removal payload as <c>RemoveApplicationExecutor</c> reads it: the
-    /// method travels as a string it switches on, and the identity it does not
-    /// need is an explicit null rather than an absent property.
-    /// </summary>
-    [Fact]
-    public void Remove_application_payload_matches_the_agent_field_names()
-    {
-        var json = Serialize(new TaskPayloads.RemoveApplication(
-            "Google Chrome", "Google LLC", @"C:\Program Files\Google\Chrome\Application",
-            "WindowsInstaller", "{8A69D345-D564-463C-AFF1-A69D9E530F96}", null));
-
-        AgentReadString(json, "applicationName").ShouldBe("Google Chrome");
-        AgentReadString(json, "publisher").ShouldBe("Google LLC");
-        AgentReadString(json, "installLocation").ShouldBe(@"C:\Program Files\Google\Chrome\Application");
-        AgentReadString(json, "method").ShouldBe("WindowsInstaller");
-        AgentReadString(json, "productCode").ShouldBe("{8A69D345-D564-463C-AFF1-A69D9E530F96}");
-
-        using var doc = JsonDocument.Parse(json);
-        doc.RootElement.GetProperty("packageFullName").ValueKind.ShouldBe(JsonValueKind.Null);
-    }
-
-    /// <summary>
-    /// A package removal with no usable install location: the stop step is
-    /// skipped on the endpoint, which reads a null, not a missing key.
-    /// </summary>
-    [Fact]
-    public void Remove_application_payload_for_a_package_without_a_location_is_explicit_about_both()
-    {
-        var json = Serialize(new TaskPayloads.RemoveApplication(
-            "Slack", null, null, "Package", null, "com.tinyspeck.slackdesktop_4.52.155.0_x64__8yrtsj140pw4g"));
-
-        AgentReadString(json, "method").ShouldBe("Package");
-        AgentReadString(json, "packageFullName").ShouldBe("com.tinyspeck.slackdesktop_4.52.155.0_x64__8yrtsj140pw4g");
-
-        using var doc = JsonDocument.Parse(json);
-        doc.RootElement.GetProperty("installLocation").ValueKind.ShouldBe(JsonValueKind.Null);
-        doc.RootElement.GetProperty("productCode").ValueKind.ShouldBe(JsonValueKind.Null);
-        doc.RootElement.GetProperty("publisher").ValueKind.ShouldBe(JsonValueKind.Null);
-    }
 
     [Fact]
     public void Restart_payload_matches_the_agent_field_names()

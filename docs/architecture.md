@@ -358,22 +358,6 @@ are reverted automatically.
   identical to an operator told only that it failed. Gated on `task.execute`,
   device-scoped, retired devices excluded by `QueueAsync`, and audited with
   hostnames and outcomes but deliberately **not** executable paths.
-
-- **Remove application (agent 1.10.0): complete.** From the same Actions menu
-  an operator can remove an application: one `RemoveApplication` task stops it
-  exactly as Force Stop does (the shared `ApplicationStopper`), then uninstalls
-  it — a Windows Installer product through `MsiConfigureProductEx`, an MSIX/AppX
-  package for all users through the deployment engine's
-  `RemovePackageWithOptionsAsync` (raw WinRT activation with hand-declared
-  interfaces; no projection, no target-framework change). No process launch, no
-  shell (ADR-0005 amendment). EXE-installer registrations, per-user MSI
-  products, Windows' own packages and the agent itself are reported as not
-  removable, with the reason, and the agent refuses the last two on its own
-  judgement whatever the task says. Verified live only on the negative paths: a
-  random product code and a non-existent package travel the full msi.dll and
-  deployment-engine chains and change nothing, and the agent's own product is
-  refused; an actual removal is never fired on the dev laptop.
-
 - **Application execution control (enable/disable): NOT implemented, by
   decision — re-evaluated against Windows 11 Pro 26200 and re-confirmed.**
 
@@ -422,21 +406,14 @@ are reverted automatically.
   deny-by-default; pre-existing ones were migrated to organization-wide scope.
   Device Users/Groups tabs gained full management UI with explicit confirmation.
   See [ADR-0011](adr/0011-local-account-management.md).
-- **Phase 16 (application removal, Actions menu, running filter): complete.**
-  Remove is one typed `RemoveApplication` task (agent 1.10.0, `software.deploy`,
-  high-risk, audited as `software.application.remove`) whose executor stops the
-  application exactly as Force Stop does and then uninstalls it -- one task, so
-  the order cannot come apart. Removability is a pure domain decision
-  (`SoftwareRemovability`) reported per device with its reason: a machine-wide
-  Windows Installer product goes through `MsiConfigureProductEx`, an MSIX
-  package through the AppX deployment engine for all users; a per-user MSI
-  (invisible to SYSTEM), a Windows component, the agent itself and anything
-  without a typed installer identity (EXE registrations, observed executables,
-  pre-1.9.0 rows) are refused rather than guessed at. The request names an
-  application; product code and package name come from inventory, never from
-  the browser (ADR-0005 amendment). Running state is surfaced from the last
-  inventory's `RunningProcess` evidence as a tri-state `isRunning` on the
-  installations drill-down (`running=all|running|stopped`) and the device page.
+- **Phase 16 (Actions menu, running filter): complete. Application removal:
+  withdrawn.** The row Actions menu and the All / Running / Not running filter
+  shipped and remain; the application-removal action they were introduced
+  alongside has been withdrawn and its code removed, leaving Force Stop as the
+  only action. Running state is surfaced from the last inventory's
+  `RunningProcess` evidence as a tri-state `isRunning` on the installations
+  drill-down (`running=all|running|stopped`) and the device page — an
+  Application Discovery 2.0 signal, independent of the withdrawn feature.
 - **Phase 15 (hardening / reporting / scale): complete.** Background task-expiry
   sweeper (Admin host, batched, backed by the `device_tasks(expires_at)` index)
   so tasks for offline devices still expire rather than firing late. Consolidated

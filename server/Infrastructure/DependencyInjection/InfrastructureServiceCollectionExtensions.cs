@@ -199,7 +199,6 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Software.SoftwareDeploymentService>();
         services.AddScoped<Software.SoftwareDeploymentReadService>();
         services.AddScoped<Software.ApplicationForceStopService>();
-        services.AddScoped<Software.ApplicationRemovalService>();
         services.AddScoped<Drivers.DriverPackageService>();
         services.AddScoped<Agents.AgentReleaseService>();
         // System trust only. The chain policy is a seam for tests to trust an

@@ -12,8 +12,6 @@ import {
   isApplicationRow,
   matchesRunningFilter,
   registryViewLabel,
-  removability,
-  removeMessage,
   reportsRunningState,
   rowActions,
   scopeLabel,
@@ -21,7 +19,7 @@ import {
   softwareRowKey,
   type RunningFilter,
 } from './softwareView'
-import { forceStopApplication, removeApplication, type DeviceSoftwareItem } from '../api/client'
+import { forceStopApplication } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { RowActionsMenu } from '../components/RowActionsMenu'
 import { DeviceUsersPanel } from './DeviceUsersPanel'
@@ -156,7 +154,6 @@ export function DeviceDetailPage() {
   // The row whose request is in flight, by row key rather than name: the same
   // application installed for two users is two rows, and only one is busy.
   const [busy, setBusy] = useState<{ key: string; label: string } | null>(null)
-  const [removeTarget, setRemoveTarget] = useState<DeviceSoftwareItem | null>(null)
 
   // The published agent release, for the "update agent" affordance. Fetched
   // once per page visit: releases change rarely, and the compare is cheap.
@@ -348,11 +345,10 @@ export function DeviceDetailPage() {
   const canRename = hasPermission('device.rename')
   const canDeploy = hasPermission('software.deploy')
   // Force Stop terminates a process, so it needs the same permission as doing
-  // that directly rather than a weaker software-view one.
+  // that directly rather than a weaker software-view one. It is the only action
+  // the software table offers, so it alone decides whether the column exists.
   const canExecuteTasks = hasPermission('task.execute')
-  // Remove changes what is installed, which is what deploying does, so it takes
-  // that permission. The Actions column exists when either action could.
-  const showSoftwareActions = canExecuteTasks || canDeploy
+  const showSoftwareActions = canExecuteTasks
 
   // The software table's rows, filtered once. Doing it inside the <tbody> left
   // nothing else able to tell whether any row survived, so the three controls
@@ -398,45 +394,6 @@ export function DeviceDetailPage() {
         : `${name} could not be stopped.`)
     } catch {
       setActionMsg(`${name} could not be stopped.`)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  /**
-   * Asks the server to remove an application: stop it if it is running, then
-   * uninstall it, as one task on the device.
-   *
-   * Name, publisher and version are all that is sent, the same as Force Stop;
-   * the server decides from its own inventory whether the row is one the agent
-   * can remove. A queued task is tracked to its result like any other
-   * inventory-changing task, so the table only says the application is gone
-   * once the device has reported that it is. Every other outcome is a refusal
-   * with no task behind it, and goes to the banner.
-   */
-  async function onRemove(sw: DeviceSoftwareItem) {
-    if (!device) return
-
-    setRemoveTarget(null)
-    setBusy({ key: softwareRowKey(sw), label: 'Removing…' })
-    setActionMsg(null)
-    try {
-      const result = await removeApplication([device.id], sw.name, sw.publisher, sw.version)
-      const outcome = result.devices[0]
-
-      if (outcome?.outcome === 'Queued' && outcome.taskId) {
-        track(outcome.taskId, `Remove ${sw.name}`, { syncInventory: true })
-      } else {
-        setActionMsg(outcome
-          ? removeMessage(sw.name, outcome.outcome, outcome.reason)
-          : `${sw.name} could not be removed.`)
-      }
-    } catch (e) {
-      // The server's own reason when it gave one — a validation refusal names
-      // what was wrong — rather than a guess.
-      setActionMsg(e instanceof ApiError && e.detail
-        ? `${sw.name} could not be removed: ${e.detail}`
-        : `${sw.name} could not be removed.`)
     } finally {
       setBusy(null)
     }
@@ -536,29 +493,6 @@ export function DeviceDetailPage() {
             This queues a <strong className="secondary">{confirm}</strong> task for{' '}
             <strong className="secondary">{device.hostname}</strong>. The device performs it on its
             next check-in. This action is audited.
-          </>
-        </ConfirmDialog>
-      )}
-
-      {removeTarget && (
-        <ConfirmDialog
-          title={`Remove ${removeTarget.name}?`}
-          confirmLabel="Yes, remove"
-          onCancel={() => setRemoveTarget(null)}
-          onConfirm={() => void onRemove(removeTarget)}
-        >
-          <>
-            This stops <strong className="secondary">{removeTarget.name}</strong> on{' '}
-            <strong className="secondary">{deviceName(device)}</strong> if it is running, then
-            uninstalls it
-            {/* A package is removed for everyone: the deployment engine takes no
-                account, and saying so here is the difference between removing
-                one person's copy and removing the application from the machine. */}
-            {removability(removeTarget).method === 'Package'
-              ? ' for all users of the device'
-              : ''}
-            . Unsaved work in it is lost. This cannot be undone from the console — reinstalling
-            it is a new deployment. This action is audited.
           </>
         </ConfirmDialog>
       )}
@@ -927,26 +861,17 @@ export function DeviceDetailPage() {
                             <td style={{ textAlign: 'right' }}>
                               {/* Which actions the row supports, and why not, is
                                   decided in softwareView: Force Stop needs an
-                                  install path as its only link to a process, and
-                                  Remove needs both an installer the agent is
-                                  allowed to drive and an agent new enough to have
-                                  the executor — hence the version, which is a
-                                  fact about the device rather than the row. An
+                                  install path as its only link to a process. An
                                   unsupported action stays in the menu, disabled,
                                   with its reason. */}
                               <RowActionsMenu
                                 label={`Actions for ${sw.name}`}
-                                items={rowActions(sw, { canExecuteTasks, canDeploy }, device.agentVersion).map((a) => ({
-                                  ...a,
-                                  destructive: a.key === 'remove',
-                                }))}
+                                items={rowActions(sw, { canExecuteTasks })}
                                 triggerLabel={busy?.key === softwareRowKey(sw) ? busy.label : 'Actions'}
                                 disabled={busy !== null}
                                 onSelect={(key) => {
                                   if (key === 'force-stop') {
                                     void onForceStop(softwareRowKey(sw), sw.name, sw.publisher)
-                                  } else {
-                                    setRemoveTarget(sw)
                                   }
                                 }}
                               />

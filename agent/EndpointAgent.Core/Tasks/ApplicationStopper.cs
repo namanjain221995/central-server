@@ -5,26 +5,22 @@ using Microsoft.Extensions.Logging;
 namespace EndpointAgent.Core.Tasks;
 
 /// <summary>
-/// The process-stopping step shared by the stop and remove executors: enumerate
-/// every process now, match the ones under the application's install directory,
-/// terminate them through the guarded control, and report what happened.
+/// The process-stopping step behind Force Stop: enumerate every process now,
+/// match the ones under the application's install directory, terminate them
+/// through the guarded control, and report what happened.
 /// </summary>
 /// <remarks>
 /// <para>
-/// One implementation, on purpose. Remove promises "stop, then uninstall", and
-/// that promise is only worth something if "stop" means exactly what Force Stop
-/// means: the same complete enumeration, the same matcher, the same protected
-/// directory, the same handling of the races between looking and acting. Two
-/// copies would drift, and the drift would show up as an application that Force
-/// Stop stops and Remove leaves running while reporting it removed.
+/// Separate from <see cref="StopApplicationExecutor"/> because deciding which
+/// pids belong to an application is a different job from deciding what the
+/// answer means, and it is the half worth testing on its own.
 /// </para>
 /// <para>
 /// This decides <em>which</em> pids; it does not add a way to kill. Termination
 /// goes through <see cref="IServiceProcessControl"/>, so the refusal to touch
 /// pids 0 and 4 and the image-name re-check at kill time both still apply. The
-/// executors decide what the report means: for Force Stop "not running" is the
-/// desired state and "nothing could be stopped" is a failure; for Remove both
-/// are simply what happened before the uninstall.
+/// executor decides what the report means: "not running" is the desired state,
+/// and "matched, but nothing could be stopped" is a failure.
 /// </para>
 /// </remarks>
 public sealed class ApplicationStopper(

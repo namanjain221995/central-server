@@ -76,27 +76,10 @@ public enum DeviceTaskType
     /// </remarks>
     StopApplication = 23,
 
-    /// <summary>
-    /// Remove a named installed application: stop it, then uninstall it, on the
-    /// endpoint, in that order (Phase 16).
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// One task, not a <see cref="StopApplication"/> followed by a second type.
-    /// Two tasks resolve independently -- the stop could expire, be refused or
-    /// simply run after the uninstall -- and an uninstall that runs against a
-    /// live process is the failure mode this exists to avoid. The executor does
-    /// both steps itself so the order cannot come apart.
-    /// </para>
-    /// <para>
-    /// Distinct from <see cref="InstallPackage"/> too, which installs content the
-    /// platform stores and verified. This names a product that is already on the
-    /// machine, by the identity inventory recorded for it: a Windows Installer
-    /// product code, or an MSIX package full name. There is no third method --
-    /// an EXE uninstaller is a program the agent does not launch (ADR-0005).
-    /// </para>
-    /// </remarks>
-    RemoveApplication = 24,
+    // 24 was RemoveApplication, withdrawn with the application-uninstall feature.
+    // Not reused: the number appears in historic device_tasks rows and in audit
+    // entries copied from them, and giving it to a different task would make
+    // those records read as something they never were.
 
     /// <summary>Install an approved, hash-verified package (Phase 11).</summary>
     InstallPackage = 30,

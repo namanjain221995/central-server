@@ -53,36 +53,6 @@ public static class DeviceTaskCatalog
             new(DeviceTaskType.StopApplication, Permissions.Task.Execute, HighRisk: true, 600,
                 MinimumAgentVersion: "1.6.0"),
 
-            // Software.Deploy, not Task.Execute: removing installed software is a
-            // change to what the machine runs, which is the decision the deploy
-            // permission already entrusts to a role. The stop step inside it is
-            // incidental to the uninstall, not the point of it. Gated on the first
-            // agent with the executor, for the same reason as StopApplication.
-            //
-            // 1.10.0 is the EXECUTION boundary: the release carrying
-            // RemoveApplicationExecutor. It is deliberately not 1.9.0, the
-            // INVENTORY boundary named in SoftwareRemovability.Evaluate, which is
-            // where application discovery shipped and therefore where IdentityKind
-            // and PackageFullName begin to exist. The two answer different
-            // questions -- what a row is, versus what the endpoint can do about it
-            // -- so an agent on 1.9.x reports rows SoftwareRemovability rightly
-            // calls removable and must still be refused here. Do not reconcile
-            // them; the console mirrors this one as MINIMUM_REMOVE_AGENT_VERSION
-            // in dashboard/src/pages/softwareView.ts and must be changed with it.
-            //
-            // An hour, and the same hour UpdateAgent uses, for the same reason: the
-            // TTL is measured from queue time, and TaskExpirySweeper expires
-            // Delivered tasks as well as Queued ones, so the budget has to cover
-            // both the wait for a device to claim the task and the removal itself.
-            // The removal alone is long: the endpoint's package path waits up to
-            // ten minutes for the deployment engine, and an MSI uninstall is
-            // unbounded because the product's own custom actions run inside it. At
-            // half an hour a task claimed twenty-five minutes after it was queued
-            // is expired mid-uninstall, and the genuine result the agent then
-            // reports is rejected -- which reads in the console exactly like an
-            // application that would not uninstall.
-            new(DeviceTaskType.RemoveApplication, Permissions.Software.Deploy, HighRisk: true, 3600,
-                MinimumAgentVersion: "1.10.0"),
             // Short TTL. A grant is time-boxed from the moment it is issued, so a
             // policy task that sat queued for an hour would arrive describing a
             // window that has largely elapsed; better to expire it and have the

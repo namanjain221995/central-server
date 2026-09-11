@@ -85,48 +85,22 @@ anything other than a hash-pinned, signature-verified MSI that an administrator
 holding `software.deploy` explicitly registered and deployed. The
 `Process.Start`/PowerShell bans, and their enforcement test, are unchanged.
 
-## Amendment (Phase 16): application removal via the Windows Installer service and the AppX deployment engine
+## Amendment (Phase 16, withdrawn): application removal
 
-Phase 16 lets an operator remove an installed application: one
-`RemoveApplication` task stops it exactly as Force Stop does, then uninstalls
-it. Removal is the mirror image of the Phase 11 install, and the boundary is
-drawn the same way:
+Phase 16 added an application-removal capability: a `RemoveApplication` task
+that stopped an application and then uninstalled it, a Windows Installer product
+through `MsiConfigureProductEx` and an MSIX/AppX package through the deployment
+engine's `RemovePackageWithOptionsAsync`.
 
-- A Windows Installer product is removed by **`MsiConfigureProductEx` (msi.dll)**
-  with `INSTALLSTATE_ABSENT` and the agent-authored property string
-  `REBOOT=ReallySuppress`. Its registered name and install location are read by
-  **`MsiGetProductInfo`**, its membership of an upgrade code by
-  **`MsiEnumRelatedProducts`**, and its presence before and after by
-  `MsiQueryProductState`. An MSIX/AppX package is removed by **COM activation of
-  `Windows.Management.Deployment.PackageManager`** and its
-  **`RemovePackageWithOptionsAsync`** (`RemoveForAllUsers`), reached through raw
-  Windows Runtime activation with hand-declared interfaces — no projection and
-  no target-framework change. These are the permitted calls; there are no others.
-- **No command line is composed and no process is launched.** `Process.Start`
-  remains absent from every agent source file (the `AgentSafetyTests` scan is
-  unchanged and still passes). The product code and the package full name are
-  values the platform's own inventory recorded — typed arguments to a Windows
-  service, not strings the agent assembles into anything.
-- A product's own **custom actions run inside msiexec as SYSTEM**, exactly as
-  they did when the product was installed under Phase 11. Uninstall runs the
-  vendor's code with the privilege install had; that is the Windows Installer
-  contract, accepted in Phase 11 and unchanged here.
-- **EXE uninstallers stay deferred.** An application registered by a
-  traditional installer is removed by running its `UninstallString` — a program
-  with a vendor-supplied command line, the exact vector this ADR forbids. Such
-  rows are reported as not removable, with the reason; the signed-script
-  pipeline remains the route for them, and nothing here anticipates it.
-- **Self-protection is decided on the endpoint.** The agent refuses to remove a
-  product that belongs to its own upgrade code
-  (`{8F3C1D92-6B74-4A5E-9D21-7C4E8B0F5A63}`), carries its product name
-  (`Endpoint Platform Agent`), or is installed into, or around, its own
-  directory; and refuses a package whose publisher is Windows' own
-  (`cw5n1h2txyewy`) or whose registered root lies under the Windows directory.
-  The server applies the same rules before queueing; the agent does not rely
-  on that, because an agent that removed itself would leave the device
-  unmanaged and the task unreported.
+**That feature has been withdrawn and its code removed.** Software Management is
+Force Stop only. The msi.dll bindings it alone used were deleted with it; the
+installer keeps `MsiQueryProductState`, `MsiInstallProduct` and
+`MsiSetInternalUI`, which are Phase 11's and unaffected.
 
-Removal is **idempotent** (an absent product or package is reported as already
-removed), reboots are **suppressed** and reported, and the Admin API only ever
-queues intent, audited under `software.deploy` and marked high-risk. The
-`Process.Start`/PowerShell bans, and their enforcement test, are unchanged.
+Nothing in this ADR was relaxed to accommodate that feature, and nothing needed
+tightening when it went: it never launched a process or composed a command line,
+and EXE uninstallers were refused throughout precisely because running a
+vendor-supplied `UninstallString` is the vector this ADR forbids. That reasoning
+stands and is the reason any future removal feature must not take that route.
+
+The `Process.Start`/PowerShell bans, and their enforcement test, are unchanged.

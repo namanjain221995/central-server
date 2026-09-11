@@ -4,7 +4,6 @@ import {
   forceStopApplication,
   getAgentReleases,
   previewDeployment,
-  removeApplication,
   revokeUsbAccess,
 } from '../../api/client'
 // The file itself, as text, via Vite's ?raw import -- typed by vite/client, so no
@@ -68,11 +67,9 @@ afterEach(() => {
 })
 
 describe('JSON request bodies declare their media type', () => {
-  /** The three calls that reached production without it. */
+  /** The calls that reached production without it, and their neighbours. */
   it.each([
     ['forceStopApplication', () => forceStopApplication([DEVICE], 'Google Chrome', 'Google LLC')],
-    // Written after the fix, but by the same hand and to the same shape.
-    ['removeApplication', () => removeApplication([DEVICE], 'Google Chrome', 'Google LLC', '152.0.1')],
     ['previewDeployment', () => previewDeployment(PACKAGE, [DEVICE], [])],
     ['createDeployment', () => createDeployment(PACKAGE, [DEVICE], [])],
     // One that always set it explicitly, to show the helper agrees with it.
@@ -121,38 +118,6 @@ describe('JSON request bodies declare their media type', () => {
     expect(body.publisher).toBe('Google LLC')
   })
 
-  /**
-   * Remove is the same shape plus a version pin, and nothing about how to
-   * uninstall: no product code, package name or path. The server decides the
-   * mechanism from its own inventory, and that is only meaningful if the client
-   * never offers one.
-   */
-  it('the remove body names an application and a version, and nothing about an uninstaller', async () => {
-    const { inits, urls } = captureRequests()
-
-    await removeApplication([DEVICE], 'Google Chrome', 'Google LLC', '152.0.1').catch(() => {})
-
-    expect(urls[0]).toBe('/api/admin/v1/software/remove')
-    expect(inits[0].method).toBe('POST')
-    const body = JSON.parse(inits[0].body as string) as Record<string, unknown>
-    expect(Object.keys(body).sort()).toEqual(['deviceIds', 'name', 'publisher', 'version'])
-    expect(body.deviceIds).toEqual([DEVICE])
-    expect(body.name).toBe('Google Chrome')
-    expect(body.publisher).toBe('Google LLC')
-    expect(body.version).toBe('152.0.1')
-  })
-
-  /** A row with no recorded version is a distinct row, not a wildcard; the absence is sent, not dropped. */
-  it('the remove body sends an absent version explicitly', async () => {
-    const { inits } = captureRequests()
-
-    await removeApplication([DEVICE], 'Portable Thing', null, null).catch(() => {})
-
-    const body = JSON.parse(inits[0].body as string) as Record<string, unknown>
-    expect(Object.keys(body).sort()).toEqual(['deviceIds', 'name', 'publisher', 'version'])
-    expect(body.publisher).toBeNull()
-    expect(body.version).toBeNull()
-  })
 
   /**
    * The helper now covers every `request()` caller, but a handful of functions

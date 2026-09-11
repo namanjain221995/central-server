@@ -165,49 +165,6 @@ public static class TaskPayloads
         string ApplicationName, string? Publisher, string InstallLocation);
 
     /// <summary>
-    /// Remove a named installed application: stop it, then uninstall it.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Every value here is server-derived from this platform's own inventory;
-    /// none is accepted from a client. The request names an application, and the
-    /// server chooses the identity the endpoint acts on. The endpoint re-checks
-    /// that identity against Windows before acting and refuses its own product.
-    /// </para>
-    /// <para>
-    /// Nothing here is a secret -- a product code and a package name are public
-    /// identities -- so the payload is safe in the <c>task.queue</c> audit record
-    /// that <c>DeviceTaskService</c> writes for every queued task.
-    /// </para>
-    /// </remarks>
-    /// <param name="Publisher">
-    /// The publisher <em>inventory</em> recorded for the chosen row, or null when
-    /// it recorded none. Never the requester's publisher, which only narrows
-    /// which row is chosen: this value is persisted in the task row and copied
-    /// into the <c>task.queue</c> audit entry, and both are places an unbounded
-    /// caller-supplied string has no business reaching.
-    /// </param>
-    /// <param name="InstallLocation">
-    /// The directory the stop step matches processes against, or null when
-    /// inventory recorded none the endpoint could use. Null means the stop step
-    /// is skipped and the uninstall proceeds -- an uninstall needs the identity,
-    /// not the directory.
-    /// </param>
-    /// <param name="Method">
-    /// <c>WindowsInstaller</c> or <c>Package</c>. The executor refuses any other
-    /// value; there is deliberately no method that launches an uninstaller.
-    /// </param>
-    /// <param name="ProductCode">The MSI product code, when the method is WindowsInstaller.</param>
-    /// <param name="PackageFullName">The MSIX package full name, when the method is Package.</param>
-    public sealed record RemoveApplication(
-        string ApplicationName,
-        string? Publisher,
-        string? InstallLocation,
-        string Method,
-        string? ProductCode,
-        string? PackageFullName);
-
-    /// <summary>
     /// Everything the agent needs to install an approved package, self-contained so
     /// the install decision never depends on a second lookup. The agent downloads
     /// the package content, verifies it against <paramref name="Sha256"/> and

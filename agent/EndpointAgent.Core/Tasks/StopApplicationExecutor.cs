@@ -31,11 +31,9 @@ namespace EndpointAgent.Core.Tasks;
 /// decide <em>which</em> pids; it does not add a way to kill.
 /// </para>
 /// <para>
-/// The looking and the stopping are <see cref="ApplicationStopper"/>, shared
-/// with <see cref="RemoveApplicationExecutor"/> so that "stop" means one thing
-/// wherever it is promised. What this executor owns is the meaning of the
-/// report: "not running" is the state the operator wanted, and "nothing could
-/// be stopped" is a failure.
+/// The looking and the stopping are <see cref="ApplicationStopper"/>. What this
+/// executor owns is the meaning of the report: "not running" is the state the
+/// operator wanted, and "nothing could be stopped" is a failure.
 /// </para>
 /// </remarks>
 public sealed class StopApplicationExecutor(

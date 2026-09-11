@@ -189,12 +189,6 @@ public static class Program
             builder.Services.AddSingleton<IInventoryCollector, WindowsInventoryCollector>();
             builder.Services.AddSingleton<IDeviceControl, WindowsDeviceControl>();
             builder.Services.AddSingleton<IPackageInstaller, WindowsMsiPackageInstaller>();
-
-            // Removal is registered apart from installation: the installer stays
-            // closed to signed MSI, and the remover is the one component that can
-            // take software off the machine -- with its own refusal of the agent
-            // and of operating-system components, decided on the endpoint.
-            builder.Services.AddSingleton<IApplicationRemover, WindowsApplicationRemover>();
             builder.Services.AddSingleton<ILocalAccountsControl, WindowsLocalAccountControl>();
             builder.Services.AddSingleton<ISecretRedeemer, EndpointAgent.Core.Communication.ServerSecretRedeemer>();
 
@@ -209,7 +203,6 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ControlServiceTaskExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.TerminateProcessTaskExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.StopApplicationExecutor>();
-            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.RemoveApplicationExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.InstallPackageExecutor>();
 
             // USB and peripheral control (Milestone 11). The enforcer is the only
