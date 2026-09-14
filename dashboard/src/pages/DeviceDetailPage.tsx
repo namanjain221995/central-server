@@ -163,6 +163,9 @@ export function DeviceDetailPage() {
   // The row whose request is in flight, by row key rather than name: the same
   // application installed for two users is two rows, and only one is busy.
   const [busy, setBusy] = useState<{ key: string; label: string } | null>(null)
+  // Advanced by the page's existing reload tick. Only the Tasks tab reads it,
+  // to decide whether a scheduled restart's moment has passed.
+  const [now, setNow] = useState(() => new Date())
 
   // The published agent release, for the "update agent" affordance. Fetched
   // once per page visit: releases change rarely, and the compare is cheap.
@@ -287,7 +290,12 @@ export function DeviceDetailPage() {
 
   useEffect(() => {
     void load()
-    const timer = setInterval(() => void load(), 30_000)
+    const timer = setInterval(() => {
+      // The same tick drives both the reload and the clock the Tasks tab reads,
+      // so a scheduled restart's badge advances without a second timer.
+      setNow(new Date())
+      void load()
+    }, 30_000)
     return () => clearInterval(timer)
   }, [load])
 
@@ -1335,7 +1343,12 @@ export function DeviceDetailPage() {
                     // accepted it and the machine is still up. That is
                     // "Scheduled", amber, not a green "Succeeded". Every other
                     // type shows the server's status as it is.
-                    const stage = t.type === 'RestartDevice' ? restartStage(t, new Date()) : t.status
+                    //
+                    // `now` comes from the page's own 30-second reload rather
+                    // than a timer of its own: the badge flips from Scheduled to
+                    // Succeeded on the first refresh after Windows was due to
+                    // act, which is as prompt as this page is about anything.
+                    const stage = t.type === 'RestartDevice' ? restartStage(t, now) : t.status
                     return (
                     <tr key={t.id}>
                       <td>{t.type}</td>

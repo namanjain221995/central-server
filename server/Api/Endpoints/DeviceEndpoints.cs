@@ -179,6 +179,7 @@ public static class DeviceEndpoints
         ControlServiceRequest request,
         HttpContext httpContext,
         DeviceTaskService taskService,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.ServiceName) || request.ServiceName.Length > 256
@@ -188,6 +189,15 @@ public static class DeviceEndpoints
         }
 
         var actor = AdminActor.Required(httpContext.User);
+
+        // Scope, not only permission and organization. Stopping a service is a
+        // change to a specific machine, so an administrator restricted to a
+        // group must not reach one outside it by knowing its id.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
         var action = Enum.Parse<TaskPayloads.ServiceAction>(request.Action);
         var task = await taskService.QueueAsync(
             actor.OrganizationId, deviceId, DeviceTaskType.ControlService,
@@ -202,6 +212,7 @@ public static class DeviceEndpoints
         TerminateProcessRequest request,
         HttpContext httpContext,
         DeviceTaskService taskService,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         if (request.ProcessId <= 4 || string.IsNullOrWhiteSpace(request.ExpectedImageName)
@@ -211,6 +222,14 @@ public static class DeviceEndpoints
         }
 
         var actor = AdminActor.Required(httpContext.User);
+
+        // As for service control: killing a process is a change to one machine,
+        // so device scope decides it, not organization membership alone.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
         var task = await taskService.QueueAsync(
             actor.OrganizationId, deviceId, DeviceTaskType.TerminateProcess,
             new TaskPayloads.TerminateProcess(request.ProcessId, request.ExpectedImageName),
@@ -234,7 +253,7 @@ public static class DeviceEndpoints
     /// </para>
     /// <para>
     /// <b>The ceiling is the deployed agent's, not an opinion.</b> Every agent in
-    /// the field clamps the grace period to <see cref="MaxRestartDelaySeconds"/>
+    /// the field clamps the grace period to <see cref="RestartGrace.MaximumDelaySeconds"/>
     /// before calling Windows. A server that accepted more would be promising a
     /// later restart than any endpoint would deliver, and the machine would go
     /// down earlier than the administrator was told. So the server refuses what
@@ -256,6 +275,17 @@ public static class DeviceEndpoints
     /// </remarks>
     private static async Task<IResult> RestartAsync(
         Guid deviceId,
+        // Bound by the framework, deliberately. An earlier hand-rolled reader
+        // decided whether a body was present from Content-Length, which is null
+        // for a chunked request -- so every chunked body was discarded unread
+        // and fell back to "restart now", turning requests that should have been
+        // refused into immediate restarts. EmptyBodyBehavior.Allow is the
+        // supported way to say "a body is optional": absent binds null, present
+        // is parsed whatever the framing, and malformed is a 400 before this
+        // method runs.
+        [Microsoft.AspNetCore.Mvc.FromBody(
+            EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)]
+        RestartRequest? request,
         HttpContext httpContext,
         DeviceTaskService taskService,
         DeviceScopeAuthorizer scope,
@@ -271,17 +301,7 @@ public static class DeviceEndpoints
             return Results.NotFound();
         }
 
-        // The body is optional: a bare POST means "now", which is what this
-        // route always meant. It is read by hand rather than bound, so that a
-        // caller without a body -- every existing caller -- is not answered 400.
-        var request = await ReadOptionalBodyAsync<RestartRequest>(httpContext, cancellationToken);
-        if (request.Malformed)
-        {
-            return Results.Problem("The request body must be JSON with an optional integer delaySeconds.",
-                statusCode: StatusCodes.Status400BadRequest);
-        }
-
-        var delay = request.Value?.DelaySeconds ?? 0;
+        var delay = request?.DelaySeconds ?? 0;
         var grace = RestartGrace.FromDelay(delay);
         if (grace is null)
         {
@@ -291,41 +311,47 @@ public static class DeviceEndpoints
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
-        // One restart in flight per device. Two would not restart the machine
-        // twice -- Windows refuses a second shutdown while one is scheduled, and
-        // the agent reports that refusal honestly -- but the second task would
-        // sit in the list as a failure the operator did not mean to create. This
-        // check is a courtesy ahead of that guard, not a substitute for it: the
-        // atomic claim and Windows itself are what make a double restart
-        // impossible.
-        var inFlight = await dbContext.DeviceTasks
-            .AsNoTracking()
-            .Where(t => t.DeviceId == deviceId
-                        && t.Type == DeviceTaskType.RestartDevice
-                        && (t.Status == DeviceTaskStatus.Queued || t.Status == DeviceTaskStatus.Delivered))
-            .Select(t => new { t.Id, t.Status })
-            .FirstOrDefaultAsync(cancellationToken);
-
+        // One restart in flight per device, and the database is what guarantees
+        // it: ux_device_tasks_active_restart_per_device. This read is the
+        // ordinary path, so a repeat click gets a clean 409 rather than a caught
+        // exception -- but it is a read-then-write and two genuinely concurrent
+        // requests both pass it, which is why the unique index exists and why
+        // the insert below is guarded.
+        var inFlight = await ActiveRestartAsync(dbContext, deviceId, cancellationToken);
         if (inFlight is not null)
         {
-            return Results.Problem(
-                "A restart is already queued or in progress for this device.",
-                statusCode: StatusCodes.Status409Conflict,
-                extensions: new Dictionary<string, object?>
-                {
-                    ["taskId"] = inFlight.Id,
-                    ["status"] = inFlight.Status.ToString(),
-                });
+            return RestartConflict(inFlight);
         }
 
         var message = grace.Value == RestartGrace.ImmediateSeconds
             ? "Your IT administrator initiated a restart."
             : $"Your IT administrator scheduled a restart in {RestartGrace.Describe(grace.Value)}.";
 
-        var task = await taskService.QueueAsync(
-            actor.OrganizationId, deviceId, DeviceTaskType.RestartDevice,
-            new TaskPayloads.RestartOrShutdown(grace.Value, message),
-            actor.UserId, actor.Email, cancellationToken);
+        DeviceTask? task;
+        try
+        {
+            task = await taskService.QueueAsync(
+                actor.OrganizationId, deviceId, DeviceTaskType.RestartDevice,
+                new TaskPayloads.RestartOrShutdown(grace.Value, message),
+                actor.UserId, actor.Email, cancellationToken);
+        }
+        catch (DbUpdateException ex) when (DeviceTaskService.IsDuplicateActiveTask(ex))
+        {
+            // Lost the race. The winner's task is the one that exists, so the
+            // answer is the same 409 the pre-check gives, reached differently.
+            // Clearing first because the failed insert -- and the audit entry
+            // staged with it -- are still tracked, and neither happened.
+            dbContext.ChangeTracker.Clear();
+
+            var winner = await ActiveRestartAsync(dbContext, deviceId, cancellationToken);
+            return winner is not null
+                ? RestartConflict(winner)
+                // It settled between the violation and this read. Still a
+                // conflict for this request; the caller may simply retry.
+                : Results.Problem(
+                    "A restart is already queued or in progress for this device.",
+                    statusCode: StatusCodes.Status409Conflict);
+        }
 
         return task is null
             ? Results.NotFound()
@@ -338,33 +364,28 @@ public static class DeviceEndpoints
             });
     }
 
-    /// <summary>
-    /// A JSON body if one was sent, none if the request had no body, and a
-    /// malformed marker if what was sent could not be read as the type.
-    /// </summary>
-    private static async Task<(T? Value, bool Malformed)> ReadOptionalBodyAsync<T>(
-        HttpContext httpContext, CancellationToken cancellationToken) where T : class
-    {
-        var request = httpContext.Request;
-        if (request.ContentLength is null or 0)
-        {
-            return (null, false);
-        }
+    /// <summary>The device's restart that has not finished yet, if it has one.</summary>
+    private static async Task<ActiveRestart?> ActiveRestartAsync(
+        EndpointPlatformDbContext dbContext, Guid deviceId, CancellationToken cancellationToken) =>
+        await dbContext.DeviceTasks
+            .AsNoTracking()
+            .Where(t => t.DeviceId == deviceId
+                        && t.Type == DeviceTaskType.RestartDevice
+                        && (t.Status == DeviceTaskStatus.Queued || t.Status == DeviceTaskStatus.Delivered))
+            .Select(t => new ActiveRestart(t.Id, t.Status.ToString()))
+            .FirstOrDefaultAsync(cancellationToken);
 
-        if (!request.HasJsonContentType())
-        {
-            return (null, true);
-        }
+    private static IResult RestartConflict(ActiveRestart active) =>
+        Results.Problem(
+            "A restart is already queued or in progress for this device.",
+            statusCode: StatusCodes.Status409Conflict,
+            extensions: new Dictionary<string, object?>
+            {
+                ["taskId"] = active.TaskId,
+                ["status"] = active.Status,
+            });
 
-        try
-        {
-            return (await request.ReadFromJsonAsync<T>(cancellationToken), false);
-        }
-        catch (JsonException)
-        {
-            return (null, true);
-        }
-    }
+    private sealed record ActiveRestart(Guid TaskId, string Status);
 
     private static async Task<IResult> QueueActionAsync(
         Guid deviceId,
@@ -442,9 +463,20 @@ public static class DeviceEndpoints
         Guid deviceId,
         HttpContext httpContext,
         EndpointPlatformDbContext dbContext,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
-        var organizationId = AdminActor.Required(httpContext.User).OrganizationId;
+        var actor = AdminActor.Required(httpContext.User);
+        var organizationId = actor.OrganizationId;
+
+        // A device's task history says what has been done to that machine, and
+        // by whom. An administrator scoped to a group must not read it for a
+        // device outside their scope -- and is told the device is not there,
+        // not that it exists and is off-limits.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, organizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
 
         var tasks = await dbContext.DeviceTasks
             .AsNoTracking()
@@ -787,9 +819,17 @@ public static class DeviceEndpoints
         AuditWriter auditWriter,
         TimeProvider timeProvider,
         HttpContext httpContext,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
+
+        // Requesting a refresh makes a device do work and writes an audit entry
+        // against it, so it is gated on scope like every other device action.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
 
         var device = await dbContext.Devices
             .SingleOrDefaultAsync(

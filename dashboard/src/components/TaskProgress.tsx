@@ -30,6 +30,31 @@ export function TaskProgress({
           )
         }
 
+        // A terminal task is not necessarily a finished one. A restart Windows
+        // has accepted will report nothing further, yet the machine is still up
+        // until the countdown ends — so the tone decides the styling, not
+        // whether the task succeeded. Green with a tick is kept for work the
+        // device has actually carried out.
+        if (t.tone === 'pending') {
+          return (
+            <div key={t.taskId} className="info-banner" role="status">
+              <Icon name="clock" size={15} />
+              <span style={{ flex: 1 }}>
+                <strong>{t.label}</strong> — {t.stage}
+                {t.message ? `: ${t.message}` : ''}
+              </span>
+              <button
+                type="button"
+                className="btn-ghost btn-sm"
+                style={{ color: 'inherit' }}
+                onClick={() => onDismiss(t.taskId)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )
+        }
+
         return (
           <div
             key={t.taskId}

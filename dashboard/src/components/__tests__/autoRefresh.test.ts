@@ -129,6 +129,37 @@ describe('decideSettlement', () => {
     expect((d as { stage: string }).stage).toMatch(/^Scheduled — Windows will restart the device at /)
   })
 
+  /**
+   * The banner must not go green while the machine is still up. The task has
+   * succeeded — the server will say nothing more about it — but the work has
+   * not happened, and a tick beside a device that is plainly still running is
+   * the kind of small lie an operator stops trusting the console over.
+   */
+  it('a restart still counting down reads as pending, not as success', () => {
+    const restartAt = new Date(Date.now() + 5 * 60_000).toISOString()
+    const task = {
+      type: 'RestartDevice',
+      resultJson: `{"graceSeconds":300,"restartAt":"${restartAt}","outcome":"Scheduled","code":null}`,
+    }
+
+    expect(decideSettlement('Succeeded', null, false, task)).toMatchObject({ succeeded: true, tone: 'pending' })
+  })
+
+  it('the same restart reads as success once Windows was due to act', () => {
+    const restartAt = new Date(Date.now() - 60_000).toISOString()
+    const task = {
+      type: 'RestartDevice',
+      resultJson: `{"graceSeconds":30,"restartAt":"${restartAt}","outcome":"Scheduled","code":null}`,
+    }
+
+    expect(decideSettlement('Succeeded', null, false, task)).toMatchObject({ succeeded: true, tone: 'success' })
+  })
+
+  it('every other settled task leaves the tone to its success flag', () => {
+    expect((decideSettlement('Succeeded', 'done', false) as { tone?: string }).tone).toBeUndefined()
+    expect((decideSettlement('Failed', 'nope', false) as { tone?: string }).tone).toBeUndefined()
+  })
+
   it('a restart whose moment has passed settles as Succeeded without claiming the device came back', () => {
     const restartAt = new Date(Date.now() - 60_000).toISOString()
     const task = {

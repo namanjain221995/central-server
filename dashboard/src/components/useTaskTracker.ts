@@ -15,6 +15,18 @@ export interface TrackedTask {
   /** Set once nothing more will happen for this task, including any data sync. */
   terminal: boolean
   succeeded: boolean | null
+  /**
+   * How the banner should read.
+   *
+   * Separate from `succeeded` because those are different questions. A restart
+   * Windows has accepted is a *succeeded* task — the server will report nothing
+   * further about it — and at the same time an *unfinished* piece of work: the
+   * machine is still up and goes down when the countdown ends. Painting that
+   * green with a tick tells an operator looking at a running device that the
+   * restart is done, which it is not. `pending` keeps it in the in-flight style
+   * while saying exactly when Windows will act.
+   */
+  tone: 'pending' | 'success' | 'failure'
   /** The agent's result message, when there is one. */
   message: string | null
 }
@@ -31,6 +43,8 @@ export type SettleDecision =
       succeeded: boolean
       stage: string
       message: string | null
+      /** How the banner reads; see {@link TrackedTask.tone}. Defaults to succeeded. */
+      tone?: 'pending' | 'success' | 'failure'
       /**
        * True when the task changed device state that only fresh inventory can
        * show — the banner then stays in its pending style, saying so, until the
@@ -60,9 +74,15 @@ export function decideSettlement(
     case 'Succeeded': {
       const accepted = task ? restartResult(task) : null
       if (accepted?.outcome === 'Scheduled') {
+        const waiting = accepted.restartAt !== null && new Date(accepted.restartAt).getTime() > now.getTime()
         return {
           kind: 'settled',
           succeeded: true,
+          // Terminal as far as the server goes -- it will report nothing more --
+          // but not "done" until Windows has acted. Amber while the countdown
+          // runs; only afterwards is it green, and even then the wording says
+          // Windows accepted it rather than that the device came back.
+          tone: waiting ? 'pending' : 'success',
           stage: describeAcceptedRestart(accepted, now),
           message: null,
           chaseInventory: false,
@@ -146,6 +166,7 @@ export function useTaskTracker(
           : 'Queued — waiting for the device to check in…',
         terminal: false,
         succeeded: null,
+        tone: 'pending',
         message: null,
       },
     ])
@@ -161,7 +182,14 @@ export function useTaskTracker(
     setTracked((current) =>
       current.map((t) =>
         t.taskId === taskId
-          ? { ...t, terminal: true, succeeded: decision.succeeded, stage: decision.stage, message: decision.message }
+          ? {
+              ...t,
+              terminal: true,
+              succeeded: decision.succeeded,
+              tone: decision.tone ?? (decision.succeeded ? 'success' : 'failure'),
+              stage: decision.stage,
+              message: decision.message,
+            }
           : t,
       ),
     )

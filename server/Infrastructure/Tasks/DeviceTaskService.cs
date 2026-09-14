@@ -6,6 +6,7 @@ using EndpointPlatform.Infrastructure.Auditing;
 using EndpointPlatform.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 
 namespace EndpointPlatform.Infrastructure.Tasks;
 
@@ -37,6 +38,21 @@ public sealed class DeviceTaskService(
     private readonly AuditWriter _auditWriter = auditWriter;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<DeviceTaskService> _logger = logger;
+
+    /// <summary>
+    /// Whether a failed save was the database refusing a duplicate where only
+    /// one row is allowed -- in practice a second restart for a device that
+    /// already has one in flight
+    /// (<c>ux_device_tasks_active_restart_per_device</c>).
+    /// </summary>
+    /// <remarks>
+    /// Lives here because Npgsql does, and because the caller that needs it is
+    /// an API endpoint that should not take a database driver reference to ask
+    /// one question. The endpoint checks for an active restart before queueing,
+    /// so this is the losing side of a race rather than the ordinary path.
+    /// </remarks>
+    public static bool IsDuplicateActiveTask(DbUpdateException exception) =>
+        exception?.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 
     /// <summary>
     /// Queues a task for a device after the caller's permission has already been

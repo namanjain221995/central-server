@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -60,6 +61,42 @@ public sealed class RestartDeviceEndpointTests(AdminApiPostgresFixture fixture)
         _fixture.CreateClientFor(await _fixture.SignInAsync(AdminApiPostgresFixture.ItAdminEmail));
 
     private static StringContent Json(string body) => new(body, Encoding.UTF8, "application/json");
+
+    /// <summary>
+    /// A body whose length the client cannot compute, so the request carries no
+    /// <c>Content-Length</c> and the server sees <c>ContentLength == null</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is the shape that mattered. An earlier hand-rolled body reader took
+    /// a null Content-Length to mean "no body was sent", so every chunked
+    /// request was discarded unread and fell through to the default -- an
+    /// immediate restart. <see cref="StringContent"/> always computes a length,
+    /// which is exactly why the original tests could not catch it.
+    /// </remarks>
+    private sealed class UnknownLengthContent(string body) : HttpContent
+    {
+        private readonly byte[] _bytes = Encoding.UTF8.GetBytes(body);
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            stream.WriteAsync(_bytes, 0, _bytes.Length);
+
+        /// <summary>False on purpose: returning a length would set Content-Length.</summary>
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+    }
+
+    private static HttpRequestMessage ChunkedRestart(Guid deviceId, string body)
+    {
+        var content = new UnknownLengthContent(body);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+        var message = new HttpRequestMessage(HttpMethod.Post, RestartOf(deviceId)) { Content = content };
+        message.Headers.TransferEncodingChunked = true;
+        return message;
+    }
 
     private async Task<DeviceTask> QueuedRestartAsync(Guid deviceId)
     {
@@ -185,6 +222,75 @@ public sealed class RestartDeviceEndpointTests(AdminApiPostgresFixture fixture)
         JsonDocument.Parse(audit.NewState).RootElement.GetProperty("graceSeconds").GetInt32().ShouldBe(600);
     }
 
+    // ---------------------------------------------------- chunked framing
+
+    /// <summary>
+    /// A chunked body is read and honoured, not discarded. Every case below has
+    /// a Content-Length twin above; the two framings must agree exactly, which
+    /// is the whole point of these tests.
+    /// </summary>
+    [Fact]
+    public async Task A_chunked_body_is_read_and_its_delay_honoured()
+    {
+        var deviceId = await SeedDeviceAsync();
+        using var client = await ItAdminAsync();
+
+        var response = await client.SendAsync(ChunkedRestart(deviceId, """{"delaySeconds":600}"""));
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("graceSeconds").GetInt32()
+            .ShouldBe(600, "a chunked body must not fall back to an immediate restart");
+        GraceOf(await QueuedRestartAsync(deviceId)).ShouldBe(600);
+    }
+
+    /// <summary>
+    /// Every value the Content-Length path refuses, the chunked path must refuse
+    /// identically -- and queue nothing. Before the fix each of these queued an
+    /// immediate restart instead, which is the worst possible direction for the
+    /// failure: a request that should have been rejected restarted the machine.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"delaySeconds":7200}""")]
+    [InlineData("""{"delaySeconds":-1}""")]
+    [InlineData("""{"delaySeconds":15}""")]
+    [InlineData("""{"delaySeconds":1.5}""")]
+    [InlineData("""{"delaySeconds":99999999999999999999}""")]
+    [InlineData("not json at all")]
+    [InlineData("")]
+    public async Task A_chunked_body_the_server_refuses_queues_nothing(string body)
+    {
+        var deviceId = await SeedDeviceAsync();
+        using var client = await ItAdminAsync();
+
+        var response = await client.SendAsync(ChunkedRestart(deviceId, body));
+
+        response.StatusCode.ShouldBe(HttpStatusCode.BadRequest, $"chunked '{body}' must be refused");
+        await AssertNothingQueuedAsync(deviceId);
+    }
+
+    /// <summary>
+    /// The two framings are the same request. Asserted as a pair so a future
+    /// change that special-cases one of them fails here.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"delaySeconds":0}""", HttpStatusCode.Accepted)]
+    [InlineData("""{"delaySeconds":30}""", HttpStatusCode.Accepted)]
+    [InlineData("""{"delaySeconds":3600}""", HttpStatusCode.Accepted)]
+    [InlineData("""{"delaySeconds":3601}""", HttpStatusCode.BadRequest)]
+    [InlineData("""{"delaySeconds":29}""", HttpStatusCode.BadRequest)]
+    public async Task Content_length_and_chunked_framings_agree(string body, HttpStatusCode expected)
+    {
+        var lengthDevice = await SeedDeviceAsync();
+        var chunkedDevice = await SeedDeviceAsync();
+        using var client = await ItAdminAsync();
+
+        var withLength = await client.PostAsync(RestartOf(lengthDevice), Json(body));
+        var chunked = await client.SendAsync(ChunkedRestart(chunkedDevice, body));
+
+        withLength.StatusCode.ShouldBe(expected);
+        chunked.StatusCode.ShouldBe(expected, "framing must not change the outcome");
+    }
+
     // --------------------------------------------------------------- refuses
 
     [Theory]
@@ -278,6 +384,58 @@ public sealed class RestartDeviceEndpointTests(AdminApiPostgresFixture fixture)
             .ShouldBe(1);
     }
 
+    /// <summary>
+    /// Genuinely concurrent requests produce exactly one active restart.
+    /// </summary>
+    /// <remarks>
+    /// The endpoint's "is one already in flight" read is a read-then-write, and
+    /// twelve parallel requests all pass it -- eight once produced three tasks.
+    /// What makes this hold is the partial unique index
+    /// <c>ux_device_tasks_active_restart_per_device</c>; the losing inserts are
+    /// refused by the database and become the same 409 the pre-check gives.
+    /// </remarks>
+    [Fact]
+    public async Task Concurrent_restart_requests_produce_exactly_one_active_task()
+    {
+        var deviceId = await SeedDeviceAsync();
+        using var client = await ItAdminAsync();
+
+        var responses = await Task.WhenAll(Enumerable.Range(0, 12)
+            .Select(_ => client.PostAsync(RestartOf(deviceId), Json("""{"delaySeconds":600}"""))));
+
+        responses.Count(r => r.StatusCode == HttpStatusCode.Accepted)
+            .ShouldBe(1, "exactly one concurrent request may queue the restart");
+        responses.Count(r => r.StatusCode == HttpStatusCode.Conflict)
+            .ShouldBe(11, "every loser must be told a restart is already in flight, not given one of its own");
+
+        await using var db = _fixture.CreateDbContext();
+        (await db.DeviceTasks.CountAsync(t =>
+                t.DeviceId == deviceId
+                && t.Type == DeviceTaskType.RestartDevice
+                && (t.Status == DeviceTaskStatus.Queued || t.Status == DeviceTaskStatus.Delivered)))
+            .ShouldBe(1, "no duplicate active restart rows may exist");
+    }
+
+    /// <summary>
+    /// The constraint is scoped to restarts, and to one device. Other task types
+    /// and other devices are unaffected by it.
+    /// </summary>
+    [Fact]
+    public async Task The_constraint_does_not_restrict_other_task_types_or_other_devices()
+    {
+        var first = await SeedDeviceAsync();
+        var second = await SeedDeviceAsync();
+        using var client = await ItAdminAsync();
+
+        (await client.PostAsync(RestartOf(first), content: null)).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        (await client.PostAsync(RestartOf(second), content: null)).StatusCode
+            .ShouldBe(HttpStatusCode.Accepted, "a second device may restart while the first is pending");
+
+        // Two locks for the same device remain legitimate.
+        (await client.PostAsync(ActionOf(first, "lock"), content: null)).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        (await client.PostAsync(ActionOf(first, "lock"), content: null)).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+    }
+
     /// <summary>Once the first restart has settled, a new one may be queued.</summary>
     [Fact]
     public async Task A_new_restart_may_be_queued_once_the_previous_one_has_settled()
@@ -347,6 +505,73 @@ public sealed class RestartDeviceEndpointTests(AdminApiPostgresFixture fixture)
             (await client.PostAsync(ActionOf(outOfScope, action), content: null)).StatusCode
                 .ShouldBe(HttpStatusCode.NotFound, $"{action} must be scoped exactly as restart is");
         }
+    }
+
+    /// <summary>
+    /// The device actions that are not power or session control are scoped the
+    /// same way.
+    /// </summary>
+    /// <remarks>
+    /// These four checked organization membership but not device scope, so an
+    /// administrator restricted to one group could stop a service, kill a
+    /// process, read a device's task history or make it collect inventory on any
+    /// machine in the organization by knowing its id. Permission alone was never
+    /// the boundary for the power actions and is not the boundary here either.
+    /// </remarks>
+    [Fact]
+    public async Task Service_control_process_termination_task_history_and_refresh_are_all_device_scoped()
+    {
+        var inScope = await SeedDeviceAsync();
+        var outOfScope = await SeedDeviceAsync();
+        var email = $"restart-sibling-scope-{Guid.CreateVersion7():N}@test.local";
+
+        await using (var db = _fixture.CreateDbContext())
+        {
+            var org = await db.Organizations.OrderBy(o => o.CreatedAt).FirstAsync();
+            var role = await db.Roles.SingleAsync(r => r.Key == SystemRoles.ItAdministrator);
+            var group = new DeviceGroup(org.Id, $"SiblingScope-{Guid.CreateVersion7():N}", "d", DeviceGroupType.Static);
+            db.DeviceGroups.Add(group);
+            db.DeviceGroupMemberships.Add(new DeviceGroupMembership(group.Id, inScope));
+
+            var user = new PlatformUser(org.Id, email, "Scoped Admin");
+            user.SetPasswordHash(
+                Infrastructure.Security.PasswordHasher.Hash(AdminApiPostgresFixture.Password),
+                DateTimeOffset.UtcNow);
+            user.AssignRole(role.Id);
+            db.PlatformUsers.Add(user);
+            await db.SaveChangesAsync();
+
+            db.AdminDeviceScopes.Add(new AdminDeviceScope(user.Id, group.Id));
+            await db.SaveChangesAsync();
+        }
+
+        using var client = _fixture.CreateClientFor(await _fixture.SignInAsync(email));
+
+        var controlService = Json("""{"serviceName":"Spooler","action":"Restart"}""");
+        var terminate = Json("""{"processId":4321,"expectedImageName":"notepad.exe"}""");
+
+        static Uri Sub(Guid id, string suffix) => new($"/admin/v1/devices/{id}/{suffix}", UriKind.Relative);
+
+        // In scope: reachable.
+        (await client.PostAsync(Sub(inScope, "actions/control-service"), controlService)).StatusCode
+            .ShouldBe(HttpStatusCode.Accepted);
+        (await client.PostAsync(Sub(inScope, "actions/terminate-process"), terminate)).StatusCode
+            .ShouldBe(HttpStatusCode.Accepted);
+        (await client.GetAsync(Sub(inScope, "tasks"))).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await client.PostAsync(Sub(inScope, "refresh-inventory"), content: null)).StatusCode
+            .ShouldBe(HttpStatusCode.Accepted);
+
+        // Out of scope: invisible, and nothing queued.
+        (await client.PostAsync(Sub(outOfScope, "actions/control-service"), controlService)).StatusCode
+            .ShouldBe(HttpStatusCode.NotFound, "a service must not be controllable on an out-of-scope device");
+        (await client.PostAsync(Sub(outOfScope, "actions/terminate-process"), terminate)).StatusCode
+            .ShouldBe(HttpStatusCode.NotFound, "a process must not be killable on an out-of-scope device");
+        (await client.GetAsync(Sub(outOfScope, "tasks"))).StatusCode
+            .ShouldBe(HttpStatusCode.NotFound, "task history names what was done to a machine and who did it");
+        (await client.PostAsync(Sub(outOfScope, "refresh-inventory"), content: null)).StatusCode
+            .ShouldBe(HttpStatusCode.NotFound, "a refresh makes the device work and writes an audit entry");
+
+        await AssertNothingQueuedAsync(outOfScope);
     }
 
     [Fact]

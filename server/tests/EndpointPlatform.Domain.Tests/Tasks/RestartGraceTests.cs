@@ -107,4 +107,33 @@ public sealed class RestartGraceTests
         Enum.GetNames<DeviceTaskType>().Count(n => n.Contains("Restart", StringComparison.Ordinal))
             .ShouldBe(1, "a timed restart extends RestartDevice; it must not introduce a second restart type");
     }
+
+    /// <summary>
+    /// 24 was RemoveApplication and is retired. It must never be given to
+    /// another task type.
+    /// </summary>
+    /// <remarks>
+    /// Historic <c>device_tasks</c> rows and the audit entries copied from them
+    /// still carry that value. Reusing it would make those records read as
+    /// something that never happened -- an uninstall reported as whatever the
+    /// new type is -- and no migration can fix that, because the rows are a
+    /// truthful account of what was queued at the time.
+    /// <para>
+    /// The reservation was a comment until this test existed. A comment does not
+    /// fail a build; a developer adding <c>Foo = 24</c> would have been told
+    /// nothing.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void Task_type_24_stays_retired_and_is_never_reused()
+    {
+        var reused = Enum.GetValues<DeviceTaskType>()
+            .Where(t => (int)t == 24)
+            .Select(t => t.ToString())
+            .ToArray();
+
+        reused.ShouldBeEmpty(
+            "24 was RemoveApplication and is reserved; historic task and audit rows still carry it. " +
+            $"Give {string.Join(", ", reused)} a different number.");
+    }
 }
