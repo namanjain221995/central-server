@@ -313,6 +313,133 @@ public sealed class SessionNoticePipeTests
         await Task.WhenAll(reading);
     }
 
+    // ------------------------------------------------------- reader lifetime
+
+    /// <summary>
+    /// The service stops -- an update, a restart -- and the notifier that was
+    /// reading from it is finished: it exits, freeing the files it shares with the
+    /// service, and the service starts a fresh one when it is back.
+    /// </summary>
+    [Fact]
+    public async Task The_reader_ends_when_the_service_it_was_reading_from_goes_away()
+    {
+        var name = UniquePipe();
+        var server = new SessionNoticePipeServer(name, NullLogger<SessionNoticePipeServer>.Instance, clientExitWait: TimeSpan.FromMilliseconds(50));
+        await server.StartAsync(CancellationToken.None);
+
+        using var stop = new CancellationTokenSource();
+        var reader = new SessionNoticeReader(name, _ => SessionNoticePipe.Trust.Trusted, TimeProvider.System);
+        var reading = reader.RunAsync(stop.Token);
+
+        (await EventuallyAsync(() => server.ConnectedCount == 1)).ShouldBeTrue();
+        reader.ServiceLost.ShouldBeFalse();
+
+        await server.StopAsync(CancellationToken.None);
+
+        await reading.WaitAsync(TimeSpan.FromSeconds(5));
+        reader.ServiceLost.ShouldBeTrue("the reader must report the service gone, not silently keep polling");
+        stop.IsCancellationRequested.ShouldBeFalse("it ended on its own, not because it was cancelled");
+    }
+
+    /// <summary>
+    /// A squatter it refused hanging up is not the service going away: the notifier
+    /// stays, still waiting for the real service. Otherwise any user could end
+    /// every notifier in their session by creating and closing a pipe -- which
+    /// they can do to their own process anyway, but it should not be this easy.
+    /// </summary>
+    [Fact]
+    public async Task The_reader_keeps_waiting_when_a_refused_server_hangs_up()
+    {
+        var name = UniquePipe();
+        var forged = new NamedPipeServerStream(name, PipeDirection.Out, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+
+        var reader = new SessionNoticeReader(name, SessionNoticePipe.EvaluateServer, TimeProvider.System);
+        using var stop = new CancellationTokenSource();
+        var reading = reader.RunAsync(stop.Token);
+
+        await forged.WaitForConnectionAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        (await EventuallyAsync(() => reader.LastTrust == SessionNoticePipe.Trust.InteractiveSession)).ShouldBeTrue();
+
+        await forged.DisposeAsync();
+        await Task.Delay(500);
+
+        reading.IsCompleted.ShouldBeFalse("a refused server disappearing must not end the notifier");
+        reader.ServiceLost.ShouldBeFalse();
+
+        stop.Cancel();
+        await reading;
+    }
+
+    /// <summary>Signed in before the service was up: the notifier keeps trying until it is.</summary>
+    [Fact]
+    public async Task The_reader_keeps_waiting_while_there_is_no_service_yet()
+    {
+        var reader = new SessionNoticeReader(UniquePipe(), _ => SessionNoticePipe.Trust.Trusted, TimeProvider.System);
+        using var stop = new CancellationTokenSource();
+        var reading = reader.RunAsync(stop.Token);
+
+        await Task.Delay(500);
+
+        reading.IsCompleted.ShouldBeFalse();
+        reader.ServiceLost.ShouldBeFalse();
+
+        stop.Cancel();
+        await reading;
+    }
+
+    /// <summary>
+    /// The service knows which sessions have a notifier connected -- from the pipe
+    /// driver, not from anything the notifier says -- so it can start one only
+    /// where none is.
+    /// </summary>
+    [Fact]
+    public async Task The_service_knows_which_sessions_have_a_notifier_connected()
+    {
+        var name = UniquePipe();
+        var server = new SessionNoticePipeServer(name, NullLogger<SessionNoticePipeServer>.Instance, clientExitWait: TimeSpan.FromMilliseconds(50));
+        await server.StartAsync(CancellationToken.None);
+
+        using var stop = new CancellationTokenSource();
+        var reader = new SessionNoticeReader(name, _ => SessionNoticePipe.Trust.Trusted, TimeProvider.System);
+        var reading = reader.RunAsync(stop.Token);
+
+        var thisSession = (uint)System.Diagnostics.Process.GetCurrentProcess().SessionId;
+        (await EventuallyAsync(() => server.ConnectedSessions.Contains(thisSession))).ShouldBeTrue();
+        server.ConnectedSessions.Count.ShouldBe(1);
+
+        stop.Cancel();
+        await server.StopAsync(CancellationToken.None);
+        await reading;
+
+        server.ConnectedSessions.ShouldBeEmpty();
+    }
+
+    /// <summary>
+    /// Stopping waits for connected notifiers to exit, but never on its own
+    /// process and never longer than the bound: the installer that stopped the
+    /// service must not be kept waiting by a notifier that will not go.
+    /// </summary>
+    [Fact]
+    public async Task Stopping_waits_for_notifiers_within_a_bound_and_never_on_itself()
+    {
+        var name = UniquePipe();
+        var server = new SessionNoticePipeServer(name, NullLogger<SessionNoticePipeServer>.Instance, clientExitWait: TimeSpan.FromSeconds(10));
+        await server.StartAsync(CancellationToken.None);
+
+        using var stop = new CancellationTokenSource();
+        var reader = new SessionNoticeReader(name, _ => SessionNoticePipe.Trust.Trusted, TimeProvider.System);
+        var reading = reader.RunAsync(stop.Token);
+        (await EventuallyAsync(() => server.ConnectedCount == 1)).ShouldBeTrue();
+
+        // The only connected client is this very process, which cannot exit to
+        // satisfy the wait; stopping must recognise that and not sit out the bound.
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await server.StopAsync(CancellationToken.None);
+        stopwatch.Elapsed.ShouldBeLessThan(TimeSpan.FromSeconds(5));
+
+        await reading.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
     // --------------------------------------------------------- reader hardening
 
     [Fact]

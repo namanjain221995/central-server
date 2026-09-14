@@ -501,4 +501,6 @@ are reverted automatically.
   timer, shutdown, lock, sign out, Force Stop, cancel pending restarts) fan out the
   existing per-device tasks to online members only, resolved on the server at queue
   time. A LocalSystem-hosted pipe tells a per-session notifier to show a fixed
-  restart countdown (ADR-0005 amendment). See [device-groups.md](device-groups.md).
+  restart countdown; the service starts that notifier for users already signed in
+  when it starts, through one pinned `CreateProcessAsUser` call site (ADR-0005
+  amendment). See [device-groups.md](device-groups.md).

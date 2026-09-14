@@ -20,6 +20,17 @@ namespace EndpointAgent.Windows.SessionNotice;
 /// anything executed, opened or displayed as text: a notice is a time and a grace
 /// period, and the words the user sees are constants.
 /// </para>
+/// <para>
+/// <b>It lives as long as the service it reads from.</b> Until it has found the
+/// service it keeps trying -- the user may have signed in before the service was
+/// up, and a squatter it refused is not the service. Once it has read from the
+/// service and the service goes away, it is done (<see cref="ServiceLost"/>), and
+/// the notifier exits: the service starts a fresh one when it is back. That is
+/// what lets an agent upgrade replace the files a running notifier holds -- the
+/// installer stops the service before it touches a file -- and it is why a
+/// service restart leaves exactly one notifier per session rather than an old one
+/// beside a new one.
+/// </para>
 /// </remarks>
 public sealed class SessionNoticeReader
 {
@@ -34,6 +45,7 @@ public sealed class SessionNoticeReader
     private readonly TimeProvider _time;
     private RestartNotice? _latest;
     private int _lastTrust = NoTrustYet;
+    private int _serviceLost;
 
     private const int NoTrustYet = -1;
 
@@ -61,12 +73,23 @@ public sealed class SessionNoticeReader
     public SessionNoticePipe.Trust? LastTrust =>
         Volatile.Read(ref _lastTrust) is var value and not NoTrustYet ? (SessionNoticePipe.Trust)value : null;
 
-    /// <summary>Connects, verifies and reads until cancelled, reconnecting as the service comes and goes.</summary>
+    /// <summary>
+    /// True once the service this reader had been reading from has gone away. The
+    /// reader is finished then; the notifier should exit.
+    /// </summary>
+    public bool ServiceLost => Volatile.Read(ref _serviceLost) != 0;
+
+    /// <summary>
+    /// Connects, verifies and reads until cancelled, or until the service it was
+    /// reading from goes away. A server that is refused, or a pipe that is not
+    /// there yet, is tried again.
+    /// </summary>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
             var delay = ReconnectDelay;
+            var readFromService = false;
             try
             {
                 await using var client = new NamedPipeClientStream(".", _pipeName, PipeDirection.In, PipeOptions.Asynchronous);
@@ -82,6 +105,7 @@ public sealed class SessionNoticeReader
                 }
                 else
                 {
+                    readFromService = true;
                     await ReadAsync(client, cancellationToken);
                 }
             }
@@ -91,7 +115,15 @@ public sealed class SessionNoticeReader
             }
             catch (Exception ex) when (ex is TimeoutException or IOException or UnauthorizedAccessException or OperationCanceledException)
             {
-                // Service not running, restarting, or the pipe went away.
+                // Service not running yet, or the pipe went away.
+            }
+
+            if (readFromService)
+            {
+                // The service closed the pipe, or is gone. This notifier's work is
+                // over; the service starts another when it is back.
+                Volatile.Write(ref _serviceLost, 1);
+                return;
             }
 
             try

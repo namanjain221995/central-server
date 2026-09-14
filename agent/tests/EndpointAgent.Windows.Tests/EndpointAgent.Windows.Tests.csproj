@@ -14,6 +14,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\EndpointAgent.Windows\EndpointAgent.Windows.csproj" />
+    <!--
+      The real notifier executable, so the launcher tests start the genuine
+      program in the test's own session (as the test user, on the real desktop,
+      through the same CreateProcessAsUser call the service makes) and prove it
+      is single-instance and yields to Restart Manager.
+    -->
+    <ProjectReference Include="..\..\EndpointAgent.SessionNotice\EndpointAgent.SessionNotice.csproj" />
   </ItemGroup>
 
 </Project>

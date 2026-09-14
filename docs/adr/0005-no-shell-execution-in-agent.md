@@ -112,12 +112,48 @@ notifier, `EndpointAgent.SessionNotice.exe`. It crosses the boundary between the
 LocalSystem service and ordinary users' sessions, so how it does that is recorded
 here.
 
-- **The service launches nothing.** The notifier is started by Windows at sign-in,
-  in each user's session and as that user, from a quoted value under
+- **Two things start the notifier, and nothing else.** Windows starts it at
+  sign-in, in each user's session and as that user, from a quoted value under
   `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run` written by the installer.
-  The service never calls `CreateProcessAsUser` or anything like it; a SYSTEM
-  process that starts processes in users' sessions is the capability this ADR
-  exists to exclude. The Run key and the install folder are administrator-only.
+  And the service starts it for a user who is *already* signed in when the agent
+  is installed, updated or restarted — once when the service starts, and again
+  whenever it has a restart to announce, for any session with no notifier
+  connected — through the call Windows documents for exactly this:
+  `WTSEnumerateSessions` → `WTSQueryUserToken` → `CreateProcessAsUserW`. That is
+  the one place in the agent that creates a process. It is not the capability
+  this ADR excludes, which is composing *what to run* from data, and
+  `AgentSafetyTests` pins it to that one file and to how it is used:
+  - the image is a constant name (`EndpointAgent.SessionNotice.exe`) resolved
+    inside the service's own directory (Program Files, administrator-only). It is
+    passed as `lpApplicationName`, so Windows never parses a path out of a command
+    line; the command line is that image quoted and nothing else; and there is no
+    parameter anywhere — not on the launcher, not on the host — through which an
+    argument could be supplied;
+  - the token is the session user's own primary token, and if it is the elevated
+    half of a UAC pair the limited half is used instead. The notifier runs with
+    exactly what the user has at their desktop, never more — a process with the
+    user's environment and elevated rights would be a way around UAC;
+  - the environment is the user's own (`CreateEnvironmentBlock`), the working
+    directory is the install folder, no handle is inherited across the boundary,
+    and the process gets the user's default security descriptor. The service
+    closes its handles at once and never waits on, signals or reads from it;
+  - nothing a user controls reaches the call: the pipe carries no request (it is
+    still one-way, below), and no file or registry value is read to decide what
+    to start or where.
+  The only thing anyone who controlled every input to that call could achieve is
+  starting, as themselves, a program they can already start from their Start
+  menu. Every other process-creating API — `Process.Start`, `CreateProcess*`,
+  `ShellExecute*`, `WinExec` — remains banned everywhere by the scan.
+- **One per session, and it ends with the service.** The notifier holds a
+  per-session mutex; a second copy exits at once, so the Run key and the service
+  racing at sign-in still leave one. It exits when the service it was reading
+  from goes away, and when Windows or an installer's Restart Manager asks it to
+  close (`WM_ENDSESSION`), and the service starts a fresh one when it is back.
+  That is what lets an agent upgrade replace the runtime files a running
+  notifier shares with the service: the installer stops the service before it
+  touches a file, the service waits briefly for its notifiers to exit, and by
+  the time files are replaced nothing of the agent's is running. A notifier that
+  disappears is never a hazard: Windows' own shutdown warning stands.
 - **One direction, data only.** The service hosts a named pipe and is its only
   writer. Interactive users get read access and nothing else — no write, no
   `CreateNewInstance`, no permission change — enforced by an explicit, protected
@@ -146,4 +182,5 @@ here.
 
 The notifier is plain Win32 through P/Invoke, shares the service's self-contained
 runtime (five files, about 240 KB), references no UI framework and no PowerShell,
-and sits inside the `Process.Start` scan, which a test pins.
+takes no arguments and reads none, and sits inside the process-creation scan,
+which a test pins.

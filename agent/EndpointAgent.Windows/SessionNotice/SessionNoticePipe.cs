@@ -83,10 +83,31 @@ public static class SessionNoticePipe
     public static uint? ServerSessionId(SafePipeHandle pipe) =>
         NativeMethods.GetNamedPipeServerSessionId(pipe, out var session) ? session : null;
 
+    /// <summary>
+    /// The session of the client connected to a server instance, or null when
+    /// Windows will not say. Bookkeeping for the server -- which session already
+    /// has a notifier -- never a trust decision: the server sends the same fixed
+    /// notice to every reader regardless.
+    /// </summary>
+    public static uint? ClientSessionId(SafePipeHandle pipe) =>
+        NativeMethods.GetNamedPipeClientSessionId(pipe, out var session) ? session : null;
+
+    /// <summary>The process connected to a server instance, or null when Windows will not say.</summary>
+    public static int? ClientProcessId(SafePipeHandle pipe) =>
+        NativeMethods.GetNamedPipeClientProcessId(pipe, out var processId) ? (int)processId : null;
+
     private static class NativeMethods
     {
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool GetNamedPipeServerSessionId(SafePipeHandle pipe, out uint serverSessionId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetNamedPipeClientSessionId(SafePipeHandle pipe, out uint clientSessionId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetNamedPipeClientProcessId(SafePipeHandle pipe, out uint clientProcessId);
     }
 }

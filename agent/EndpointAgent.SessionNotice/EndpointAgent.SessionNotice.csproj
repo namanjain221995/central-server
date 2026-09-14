@@ -22,10 +22,12 @@
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
 
     <!--
-      Runs in each signed-in user's session, as that user, started by Windows from
-      the machine Run key. It reads restart notices from the LocalSystem service and
-      draws a window. It launches nothing, executes nothing it receives, and has no
-      privileges beyond the user it runs as. See ADR-0005's session-notice amendment.
+      Runs in each signed-in user's session, as that user: started by Windows from
+      the machine Run key at sign-in, and by the agent service for a user already
+      signed in when the service starts. It takes no arguments, reads restart notices
+      from the LocalSystem service and draws a window. It launches nothing, executes
+      nothing it receives, and has no privileges beyond the user it runs as. See
+      ADR-0005's session-notice amendment.
     -->
   </PropertyGroup>
 

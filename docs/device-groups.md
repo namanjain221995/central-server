@@ -218,6 +218,16 @@ console being open.
 How it is delivered across the LocalSystem-to-user boundary is recorded in
 [ADR-0005's session-notice amendment](adr/0005-no-shell-execution-in-agent.md).
 
+**It is there for whoever is signed in, from the moment the agent is.** Windows
+starts the notifier at sign-in (machine Run key), and the service starts it for a
+user already signed in when the agent is installed, updated or its service
+restarts — once when the service starts, and again for any session still without
+one when a restart is announced. So the first restart after an installation or an
+update shows the notice too; nobody has to sign out and in. It is one per session
+(a second copy exits), it ends when the service goes away and comes back with it,
+and it closes when an installer's Restart Manager asks, so an upgrade can replace
+the files it shares with the service.
+
 It ships with the agent, so it reaches a device only when that device runs an agent
 release that includes it. Until then the device shows Windows' own shutdown
 warning, as before.

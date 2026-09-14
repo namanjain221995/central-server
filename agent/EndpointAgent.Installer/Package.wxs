@@ -209,14 +209,23 @@
     <ComponentGroup Id="SessionNoticeComponents">
       <!--
         Starts the session notifier in every signed-in user's session, as that user,
-        at sign-in. Windows does the starting, from the machine Run key; the LocalSystem
-        service never launches a process into anyone's session.
+        at sign-in. Windows does the starting, from the machine Run key. A user who is
+        already signed in when this package installs or upgrades does not wait for a
+        sign-in: the service, when it starts (ServiceControl Start below), starts the
+        notifier in every session that has none, through one pinned
+        CreateProcessAsUser call (ADR-0005, session-notice amendment). A second copy
+        in the same session exits at once, so the two starters never leave two.
 
         HKLM, not HKCU: only an administrator can write it, so an ordinary user cannot
         point it somewhere else. The executable it names lives in the install folder,
         which is likewise administrator-only. The value is quoted because the path
         contains spaces; an unquoted path with spaces is the classic way to have
         Windows run something other than what was intended.
+
+        Upgrades: the notifier shares the runtime files with the service. It exits when
+        the service stops (which this package does before touching a file) and closes
+        when Restart Manager asks, so the files are free to replace and the install
+        needs no reboot.
 
         The executable itself is packaged by AgentBinaries.wxs, which globs the publish
         folder; this component carries only the registry value, as its key path.

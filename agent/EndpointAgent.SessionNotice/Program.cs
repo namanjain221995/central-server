@@ -3,13 +3,23 @@ using EndpointAgent.Windows.SessionNotice;
 namespace EndpointAgent.SessionNotice;
 
 /// <summary>
-/// The session notifier: one per signed-in user, started by Windows at sign-in.
+/// The session notifier: one per signed-in user. Started by Windows at sign-in,
+/// and by the agent service for a user already signed in when the service starts
+/// or has a restart to announce.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Deliberately small. The reader (<see cref="SessionNoticeReader"/>) connects to
 /// the service, verifies it and keeps the latest notice; the window
 /// (<see cref="NoticeWindow"/>) shows it. Everything that decides what is trusted
 /// or what is shown lives in the tested libraries, not here.
+/// </para>
+/// <para>
+/// It takes no arguments and reads none: whoever starts it, it does the same
+/// thing. It ends when the service it was reading from goes away, and when
+/// Windows or an installer asks it to close -- so an agent upgrade can replace
+/// the files it shares with the service -- and the service starts a fresh one.
+/// </para>
 /// </remarks>
 internal static class Program
 {
@@ -33,10 +43,11 @@ internal static class Program
 
         // The reader runs on the thread pool; the window owns this thread and its
         // message loop, and polls the reader's latest notice on a timer. Nothing
-        // crosses back from the reader into window code.
+        // crosses back from the reader into window code. When the reader finishes
+        // -- the service has gone -- the window closes and this process ends.
         var reading = Task.Run(() => reader.RunAsync(stop.Token));
 
-        var exitCode = NoticeWindow.Run(() => reader.Latest);
+        var exitCode = NoticeWindow.Run(() => reader.Latest, () => reading.IsCompleted);
 
         stop.Cancel();
         try

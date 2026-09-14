@@ -191,8 +191,12 @@ public static class Program
 
             // One instance is both the restart notifier the executor calls and the
             // hosted service that owns the pipe, so a notice reaches the clients
-            // that instance accepted. The service only serves the pipe; the session
-            // notifier is started by Windows at sign-in, never by this process.
+            // that instance accepted. The launcher starts the session notifier for
+            // users already signed in when this service starts -- after an install,
+            // an update or a restart -- and for any session still without one when
+            // a restart is announced; Windows starts it at sign-in. One fixed
+            // program, no arguments (ADR-0005, session-notice amendment).
+            builder.Services.AddSingleton<EndpointAgent.Windows.SessionNotice.SessionNoticeLauncher>();
             builder.Services.AddSingleton<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>();
             builder.Services.AddSingleton<EndpointAgent.Core.Abstractions.IRestartNotifier>(sp =>
                 sp.GetRequiredService<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>());

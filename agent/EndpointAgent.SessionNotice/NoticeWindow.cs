@@ -25,6 +25,13 @@ namespace EndpointAgent.SessionNotice;
 /// thing that varies is the countdown, computed here from the notice's time and
 /// this machine's clock -- the same clock the service used to compute it.
 /// </para>
+/// <para>
+/// <b>It closes when asked.</b> When the caller's exit condition becomes true --
+/// the service has gone away -- and when Windows sends <c>WM_ENDSESSION</c>,
+/// which is sign-out, shutdown, and also an installer's Restart Manager asking
+/// applications holding files to close so an upgrade can replace them. Closing
+/// is all it does then; the restart Windows is counting down is untouched.
+/// </para>
 /// </remarks>
 internal static class NoticeWindow
 {
@@ -37,6 +44,7 @@ internal static class NoticeWindow
     private static readonly TimeSpan FinalMinute = TimeSpan.FromMinutes(1);
 
     private static Func<RestartNotice?> _latest = () => null;
+    private static Func<bool> _exitRequested = () => false;
     private static RestartNotice? _lastSeen;
     private static RestartNoticeView _view = RestartNoticeView.For(null, DateTimeOffset.UtcNow);
     private static bool _shown;
@@ -49,9 +57,10 @@ internal static class NoticeWindow
     // Held in a static so the delegate is not collected while Windows holds a pointer to it.
     private static readonly WndProc Procedure = WindowProcedure;
 
-    public static int Run(Func<RestartNotice?> latest)
+    public static int Run(Func<RestartNotice?> latest, Func<bool> exitRequested)
     {
         _latest = latest;
+        _exitRequested = exitRequested;
 
         // Crisp text on scaled displays; failure just means blurrier text.
         _ = SetProcessDpiAwarenessContext(new IntPtr(-4));
@@ -131,6 +140,15 @@ internal static class NoticeWindow
                 Paint(window);
                 return IntPtr.Zero;
 
+            case WM_QUERYENDSESSION:
+                // Sign-out, shutdown, or Restart Manager on an installer's behalf:
+                // there is never a reason to object.
+                return new IntPtr(1);
+
+            case WM_ENDSESSION when wParam != IntPtr.Zero:
+                _ = DestroyWindow(window);
+                return IntPtr.Zero;
+
             case WM_DESTROY:
                 PostQuitMessage(0);
                 return IntPtr.Zero;
@@ -142,6 +160,12 @@ internal static class NoticeWindow
 
     private static void Tick(IntPtr window)
     {
+        if (_exitRequested())
+        {
+            _ = DestroyWindow(window);
+            return;
+        }
+
         var notice = _latest();
         var now = DateTimeOffset.UtcNow;
 
@@ -238,7 +262,8 @@ internal static class NoticeWindow
     private const uint WS_CHILD = 0x40000000, WS_VISIBLE = 0x10000000, WS_TABSTOP = 0x00010000;
     private const uint WS_EX_TOPMOST = 0x00000008;
     private const uint BS_DEFPUSHBUTTON = 0x00000001;
-    private const uint WM_DESTROY = 0x0002, WM_PAINT = 0x000F, WM_CLOSE = 0x0010, WM_SETFONT = 0x0030;
+    private const uint WM_DESTROY = 0x0002, WM_PAINT = 0x000F, WM_CLOSE = 0x0010, WM_QUERYENDSESSION = 0x0011;
+    private const uint WM_ENDSESSION = 0x0016, WM_SETFONT = 0x0030;
     private const uint WM_COMMAND = 0x0111, WM_TIMER = 0x0113;
     private const int SW_HIDE = 0, SW_SHOWNOACTIVATE = 4;
     private const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOACTIVATE = 0x0010, SWP_SHOWWINDOW = 0x0040;
@@ -324,6 +349,10 @@ internal static class NoticeWindow
 
     [DllImport("user32.dll")]
     private static extern void PostQuitMessage(int exitCode);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
