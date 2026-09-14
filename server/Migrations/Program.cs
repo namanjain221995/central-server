@@ -151,7 +151,13 @@ public static class Program
             .UseLoggerFactory(loggerFactory)
             // Seeding writes no audit entries, but the interceptor stays wired so the
             // runner cannot become a back door that mutates them.
+            //
+            // The group interceptor comes first and is not optional here: the seeder
+            // creates the default organization, and it is this interceptor that
+            // gives an organization its "All Devices" group. Without it a fresh
+            // database would have an organization no device could ever enroll into.
             .AddInterceptors(
+                new DeviceGroupAssignmentInterceptor(),
                 new AuditableEntityInterceptor(TimeProvider.System),
                 new AuditImmutabilityInterceptor())
             .Options;

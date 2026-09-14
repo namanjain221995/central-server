@@ -237,7 +237,7 @@ public sealed class BitLockerEscrowEndpointTests(AdminApiPostgresFixture fixture
 
             var group = new DeviceGroup(org.Id, $"EscScope-{Guid.CreateVersion7():N}", "d", DeviceGroupType.Static);
             db.DeviceGroups.Add(group);
-            db.DeviceGroupMemberships.Add(new DeviceGroupMembership(group.Id, inScope.DeviceId));
+            (await db.Devices.SingleAsync(candidate => candidate.Id == inScope.DeviceId)).MoveToGroup(group.Id);
 
             var user = new PlatformUser(org.Id, email, "Scoped Admin");
             user.SetPasswordHash(

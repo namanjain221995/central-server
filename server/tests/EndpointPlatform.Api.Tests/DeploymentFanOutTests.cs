@@ -93,7 +93,7 @@ public sealed class DeploymentFanOutTests(AdminApiPostgresFixture fixture, ITest
                 organizationId, $"FAN-{i:D4}-{Guid.CreateVersion7():N}"[..14],
                 $"smbios-{Guid.CreateVersion7()}", "1.5.0", "Microsoft Windows 11 Pro", token.Id, now);
             db.Devices.Add(device);
-            db.DeviceGroupMemberships.Add(new DeviceGroupMembership(group.Id, device.Id));
+            device.MoveToGroup(group.Id);
 
             // Half the fleet is already current; the rest needs the package. Also
             // gives every device a handful of unrelated applications, so matching

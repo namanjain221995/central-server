@@ -985,21 +985,168 @@ export async function assignPolicy(policyId: string, deviceId: string): Promise<
   if (!r.ok) throw new ApiError(r.status, 'Assign policy failed', r.headers.get('X-Correlation-Id'))
 }
 
-export interface GroupRow { id: string; name: string; description: string; type: string; memberCount: number }
-export interface GroupMember { id: string; hostname: string; status: string }
-export function getGroups(): Promise<GroupRow[]> { return request<GroupRow[]>('/admin/v1/groups') }
-export function getGroupMembers(groupId: string): Promise<GroupMember[]> {
-  return request<GroupMember[]>(`/admin/v1/groups/${encodeURIComponent(groupId)}/members`)
+// ---------------------------------------------------------------- device groups
+
+/**
+ * A group as listed. Every device belongs to exactly one group; "All Devices"
+ * is the built-in fallback, and `isBuiltIn` marks it. Despite its name it holds
+ * only devices that are in no other group.
+ */
+export interface DeviceGroupSummary {
+  id: string
+  name: string
+  description: string
+  isBuiltIn: boolean
+  /** Active devices in the group. */
+  deviceCount: number
+  /** Of those, the ones the server currently considers online. */
+  onlineCount: number
 }
-export async function createGroup(name: string, description: string): Promise<void> {
-  const r = await fetch('/api/admin/v1/groups', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ name, description }) })
-  if (r.status === 401) sessionExpiredEvent.dispatchEvent(new Event('expired'))
-  if (!r.ok) throw new ApiError(r.status, 'Create group failed', r.headers.get('X-Correlation-Id'))
+
+/** A device as a group shows it. Online is the server's judgement at the time of the read. */
+export interface DeviceGroupMember {
+  id: string
+  hostname: string
+  displayName: string | null
+  agentVersion: string
+  operatingSystem: string | null
+  lastSeenAt: string | null
+  isOnline: boolean
 }
-export async function addGroupMember(groupId: string, deviceId: string): Promise<void> {
-  const r = await fetch(`/api/admin/v1/groups/${encodeURIComponent(groupId)}/members`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ deviceId }) })
-  if (r.status === 401) sessionExpiredEvent.dispatchEvent(new Event('expired'))
-  if (!r.ok) throw new ApiError(r.status, 'Add member failed', r.headers.get('X-Correlation-Id'))
+
+export interface DeviceGroupDetail extends DeviceGroupSummary {
+  devices: DeviceGroupMember[]
+}
+
+/** A device that could be placed in a group, and the group it is in now. */
+export interface DeviceGroupCandidate {
+  id: string
+  hostname: string
+  displayName: string | null
+  agentVersion: string
+  isOnline: boolean
+  currentGroupId: string
+  currentGroupName: string
+  currentGroupIsBuiltIn: boolean
+  inThisGroup: boolean
+}
+
+/** What happened to one device in a membership change. */
+export type GroupDeviceOutcome = 'Moved' | 'AlreadyInGroup' | 'NotInGroup' | 'NotFound' | 'ChangedConcurrently'
+
+export interface GroupDeviceResult {
+  deviceId: string
+  hostname: string | null
+  outcome: GroupDeviceOutcome
+  previousGroupId: string | null
+}
+
+/** The actions a group can run. Each is the single-device action of the same name. */
+export type GroupAction = 'restart' | 'shutdown' | 'lock' | 'signout'
+
+/** What happened to one device when a group action was queued. */
+export type GroupActionOutcome =
+  | 'Queued'
+  | 'Offline'
+  | 'AlreadyInProgress'
+  | 'NotEligible'
+  | 'NotAuthorized'
+  | 'Cancelled'
+  | 'TooLateToCancel'
+
+export interface GroupActionDeviceResult {
+  deviceId: string
+  hostname: string
+  outcome: GroupActionOutcome
+  /** The per-device task, when one was queued or cancelled. Its own status says how it went. */
+  taskId: string | null
+}
+
+/** How queueing went. Not how the action went on the devices -- that is each task's own result. */
+export type GroupActionQueueStatus = 'AllQueued' | 'QueuedWithIssues' | 'NoEligibleDevices' | 'NothingQueued'
+
+export interface GroupActionResult {
+  groupId: string
+  groupName: string
+  action: string
+  graceSeconds: number | null
+  status: GroupActionQueueStatus
+  devices: GroupActionDeviceResult[]
+}
+
+export interface GroupForceStopDeviceResult {
+  deviceId: string
+  hostname: string
+  outcome: string
+  processesQueued: number
+}
+
+export interface GroupForceStopResult {
+  groupId: string
+  groupName: string
+  applicationName: string
+  processesQueued: number
+  devices: GroupForceStopDeviceResult[]
+}
+
+const groupPath = (groupId: string, suffix = '') => `/admin/v1/groups/${encodeURIComponent(groupId)}${suffix}`
+
+export function getGroups(): Promise<DeviceGroupSummary[]> {
+  return request<DeviceGroupSummary[]>('/admin/v1/groups')
+}
+
+export function getGroup(groupId: string): Promise<DeviceGroupDetail> {
+  return request<DeviceGroupDetail>(groupPath(groupId))
+}
+
+export function getGroupCandidates(groupId: string): Promise<DeviceGroupCandidate[]> {
+  return request<DeviceGroupCandidate[]>(groupPath(groupId, '/candidates'))
+}
+
+/** Creates a group and moves the given devices into it -- out of whatever group each was in. */
+export function createGroup(name: string, deviceIds: string[]): Promise<{ id: string; devices: GroupDeviceResult[] }> {
+  return request('/admin/v1/groups', { method: 'POST', body: JSON.stringify({ name, deviceIds }) })
+}
+
+export function renameGroup(groupId: string, name: string): Promise<void> {
+  return request<void>(groupPath(groupId), { method: 'PATCH', body: JSON.stringify({ name }) })
+}
+
+/** Deletes a custom group. Its devices move to All Devices; no device is deleted. */
+export function deleteGroup(groupId: string): Promise<{ devicesMoved: number }> {
+  return request(groupPath(groupId), { method: 'DELETE' })
+}
+
+export function addGroupDevices(groupId: string, deviceIds: string[]): Promise<{ devices: GroupDeviceResult[] }> {
+  return request(groupPath(groupId, '/devices'), { method: 'POST', body: JSON.stringify({ deviceIds }) })
+}
+
+/** Returns the devices to All Devices. Never deletes, retires or offboards them. */
+export function removeGroupDevices(groupId: string, deviceIds: string[]): Promise<{ devices: GroupDeviceResult[] }> {
+  return request(groupPath(groupId, '/devices/remove'), { method: 'POST', body: JSON.stringify({ deviceIds }) })
+}
+
+/**
+ * Runs an action on the group's online devices. The body names no devices: the
+ * server resolves the group's membership and online state itself.
+ */
+export function runGroupAction(groupId: string, action: GroupAction, delaySeconds?: number): Promise<GroupActionResult> {
+  return request<GroupActionResult>(groupPath(groupId, `/actions/${action}`), {
+    method: 'POST',
+    body: action === 'restart' ? JSON.stringify({ delaySeconds: delaySeconds ?? 0 }) : undefined,
+  })
+}
+
+export function forceStopGroup(groupId: string, applicationName: string, publisher: string | null): Promise<GroupForceStopResult> {
+  return request<GroupForceStopResult>(groupPath(groupId, '/actions/force-stop'), {
+    method: 'POST',
+    body: JSON.stringify({ applicationName, publisher }),
+  })
+}
+
+/** Cancels the group's restarts that have not been delivered yet. Delivered ones are reported as too late. */
+export function cancelGroupRestart(groupId: string): Promise<GroupActionResult> {
+  return request<GroupActionResult>(groupPath(groupId, '/actions/cancel-restart'), { method: 'POST' })
 }
 
 export function getDevice(deviceId: string): Promise<DeviceDetail> {

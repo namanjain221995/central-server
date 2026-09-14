@@ -188,6 +188,16 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Core.Policies.PolicyRunner>();
             builder.Services.AddSingleton<IInventoryCollector, WindowsInventoryCollector>();
             builder.Services.AddSingleton<IDeviceControl, WindowsDeviceControl>();
+
+            // One instance is both the restart notifier the executor calls and the
+            // hosted service that owns the pipe, so a notice reaches the clients
+            // that instance accepted. The service only serves the pipe; the session
+            // notifier is started by Windows at sign-in, never by this process.
+            builder.Services.AddSingleton<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Abstractions.IRestartNotifier>(sp =>
+                sp.GetRequiredService<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>());
+            builder.Services.AddHostedService(sp =>
+                sp.GetRequiredService<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>());
             builder.Services.AddSingleton<IPackageInstaller, WindowsMsiPackageInstaller>();
             builder.Services.AddSingleton<ILocalAccountsControl, WindowsLocalAccountControl>();
             builder.Services.AddSingleton<ISecretRedeemer, EndpointAgent.Core.Communication.ServerSecretRedeemer>();

@@ -205,7 +205,7 @@ public sealed class DriverPackageEndpointTests(AdminApiPostgresFixture fixture)
 
             var group = new DeviceGroup(org.Id, $"DrvPkg-{Guid.CreateVersion7():N}", "d", DeviceGroupType.Static);
             db.DeviceGroups.Add(group);
-            db.DeviceGroupMemberships.Add(new DeviceGroupMembership(group.Id, inScope));
+            (await db.Devices.SingleAsync(candidate => candidate.Id == inScope)).MoveToGroup(group.Id);
 
             var user = new PlatformUser(org.Id, email, "Scoped Admin");
             user.SetPasswordHash(

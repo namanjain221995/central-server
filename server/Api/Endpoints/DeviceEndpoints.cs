@@ -42,7 +42,7 @@ public static class DeviceEndpoints
 
         group.MapPost("/{deviceId:guid}/actions/shutdown", (Guid deviceId, HttpContext ctx, DeviceTaskService svc, DeviceScopeAuthorizer scope, CancellationToken ct)
                 => QueueActionAsync(deviceId, DeviceTaskType.ShutdownDevice,
-                    new TaskPayloads.RestartOrShutdown(30, "Your IT administrator initiated a shutdown."), ctx, svc, scope, ct))
+                    new TaskPayloads.RestartOrShutdown(RestartGrace.ShutdownGraceSeconds, RestartGrace.ShutdownMessage), ctx, svc, scope, ct))
             .WithName("ShutdownDevice")
             .RequirePermission(Domain.Authorization.Permissions.Device.Shutdown);
 
@@ -323,9 +323,7 @@ public static class DeviceEndpoints
             return RestartConflict(inFlight);
         }
 
-        var message = grace.Value == RestartGrace.ImmediateSeconds
-            ? "Your IT administrator initiated a restart."
-            : $"Your IT administrator scheduled a restart in {RestartGrace.Describe(grace.Value)}.";
+        var message = RestartGrace.MessageFor(grace.Value);
 
         DeviceTask? task;
         try
@@ -421,9 +419,18 @@ public static class DeviceEndpoints
         HttpContext httpContext,
         EndpointPlatformDbContext dbContext,
         DeviceTaskService taskService,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
+
+        // Scope first. Cancelling a restart is an action on that machine, and an
+        // administrator restricted to a group must not be able to cancel -- or
+        // learn of -- work queued for a device outside it.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
 
         // Read the type first so authorization happens before any state change.
         // Unknown task and unknown device both answer 404 — a caller who cannot

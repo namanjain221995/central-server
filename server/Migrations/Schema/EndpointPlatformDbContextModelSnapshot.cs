@@ -464,6 +464,10 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<Guid>("DeviceGroupId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_group_id");
+
                     b.Property<string>("DisplayName")
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)")
@@ -526,6 +530,9 @@ namespace EndpointPlatform.Migrations.Schema
 
                     b.HasKey("Id")
                         .HasName("pk_devices");
+
+                    b.HasIndex("DeviceGroupId")
+                        .HasDatabaseName("ix_devices_device_group_id");
 
                     b.HasIndex("EnrolledWithTokenId")
                         .HasDatabaseName("ix_devices_enrolled_with_token_id");
@@ -1781,6 +1788,12 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasColumnType("character varying(512)")
                         .HasColumnName("description");
 
+                    b.Property<bool>("IsBuiltIn")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("is_built_in");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -1804,47 +1817,12 @@ namespace EndpointPlatform.Migrations.Schema
                     b.HasKey("Id")
                         .HasName("pk_device_groups");
 
-                    b.HasIndex("OrganizationId", "Name")
+                    b.HasIndex("OrganizationId")
                         .IsUnique()
-                        .HasDatabaseName("ix_device_groups_organization_id_name");
+                        .HasDatabaseName("ux_device_groups_one_built_in_per_organization")
+                        .HasFilter("is_built_in");
 
                     b.ToTable("device_groups", "endpoint_platform");
-                });
-
-            modelBuilder.Entity("EndpointPlatform.Domain.Groups.DeviceGroupMembership", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<Guid>("DeviceId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("device_id");
-
-                    b.Property<Guid>("GroupId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("group_id");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at");
-
-                    b.HasKey("Id")
-                        .HasName("pk_device_group_memberships");
-
-                    b.HasIndex("DeviceId")
-                        .HasDatabaseName("ix_device_group_memberships_device_id");
-
-                    b.HasIndex("GroupId", "DeviceId")
-                        .IsUnique()
-                        .HasDatabaseName("ix_device_group_memberships_group_device");
-
-                    b.ToTable("device_group_memberships", "endpoint_platform");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Identity.AdminDeviceScope", b =>
@@ -3106,6 +3084,13 @@ namespace EndpointPlatform.Migrations.Schema
 
             modelBuilder.Entity("EndpointPlatform.Domain.Devices.Device", b =>
                 {
+                    b.HasOne("EndpointPlatform.Domain.Groups.DeviceGroup", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceGroupId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_devices_device_groups_device_group_id");
+
                     b.HasOne("EndpointPlatform.Domain.Enrollment.EnrollmentToken", null)
                         .WithMany()
                         .HasForeignKey("EnrolledWithTokenId")
@@ -3289,23 +3274,6 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_device_groups_organizations_organization_id");
-                });
-
-            modelBuilder.Entity("EndpointPlatform.Domain.Groups.DeviceGroupMembership", b =>
-                {
-                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
-                        .WithMany()
-                        .HasForeignKey("DeviceId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_device_group_memberships_devices_device_id");
-
-                    b.HasOne("EndpointPlatform.Domain.Groups.DeviceGroup", null)
-                        .WithMany()
-                        .HasForeignKey("GroupId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_device_group_memberships_device_groups_group_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Identity.AdminDeviceScope", b =>

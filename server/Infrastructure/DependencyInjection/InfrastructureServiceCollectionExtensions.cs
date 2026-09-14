@@ -121,6 +121,7 @@ public static class InfrastructureServiceCollectionExtensions
         IHostEnvironment environment)
     {
         services.AddSingleton<AuditImmutabilityInterceptor>();
+        services.AddSingleton<DeviceGroupAssignmentInterceptor>();
         services.AddSingleton<AuditableEntityInterceptor>();
 
         // The (serviceProvider, builder) overload runs when a DbContext is first
@@ -142,6 +143,9 @@ public static class InfrastructureServiceCollectionExtensions
             });
 
             builder.AddInterceptors(
+                // First: it may add an "All Devices" group, which the next interceptor
+                // must then stamp. Registered after it, the new group has no CreatedAt.
+                serviceProvider.GetRequiredService<DeviceGroupAssignmentInterceptor>(),
                 serviceProvider.GetRequiredService<AuditableEntityInterceptor>(),
                 serviceProvider.GetRequiredService<AuditImmutabilityInterceptor>());
 
@@ -176,6 +180,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Tasks.DeviceTaskService>();
         services.AddScoped<Policies.PolicyService>();
         services.AddScoped<Groups.DeviceGroupService>();
+        services.AddScoped<Groups.DeviceGroupActionService>();
         services.AddScoped<Devices.SoftwareReadService>();
         services.AddScoped<Devices.SecurityReadService>();
         services.AddScoped<Devices.UpdateReadService>();

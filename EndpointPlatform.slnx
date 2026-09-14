@@ -2,6 +2,7 @@
   <Folder Name="/agent/">
     <Project Path="agent/EndpointAgent.Core/EndpointAgent.Core.csproj" />
     <Project Path="agent/EndpointAgent.Service/EndpointAgent.Service.csproj" />
+    <Project Path="agent/EndpointAgent.SessionNotice/EndpointAgent.SessionNotice.csproj" />
     <Project Path="agent/EndpointAgent.Windows/EndpointAgent.Windows.csproj" />
   </Folder>
   <Folder Name="/agent/tests/">

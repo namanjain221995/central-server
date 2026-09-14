@@ -232,7 +232,7 @@ public sealed class LocalAccountEndpointTests(AdminApiPostgresFixture fixture)
 
             var group = new DeviceGroup(org.Id, $"Scope-{Guid.CreateVersion7():N}", "d", DeviceGroupType.Static);
             db.DeviceGroups.Add(group);
-            db.DeviceGroupMemberships.Add(new DeviceGroupMembership(group.Id, inScopeDevice));
+            (await db.Devices.SingleAsync(candidate => candidate.Id == inScopeDevice)).MoveToGroup(group.Id);
 
             var user = new PlatformUser(org.Id, email, "Grouped Admin");
             user.SetPasswordHash(

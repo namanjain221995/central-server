@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using EndpointAgent.Core.Abstractions;
+using EndpointAgent.Core.SessionNotice;
 using EndpointAgent.Core.Tasks;
 using EndpointPlatform.Contracts.Agent;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -250,4 +251,93 @@ public sealed class RestartTaskExecutorTests
     [Fact]
     public void The_executor_answers_to_its_own_task_type() =>
         Executor(new FakeDeviceControl()).TaskType.ShouldBe("RestartDevice");
+
+    // ------------------------------------------------------- session notice
+
+    private sealed class RecordingNotifier : IRestartNotifier
+    {
+        public List<RestartNotice> Notices { get; } = [];
+        public Exception? Throw { get; set; }
+
+        public void RestartScheduled(RestartNotice notice)
+        {
+            if (Throw is not null)
+            {
+                throw Throw;
+            }
+
+            Notices.Add(notice);
+        }
+    }
+
+    private static RestartTaskExecutor Executor(FakeDeviceControl control, IRestartNotifier notifier, DateTimeOffset? now = null) =>
+        new(control, NullLogger<RestartTaskExecutor>.Instance, new FixedClock(now ?? Now), notifier);
+
+    /// <summary>
+    /// Once Windows has accepted the restart, the signed-in user is told the same
+    /// moment the result reports -- the executor's clock plus the grace period.
+    /// </summary>
+    [Theory]
+    [InlineData(30)]
+    [InlineData(600)]
+    [InlineData(3600)]
+    public async Task An_accepted_restart_is_announced_with_the_moment_windows_will_act(int grace)
+    {
+        var notifier = new RecordingNotifier();
+
+        var result = await Executor(new FakeDeviceControl(), notifier).ExecuteAsync(Task_(grace));
+
+        result.Succeeded.ShouldBeTrue();
+        var notice = notifier.Notices.ShouldHaveSingleItem();
+        notice.GraceSeconds.ShouldBe(grace);
+        notice.RestartAt.ShouldBe(Now.AddSeconds(grace));
+        notice.RestartAt.ShouldBe(Result(result).GetProperty("restartAt").GetDateTimeOffset(),
+            "the user's countdown and the console's result must name the same moment");
+    }
+
+    /// <summary>
+    /// Nothing is announced unless Windows said yes. A notice for a restart that
+    /// will not happen is exactly the false claim the notice must never make.
+    /// </summary>
+    [Fact]
+    public async Task Nothing_is_announced_for_a_restart_windows_refused_or_that_expired()
+    {
+        var refused = new RecordingNotifier();
+        await Executor(new FakeDeviceControl { Throw = new Win32Exception(5) }, refused).ExecuteAsync(Task_(60));
+        refused.Notices.ShouldBeEmpty("Windows refused");
+
+        var busy = new RecordingNotifier();
+        await Executor(new FakeDeviceControl { Throw = new Win32Exception(1115) }, busy).ExecuteAsync(Task_(60));
+        busy.Notices.ShouldBeEmpty("a restart was already in progress; this one did not schedule anything");
+
+        var expired = new RecordingNotifier();
+        await Executor(new FakeDeviceControl(), expired, now: Now).ExecuteAsync(Task_(60, expiresAt: Now.AddSeconds(-1)));
+        expired.Notices.ShouldBeEmpty("an expired task restarts nothing");
+    }
+
+    /// <summary>
+    /// The notice is a courtesy. If it cannot be sent, the restart has still been
+    /// accepted and must still be reported as exactly that.
+    /// </summary>
+    [Fact]
+    public async Task A_notifier_that_throws_changes_neither_the_restart_nor_its_result()
+    {
+        var control = new FakeDeviceControl();
+        var notifier = new RecordingNotifier { Throw = new IOException("pipe gone") };
+
+        var result = await Executor(control, notifier).ExecuteAsync(Task_(120));
+
+        control.Restarts.ShouldHaveSingleItem().Grace.ShouldBe(120);
+        result.Succeeded.ShouldBeTrue();
+        Result(result).GetProperty("outcome").GetString().ShouldBe("Scheduled");
+    }
+
+    /// <summary>Without a notifier (every existing construction) the executor behaves as it always has.</summary>
+    [Fact]
+    public async Task No_notifier_is_the_same_as_a_silent_one()
+    {
+        var result = await Executor(new FakeDeviceControl()).ExecuteAsync(Task_(60));
+
+        result.Succeeded.ShouldBeTrue();
+    }
 }

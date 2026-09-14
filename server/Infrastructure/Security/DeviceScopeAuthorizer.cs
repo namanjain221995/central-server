@@ -54,14 +54,76 @@ public sealed class DeviceScopeAuthorizer(EndpointPlatformDbContext dbContext)
             return true;
         }
 
-        // Otherwise the device must be a member of a group this administrator is scoped to.
+        // Otherwise the device's one group must be a group this administrator is
+        // scoped to. Membership is exclusive, so this is a single comparison.
         return await (
             from scope in _dbContext.AdminDeviceScopes
-            join membership in _dbContext.DeviceGroupMemberships
-                on scope.DeviceGroupId equals membership.GroupId
-            where scope.PlatformUserId == platformUserId && membership.DeviceId == deviceId
+            join device in _dbContext.Devices on scope.DeviceGroupId equals device.DeviceGroupId
+            where scope.PlatformUserId == platformUserId
+                  && device.Id == deviceId
+                  && device.OrganizationId == organizationId
             select scope.Id)
             .AnyAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// True when the administrator may act on every device in the group -- which,
+    /// because a device belongs to exactly one group, is the same as being scoped
+    /// to the group itself.
+    /// </summary>
+    /// <remarks>
+    /// This is what gates group management and group actions. It is deliberately
+    /// not "may act on some member": membership decides who may act on a device,
+    /// so authority over a group has to mean authority over all of it. The group
+    /// must also belong to the caller's organization; a group id from another
+    /// tenant answers false rather than revealing that it exists.
+    /// </remarks>
+    public async Task<bool> CanActOnGroupAsync(
+        Guid platformUserId,
+        Guid organizationId,
+        Guid deviceGroupId,
+        CancellationToken cancellationToken = default)
+    {
+        var groupExists = await _dbContext.DeviceGroups
+            .AnyAsync(g => g.Id == deviceGroupId && g.OrganizationId == organizationId, cancellationToken);
+        if (!groupExists)
+        {
+            return false;
+        }
+
+        var hasAllScope = await _dbContext.PlatformUsers
+            .Where(u => u.Id == platformUserId && u.OrganizationId == organizationId)
+            .Select(u => u.HasAllDeviceScope)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (hasAllScope)
+        {
+            return true;
+        }
+
+        return await _dbContext.AdminDeviceScopes
+            .AnyAsync(s => s.PlatformUserId == platformUserId && s.DeviceGroupId == deviceGroupId, cancellationToken);
+    }
+
+    /// <summary>
+    /// The groups an administrator may see and act on, or null for all of them.
+    /// </summary>
+    public async Task<IReadOnlyCollection<Guid>?> ScopedGroupIdsOrNullAsync(
+        Guid platformUserId, Guid organizationId, CancellationToken cancellationToken = default)
+    {
+        var hasAllScope = await _dbContext.PlatformUsers
+            .Where(u => u.Id == platformUserId && u.OrganizationId == organizationId)
+            .Select(u => u.HasAllDeviceScope)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (hasAllScope)
+        {
+            return null;
+        }
+
+        return await _dbContext.AdminDeviceScopes
+            .Where(s => s.PlatformUserId == platformUserId)
+            .Select(s => s.DeviceGroupId)
+            .ToListAsync(cancellationToken);
     }
 
     /// <summary>
@@ -84,10 +146,9 @@ public sealed class DeviceScopeAuthorizer(EndpointPlatformDbContext dbContext)
 
         return await (
             from scope in _dbContext.AdminDeviceScopes
-            join membership in _dbContext.DeviceGroupMemberships
-                on scope.DeviceGroupId equals membership.GroupId
-            where scope.PlatformUserId == platformUserId
-            select membership.DeviceId)
+            join device in _dbContext.Devices on scope.DeviceGroupId equals device.DeviceGroupId
+            where scope.PlatformUserId == platformUserId && device.OrganizationId == organizationId
+            select device.Id)
             .Distinct()
             .ToListAsync(cancellationToken);
     }

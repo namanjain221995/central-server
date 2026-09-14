@@ -104,3 +104,46 @@ vendor-supplied `UninstallString` is the vector this ADR forbids. That reasoning
 stands and is the reason any future removal feature must not take that route.
 
 The `Process.Start`/PowerShell bans, and their enforcement test, are unchanged.
+
+## Amendment: the session restart notice
+
+A restart Windows has accepted is announced to signed-in users by a small session
+notifier, `EndpointAgent.SessionNotice.exe`. It crosses the boundary between the
+LocalSystem service and ordinary users' sessions, so how it does that is recorded
+here.
+
+- **The service launches nothing.** The notifier is started by Windows at sign-in,
+  in each user's session and as that user, from a quoted value under
+  `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run` written by the installer.
+  The service never calls `CreateProcessAsUser` or anything like it; a SYSTEM
+  process that starts processes in users' sessions is the capability this ADR
+  exists to exclude. The Run key and the install folder are administrator-only.
+- **One direction, data only.** The service hosts a named pipe and is its only
+  writer. Interactive users get read access and nothing else — no write, no
+  `CreateNewInstance`, no permission change — enforced by an explicit, protected
+  DACL. The notifier never sends a byte. A notice is one line of strictly parsed
+  JSON carrying a time and a grace period; any extra property, unknown version,
+  out-of-range value or overlong line is refused. There is no text, command or path
+  in it, so there is nothing to execute or display.
+- **Trust is the server's session.** The notifier runs as an ordinary user and
+  cannot open a SYSTEM process: measured on Windows 11 26200 from a non-elevated
+  session, `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` and
+  `ProcessIdToSessionId` are both denied for SYSTEM processes, so the server's
+  account or image path cannot be checked from where the check runs.
+  `GetNamedPipeServerSessionId` asks the pipe driver instead, and returns 0 for real
+  service pipes (`lsass`, `services.exe`, `eventlog`, `InitShutdown`) and the
+  caller's own session for a pipe the caller created. No interactive user can start
+  a process in session 0, so the notifier trusts a server in session 0 and refuses
+  every other without reading from it. A user who squats the pipe name is refused;
+  the service also claims the name with `FirstPipeInstance`. Another service could
+  squat it, but installing a service already requires administrator rights.
+- **Fixed words.** Every word the user sees is a constant. There is no cancel
+  control: cancellation belongs to an administrator in the console, before the
+  restart is delivered.
+- **A courtesy, not a dependency.** The notice is sent only after Windows accepts
+  the restart, and a failure to send it changes neither the restart nor its
+  reported result. Windows' own shutdown warning is unaffected.
+
+The notifier is plain Win32 through P/Invoke, shares the service's self-contained
+runtime (five files, about 240 KB), references no UI framework and no PowerShell,
+and sits inside the `Process.Start` scan, which a test pins.

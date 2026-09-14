@@ -86,7 +86,7 @@ export function DeployPackageDialog({
   useEffect(() => {
     getGroups()
       .then((rows) => setGroups(rows.map((g) => ({
-        id: g.id, name: g.name, deviceCount: g.memberCount,
+        id: g.id, name: g.name, deviceCount: g.deviceCount,
       }))))
       .catch(() => setGroups([]))
   }, [])

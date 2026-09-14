@@ -87,4 +87,24 @@ public static class RestartGrace
 
         return $"{minutes} minute{(minutes == 1 ? "" : "s")} {seconds} seconds";
     }
+
+    /// <summary>
+    /// The message Windows shows the signed-in user for a restart with this grace
+    /// period. System-defined: no administrator-supplied text ever reaches it.
+    /// </summary>
+    /// <remarks>
+    /// One source for both the single-device route and group restart, so a group
+    /// restart delivers exactly the payload a single restart would -- which is
+    /// the whole claim that a group action is just many ordinary device actions.
+    /// </remarks>
+    public static string MessageFor(int graceSeconds) =>
+        graceSeconds == ImmediateSeconds
+            ? "Your IT administrator initiated a restart."
+            : $"Your IT administrator scheduled a restart in {Describe(graceSeconds)}.";
+
+    /// <summary>The fixed shutdown message, shared by the single-device route and group shutdown.</summary>
+    public const string ShutdownMessage = "Your IT administrator initiated a shutdown.";
+
+    /// <summary>The fixed grace period for shutdown, as the single-device route has always used.</summary>
+    public const int ShutdownGraceSeconds = ImmediateSeconds;
 }

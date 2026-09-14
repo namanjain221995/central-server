@@ -403,10 +403,10 @@ public sealed class SoftwareDeploymentService(
             // Groups are re-resolved against the organization: a group id from
             // another tenant resolves to no members rather than to its members.
             var fromGroups = await (
-                from membership in _dbContext.DeviceGroupMemberships
-                join grp in _dbContext.DeviceGroups on membership.GroupId equals grp.Id
-                where groupIds.Contains(membership.GroupId) && grp.OrganizationId == organizationId
-                select membership.DeviceId)
+                from device in _dbContext.Devices
+                join grp in _dbContext.DeviceGroups on device.DeviceGroupId equals grp.Id
+                where groupIds.Contains(device.DeviceGroupId) && grp.OrganizationId == organizationId
+                select device.Id)
                 .Distinct()
                 .ToListAsync(cancellationToken);
 

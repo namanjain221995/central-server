@@ -110,13 +110,15 @@ public abstract class DeviceControlTaskExecutor(IDeviceControl deviceControl, IL
 public sealed class RestartTaskExecutor(
     IDeviceControl deviceControl,
     ILogger<RestartTaskExecutor> logger,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    IRestartNotifier? notifier = null)
     : DeviceControlTaskExecutor(deviceControl, logger)
 {
     /// <summary>Windows: a system shutdown has already been scheduled.</summary>
     internal const int ErrorShutdownInProgress = 1115;
 
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
+    private readonly IRestartNotifier _notifier = notifier ?? NullRestartNotifier.Instance;
 
     public override string TaskType => "RestartDevice";
 
@@ -172,6 +174,20 @@ public sealed class RestartTaskExecutor(
         Logger.LogWarning(
             "Restart task {TaskId} accepted by Windows: the device restarts at {RestartAt:u} ({Grace}s grace).",
             task.TaskId, restartAt, grace);
+
+        // Only now, with the restart accepted, is there anything true to tell the
+        // user -- and only the time. The notice is a courtesy on top of Windows'
+        // own warning: if it cannot be delivered the restart still happens and is
+        // still reported exactly as it is, so a failure here is logged and nothing
+        // more.
+        try
+        {
+            _notifier.RestartScheduled(new SessionNotice.RestartNotice(restartAt, grace));
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Restart task {TaskId}: the session notice could not be sent.", task.TaskId);
+        }
 
         return new AgentTaskResult(
             true,

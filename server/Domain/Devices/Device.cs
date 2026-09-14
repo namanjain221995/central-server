@@ -44,6 +44,19 @@ public sealed class Device : AuditableEntity
 
     public Guid OrganizationId { get; private set; }
 
+    /// <summary>
+    /// The one group this device belongs to. Never empty once persisted: the
+    /// column is a non-null foreign key, and a new device is placed in its
+    /// organization's "All Devices" group when it is first saved.
+    /// </summary>
+    /// <remarks>
+    /// A property of the device rather than a row in a membership table, so that
+    /// "in no group" and "in two groups" cannot be written at all -- not merely
+    /// rejected by application code that every write path would have to remember
+    /// to call.
+    /// </remarks>
+    public Guid DeviceGroupId { get; private set; }
+
     /// <summary>Hostname as reported by the agent. Display data, not identity.</summary>
     public string Hostname { get; private set; }
 
@@ -210,6 +223,20 @@ public sealed class Device : AuditableEntity
         LoggedOnUser = Guard.OptionalMaxLength(loggedOnUser, 256);
         InventoryCollectedAt = now;
     }
+
+    /// <summary>
+    /// Places the device in a group, leaving whichever group it was in. One
+    /// column changes, so a move is atomic by construction and cannot leave the
+    /// device in both groups or in neither.
+    /// </summary>
+    /// <remarks>
+    /// Whether the caller may make this move is not decided here. Group
+    /// membership is an administrator's device scope, so moving a device changes
+    /// who can act on it; the service authorizes both ends before calling this.
+    /// Retired devices may be moved too: group membership is organizational
+    /// bookkeeping, independent of whether the device is managed.
+    /// </remarks>
+    public void MoveToGroup(Guid deviceGroupId) => DeviceGroupId = Guard.NotEmpty(deviceGroupId);
 
     public void Retire() => Status = DeviceStatus.Retired;
 

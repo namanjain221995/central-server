@@ -61,6 +61,40 @@ public sealed class AgentSafetyTests
             "Process.Start is the shell/launch vector ADR-0005 forbids; found in: " + string.Join(", ", offenders));
     }
 
+    /// <summary>
+    /// The session notifier runs in every signed-in user's session, which makes it
+    /// the component where a launch capability would do the most harm. The scan
+    /// above covers it only because it lives under <c>agent/</c>; this fails if it
+    /// is ever moved somewhere the scan does not look.
+    /// </summary>
+    [Fact]
+    public void The_session_notifier_is_inside_the_Process_Start_scan()
+    {
+        var agentRoot = FindAgentSourceRoot();
+        var notifierSources = Directory
+            .EnumerateFiles(Path.Combine(agentRoot, "EndpointAgent.SessionNotice"), "*.cs", SearchOption.TopDirectoryOnly)
+            .ToList();
+
+        notifierSources.ShouldNotBeEmpty("the session notifier's sources must sit under the scanned agent tree");
+        notifierSources.ShouldAllBe(f => !File.ReadAllText(f).Contains("Process.Start", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The notifier references only what it needs, and in particular nothing that
+    /// could run a script or start a process on its behalf.
+    /// </summary>
+    [Fact]
+    public void The_session_notifier_does_not_reference_the_powershell_sdk_or_a_ui_framework()
+    {
+        var agentRoot = FindAgentSourceRoot();
+        var project = File.ReadAllText(Path.Combine(agentRoot, "EndpointAgent.SessionNotice", "EndpointAgent.SessionNotice.csproj"));
+
+        project.ShouldNotContain("PowerShell", Case.Insensitive);
+        project.ShouldNotContain("System.Management.Automation", Case.Insensitive);
+        project.ShouldNotContain("UseWindowsForms", Case.Insensitive, "a UI framework would pull in the desktop runtime");
+        project.ShouldNotContain("UseWPF", Case.Insensitive);
+    }
+
     [Theory]
     [MemberData(nameof(AgentAssemblies))]
     public void Agent_assemblies_do_not_reference_the_powershell_sdk(string assemblyName)

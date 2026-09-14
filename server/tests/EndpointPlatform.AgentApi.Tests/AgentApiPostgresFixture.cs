@@ -70,6 +70,7 @@ public sealed class AgentApiPostgresFixture : IAsyncLifetime
                 npgsql.MigrationsHistoryTable("__ef_migrations_history", EndpointPlatformDbContext.Schema);
             })
             .AddInterceptors(
+                new DeviceGroupAssignmentInterceptor(),
                 new AuditableEntityInterceptor(TimeProvider.System),
                 new AuditImmutabilityInterceptor())
             .Options;

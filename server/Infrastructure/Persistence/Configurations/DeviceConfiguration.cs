@@ -49,6 +49,27 @@ internal sealed class DeviceConfiguration : IEntityTypeConfiguration<Device>
             .HasForeignKey(d => d.OrganizationId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Exactly one group per device, enforced here rather than by application
+        // code: a required foreign key means a device cannot exist in no group,
+        // and being a single column it cannot be in two.
+        //
+        // Restrict, deliberately. Deleting a group moves its devices to "All
+        // Devices" first, in the same transaction. Cascade would delete devices;
+        // SetNull cannot express "the built-in group" and would violate NOT NULL.
+        // Restrict turns any device that slipped into the group between the move
+        // and the delete into a failed delete -- which the service reports and the
+        // caller retries -- instead of an orphaned or deleted device.
+        builder.Property(d => d.DeviceGroupId).IsRequired();
+        builder.HasOne<Domain.Groups.DeviceGroup>()
+            .WithMany()
+            .HasForeignKey(d => d.DeviceGroupId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Group pages, group actions and scope resolution all ask "which devices
+        // are in this group".
+        builder.HasIndex(d => d.DeviceGroupId)
+            .HasDatabaseName("ix_devices_device_group_id");
+
         builder.HasOne<Domain.Enrollment.EnrollmentToken>()
             .WithMany()
             .HasForeignKey(d => d.EnrolledWithTokenId)

@@ -68,6 +68,7 @@
       <ComponentGroupRef Id="AgentBinaries" />
       <ComponentGroupRef Id="AgentServiceComponents" />
       <ComponentGroupRef Id="AgentStateComponents" />
+      <ComponentGroupRef Id="SessionNoticeComponents" />
     </Feature>
   </Package>
 
@@ -200,6 +201,33 @@
       -->
       <Component Id="AgentMachineConfig" Directory="STATEFOLDER" Bitness="always64" Guid="4a9e7f21-8b36-4c94-a5d2-0e7f1b3c6d85">
         <File Id="AgentConfigJson" Name="agent.config.json" Source="agent.config.json" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="SessionNoticeComponents">
+      <!--
+        Starts the session notifier in every signed-in user's session, as that user,
+        at sign-in. Windows does the starting, from the machine Run key; the LocalSystem
+        service never launches a process into anyone's session.
+
+        HKLM, not HKCU: only an administrator can write it, so an ordinary user cannot
+        point it somewhere else. The executable it names lives in the install folder,
+        which is likewise administrator-only. The value is quoted because the path
+        contains spaces; an unquoted path with spaces is the classic way to have
+        Windows run something other than what was intended.
+
+        The executable itself is packaged by AgentBinaries.wxs, which globs the publish
+        folder; this component carries only the registry value, as its key path.
+      -->
+      <Component Id="SessionNoticeAutostart" Directory="INSTALLFOLDER" Bitness="always64" Guid="7e2c9a41-5f38-4b16-9d07-c3a8e6f1b254">
+        <RegistryValue Root="HKLM"
+                       Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+                       Name="EndpointPlatformSessionNotice"
+                       Type="string"
+                       Value="&quot;[INSTALLFOLDER]EndpointAgent.SessionNotice.exe&quot;"
+                       KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

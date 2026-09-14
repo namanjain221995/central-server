@@ -112,9 +112,10 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
 
     public DbSet<PolicyComplianceResult> PolicyComplianceResults => Set<PolicyComplianceResult>();
 
+    /// <remarks>
+    /// There is no membership set: a device's group is <c>Device.DeviceGroupId</c>.
+    /// </remarks>
     public DbSet<DeviceGroup> DeviceGroups => Set<DeviceGroup>();
-
-    public DbSet<DeviceGroupMembership> DeviceGroupMemberships => Set<DeviceGroupMembership>();
 
     public DbSet<DeviceTask> DeviceTasks => Set<DeviceTask>();
 

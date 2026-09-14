@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- WinExe: a signed-in user must not see a console window flash up at every sign-in. -->
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>EndpointAgent.SessionNotice</RootNamespace>
+    <AssemblyName>EndpointAgent.SessionNotice</AssemblyName>
+    <VersionPrefix>1.1.0</VersionPrefix>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+
+    <!--
+      Published by build-msi.ps1 into the SAME folder as the service, with the same
+      runtime identifier and self-contained runtime, so it adds its own few files
+      and reuses the runtime the service already ships, rather than a second copy,
+      or the desktop runtime WinForms or WPF would pull in for one small window.
+    -->
+    <RuntimeIdentifier Condition="'$(PublishAgent)' == 'true'">win-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(PublishAgent)' == 'true'">true</SelfContained>
+    <PublishTrimmed Condition="'$(PublishAgent)' == 'true'">false</PublishTrimmed>
+    <PublishSingleFile Condition="'$(PublishAgent)' == 'true'">false</PublishSingleFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!--
+      Runs in each signed-in user's session, as that user, started by Windows from
+      the machine Run key. It reads restart notices from the LocalSystem service and
+      draws a window. It launches nothing, executes nothing it receives, and has no
+      privileges beyond the user it runs as. See ADR-0005's session-notice amendment.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EndpointAgent.Windows\EndpointAgent.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

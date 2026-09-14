@@ -65,10 +65,22 @@ if (-not $SkipPublish) {
     & dotnet publish (Join-Path $repoRoot 'agent\EndpointAgent.Service\EndpointAgent.Service.csproj') `
         -c Release -p:PublishAgent=true -p:Version=$Version -o $publishDir --nologo
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
+
+    # The session notifier goes into the SAME folder, with the same runtime
+    # identifier and self-contained runtime, so it reuses the runtime files the
+    # service just published rather than shipping a second set. AgentBinaries.wxs
+    # globs the folder, so it is packaged without being listed.
+    Write-Host "Publishing session notifier into the same folder..." -ForegroundColor Cyan
+    & dotnet publish (Join-Path $repoRoot 'agent\EndpointAgent.SessionNotice\EndpointAgent.SessionNotice.csproj') `
+        -c Release -p:PublishAgent=true -p:Version=$Version -o $publishDir --nologo
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish (session notifier) failed with exit code $LASTEXITCODE." }
 }
 
 $exe = Join-Path $publishDir 'EndpointAgent.Service.exe'
 if (-not (Test-Path $exe)) { throw "Publish output is missing $exe." }
+
+$notifier = Join-Path $publishDir 'EndpointAgent.SessionNotice.exe'
+if (-not (Test-Path $notifier)) { throw "Publish output is missing $notifier." }
 Write-Host ("  published {0} files, {1:N0} MB" -f `
     (Get-ChildItem $publishDir -Recurse -File).Count, `
     ((Get-ChildItem $publishDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB))

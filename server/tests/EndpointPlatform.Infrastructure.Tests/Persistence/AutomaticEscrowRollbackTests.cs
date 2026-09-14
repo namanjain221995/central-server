@@ -58,6 +58,9 @@ public sealed class AutomaticEscrowRollbackTests : IAsyncLifetime
                 npgsql.MigrationsAssembly(EndpointPlatformDbContext.MigrationsAssemblyName);
                 npgsql.MigrationsHistoryTable("__ef_migrations_history", EndpointPlatformDbContext.Schema);
             })
+            // Devices now require a group; this is what gives the seeded
+            // organization its "All Devices" and puts the device in it.
+            .AddInterceptors(new Infrastructure.Persistence.Interceptors.DeviceGroupAssignmentInterceptor())
             .Options;
 
         return new EndpointPlatformDbContext(options);

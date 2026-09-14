@@ -493,3 +493,12 @@ are reverted automatically.
   device's policies through its group memberships (verified: group-targeted
   policy reaches members only, and leaves a device when it is removed). Groups
   dashboard page with membership management.
+- **Device groups as partitions, with group actions: complete.** Every device
+  belongs to exactly one group (`devices.device_group_id`, non-null FK); each
+  organization has an immutable built-in "All Devices" fallback. Membership changes
+  are authorized against both the source and destination group, because group
+  membership is administrator scope. Group actions (restart with the single-device
+  timer, shutdown, lock, sign out, Force Stop, cancel pending restarts) fan out the
+  existing per-device tasks to online members only, resolved on the server at queue
+  time. A LocalSystem-hosted pipe tells a per-session notifier to show a fixed
+  restart countdown (ADR-0005 amendment). See [device-groups.md](device-groups.md).

@@ -103,10 +103,12 @@ public sealed class PolicyService(
     public async Task<IReadOnlyList<EffectivePolicy>> GetEffectivePoliciesAsync(
         Guid deviceId, CancellationToken cancellationToken = default)
     {
-        // Direct device assignments plus assignments to any group the device is in.
-        var groupIds = await _dbContext.DeviceGroupMemberships
-            .Where(m => m.DeviceId == deviceId)
-            .Select(m => m.GroupId)
+        // Direct device assignments plus assignments to the device's group. A
+        // device is in exactly one group, so there is at most one; kept as a list
+        // so the query below is unchanged.
+        var groupIds = await _dbContext.Devices
+            .Where(d => d.Id == deviceId)
+            .Select(d => d.DeviceGroupId)
             .ToListAsync(cancellationToken);
 
         var policyIds = await _dbContext.PolicyAssignments

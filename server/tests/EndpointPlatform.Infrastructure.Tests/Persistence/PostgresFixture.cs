@@ -51,6 +51,7 @@ public sealed class PostgresFixture : IAsyncLifetime
                 npgsql.MigrationsHistoryTable("__ef_migrations_history", EndpointPlatformDbContext.Schema);
             })
             .AddInterceptors(
+                new DeviceGroupAssignmentInterceptor(),
                 new AuditableEntityInterceptor(timeProvider ?? TimeProvider.System),
                 new AuditImmutabilityInterceptor())
             .Options;
@@ -71,7 +72,7 @@ public sealed class PostgresFixture : IAsyncLifetime
                 npgsql.MigrationsAssembly(EndpointPlatformDbContext.MigrationsAssemblyName);
                 npgsql.MigrationsHistoryTable("__ef_migrations_history", EndpointPlatformDbContext.Schema);
             })
-            .AddInterceptors(new AuditableEntityInterceptor(TimeProvider.System))
+            .AddInterceptors(new DeviceGroupAssignmentInterceptor(), new AuditableEntityInterceptor(TimeProvider.System))
             .Options;
 
         return new EndpointPlatformDbContext(options);

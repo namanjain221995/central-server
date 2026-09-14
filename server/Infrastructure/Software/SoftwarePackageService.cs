@@ -199,9 +199,9 @@ public sealed class SoftwarePackageService(
             return null;
         }
 
-        var memberIds = await _dbContext.DeviceGroupMemberships
-            .Where(m => m.GroupId == groupId)
-            .Select(m => m.DeviceId)
+        var memberIds = await _dbContext.Devices
+            .Where(d => d.DeviceGroupId == groupId && d.OrganizationId == organizationId)
+            .Select(d => d.Id)
             .ToListAsync(cancellationToken);
 
         var payload = PayloadFor(package);

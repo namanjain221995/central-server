@@ -131,7 +131,7 @@ public sealed class DeploymentEndpointTests(AdminApiPostgresFixture fixture)
 
         foreach (var deviceId in deviceIds)
         {
-            db.DeviceGroupMemberships.Add(new DeviceGroupMembership(group.Id, deviceId));
+            (await db.Devices.SingleAsync(candidate => candidate.Id == deviceId)).MoveToGroup(group.Id);
         }
 
         await db.SaveChangesAsync();

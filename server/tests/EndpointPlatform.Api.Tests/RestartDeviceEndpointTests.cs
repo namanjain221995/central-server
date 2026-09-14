@@ -476,7 +476,7 @@ public sealed class RestartDeviceEndpointTests(AdminApiPostgresFixture fixture)
             var role = await db.Roles.SingleAsync(r => r.Key == SystemRoles.ItAdministrator);
             var group = new DeviceGroup(org.Id, $"RestartScope-{Guid.CreateVersion7():N}", "d", DeviceGroupType.Static);
             db.DeviceGroups.Add(group);
-            db.DeviceGroupMemberships.Add(new DeviceGroupMembership(group.Id, inScope));
+            (await db.Devices.SingleAsync(candidate => candidate.Id == inScope)).MoveToGroup(group.Id);
 
             var user = new PlatformUser(org.Id, email, "Scoped Admin");
             user.SetPasswordHash(
@@ -531,7 +531,7 @@ public sealed class RestartDeviceEndpointTests(AdminApiPostgresFixture fixture)
             var role = await db.Roles.SingleAsync(r => r.Key == SystemRoles.ItAdministrator);
             var group = new DeviceGroup(org.Id, $"SiblingScope-{Guid.CreateVersion7():N}", "d", DeviceGroupType.Static);
             db.DeviceGroups.Add(group);
-            db.DeviceGroupMemberships.Add(new DeviceGroupMembership(group.Id, inScope));
+            (await db.Devices.SingleAsync(candidate => candidate.Id == inScope)).MoveToGroup(group.Id);
 
             var user = new PlatformUser(org.Id, email, "Scoped Admin");
             user.SetPasswordHash(
