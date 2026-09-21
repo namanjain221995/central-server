@@ -3,7 +3,7 @@
 Start-to-finish instructions for putting the Endpoint Management Platform onto
 the Ubuntu machine and making it reachable from outside the office.
 
-This is the **specific** runbook for this deployment. For how the kit works in
+This is the runbook for a production deployment. For how the kit works in
 general see [`infra/ubuntu/README.md`](../../infra/ubuntu/README.md); for the
 architecture see [`docs/architecture.md`](../architecture.md).
 
@@ -15,7 +15,7 @@ and access to the Cloudflare dashboard and the office router.
 ## 1. What you are building
 
 ```
-                                 Ubuntu machine (192.168.8.96)
+                                 Ubuntu machine (<machine>)
   browser  ──┐
              ├── 443 ──▶ router ──▶ nginx ──┬──▶ /          dashboard (static files)
   agent    ──┘          port-forward        ├──▶ /api/   ──▶ Admin API  127.0.0.1:5080
@@ -32,12 +32,28 @@ preference: the session cookie uses the `__Host-` prefix, so a browser will
 discard it if the dashboard and the API are on different hosts, and nobody will
 be able to sign in.
 
+### Fill these in before you start
+
+This repository is public, so the values for a specific deployment are **not**
+written down here — a public runbook naming the hostname of an internet-facing
+console that can reveal BitLocker recovery keys would be doing an attacker's
+reconnaissance for them. Get them from whoever owns the deployment.
+
+| Thing | Value | Used as |
+|---|---|---|
+| Public hostname | `________________` | `--host`, and `SERVERBASEURL` on every agent |
+| Machine address | `________________` | where you SSH to |
+| Login user | `________________` | must be able to `sudo` |
+| Cloudflare zone | `________________` | the zone the API token is scoped to |
+
+Fixed for every deployment:
+
 | Thing | Value |
 |---|---|
-| Public hostname | `epp.techsarasolutions.com` |
-| Machine | `192.168.8.96`, user `paras-thind` |
 | TLS | Let's Encrypt via Cloudflare DNS-01 |
 | Ports published | **443 only** |
+
+Below, `<hostname>` and `<machine>` mean the values from the table above.
 
 ---
 
@@ -53,7 +69,7 @@ In the Cloudflare dashboard: profile menu → **API Tokens** → **Create Token*
 - **Permissions:** `Zone` → `DNS` → **Edit**, plus a second row
   `Zone` → `Zone` → **Read**. Both are needed — Read is how the script finds the
   zone ID.
-- **Zone Resources:** `Include` → `Specific zone` → `techsarasolutions.com`
+- **Zone Resources:** `Include` → `Specific zone` → the zone from the table above
 - Copy the token when it is shown. Cloudflare will not show it again.
 
 **Do not use the Global API Key.** It can do anything to the whole account; this
@@ -72,7 +88,7 @@ sudo chown root:root /etc/endpoint-platform/cloudflare.ini
 
 ### 2.2 A router port-forward
 
-Forward **TCP 443 → 192.168.8.96:443**.
+Forward **TCP 443 → <machine>:443**.
 
 **Forward nothing else.** In particular do not forward 5080 or 5081. Both APIs
 bind to loopback and trust `X-Forwarded-For` from nginx; exposing them directly
@@ -90,7 +106,7 @@ it. Two things to know:
   including BitLocker recovery keys. If anyone turns the cloud orange later, the
   site stops working and its confidentiality is broken. Leave it grey.
 - The office IP is **dynamic**. If it changes, re-run
-  `sudo bash infra/ubuntu/setup-tls-cloudflare.sh epp.techsarasolutions.com` to
+  `sudo bash infra/ubuntu/setup-tls-cloudflare.sh <hostname>` to
   re-point the record.
 
 ### 2.4 A machine that meets the requirements
@@ -103,13 +119,17 @@ script adds swap if there is none.
 ## 3. Get the code onto the machine
 
 ```bash
-ssh paras-thind@192.168.8.96
+ssh <user>@<machine>
 git clone git@github.com:namanjain221995/central-server.git
 cd central-server
 ```
 
-If the clone is refused, your SSH key is not on the GitHub account yet — the
-repository is private.
+If the clone is refused, your SSH key is not on the GitHub account. Over HTTPS
+no key is needed:
+
+```bash
+git clone https://github.com/namanjain221995/central-server.git
+```
 
 ---
 
@@ -120,7 +140,7 @@ the script calls `sudo` itself where it needs to):
 
 ```bash
 bash infra/ubuntu/install.sh \
-    --host epp.techsarasolutions.com \
+    --host <hostname> \
     --cloudflare \
     --admin-email <your-address> \
     --generate-admin-password
@@ -159,11 +179,11 @@ runtime with a confusing error rather than at startup.
 systemctl status 'endpoint-platform-*' --no-pager
 
 # Health, from the machine
-curl -fsS https://epp.techsarasolutions.com/api/health/ready && echo OK
+curl -fsS https://<hostname>/api/health/ready && echo OK
 
 # The certificate is genuinely trusted (no -k anywhere)
-echo | openssl s_client -connect epp.techsarasolutions.com:443 \
-    -servername epp.techsarasolutions.com 2>/dev/null \
+echo | openssl s_client -connect <hostname>:443 \
+    -servername <hostname> 2>/dev/null \
     | openssl x509 -noout -issuer -enddate
 ```
 
@@ -172,7 +192,7 @@ self-signed fallback ran instead of the Cloudflare path and agents will refuse
 to connect — see §7.
 
 Then, from a machine **outside** the office network, open
-`https://epp.techsarasolutions.com` and sign in. Testing from inside the office
+`https://<hostname>` and sign in. Testing from inside the office
 can succeed even when the port-forward is wrong, so this check has to be done
 from outside.
 
@@ -183,7 +203,7 @@ from outside.
 On each managed Windows PC, in an **elevated** prompt:
 
 ```
-msiexec /i EndpointPlatformAgent-<version>-x64.msi SERVERBASEURL=https://epp.techsarasolutions.com
+msiexec /i EndpointPlatformAgent-<version>-x64.msi SERVERBASEURL=https://<hostname>
 ```
 
 Then approve the device in the dashboard under **Enrollments**. Until it is

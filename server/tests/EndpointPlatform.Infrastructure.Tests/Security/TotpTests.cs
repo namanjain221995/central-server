@@ -187,10 +187,10 @@ public sealed class TotpTests
     [Fact]
     public void The_enrolment_uri_is_well_formed()
     {
-        var uri = Totp.BuildUri("Endpoint Platform", "naman.jain@techsarasolutions.com", "MZXW6YTBOI");
+        var uri = Totp.BuildUri("Endpoint Platform", "sam.rivera@northwind.test", "MZXW6YTBOI");
 
         uri.ShouldStartWith("otpauth://totp/");
-        uri.ShouldContain("Endpoint%20Platform:naman.jain%40techsarasolutions.com");
+        uri.ShouldContain("Endpoint%20Platform:sam.rivera%40northwind.test");
         uri.ShouldContain("secret=MZXW6YTBOI");
         uri.ShouldContain("issuer=Endpoint%20Platform");
         uri.ShouldContain("algorithm=SHA1");

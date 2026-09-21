@@ -85,14 +85,14 @@
     and print it ONCE, instead of prompting for one here.
 
 .EXAMPLE
-    .\infra\ubuntu\Deploy-Ubuntu.ps1 -SshHost 192.168.1.50 -SshUser naman `
+    .\infra\ubuntu\Deploy-Ubuntu.ps1 -SshHost 192.168.1.50 -SshUser ops `
         -KeyPath C:\keys\epp.pem -PublicHostName epp.example.com `
         -CertbotEmail ops@example.com -AdminEmail admin@example.com `
         -GenerateAdminPassword
 
 .EXAMPLE
     # Redeploy after a code change (machine already prepared, certificate in place):
-    .\infra\ubuntu\Deploy-Ubuntu.ps1 -SshHost 192.168.1.50 -SshUser naman `
+    .\infra\ubuntu\Deploy-Ubuntu.ps1 -SshHost 192.168.1.50 -SshUser ops `
         -KeyPath C:\keys\epp.pem -PublicHostName epp.example.com -SkipHostPrep -SkipCert
 #>
 

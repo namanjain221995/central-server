@@ -30,7 +30,7 @@ namespace EndpointPlatform.Domain.Identity;
 /// <para>
 /// <b>False positives are the cost being accepted.</b> A refusal here tells
 /// somebody to choose differently, which is a small annoyance. The alternative -
-/// admitting <c>Techsara@2026</c> on an internet-facing console - is not. Where a
+/// admitting <c>Acme@2026</c> on an internet-facing console - is not. Where a
 /// rule had to err, it errs toward refusing.
 /// </para>
 /// </remarks>
@@ -232,7 +232,7 @@ public static class WeakPassword
                     continue;
                 }
 
-                // Both forms, so "N4man" is caught as readily as "naman".
+                // Both forms, so "R1v3ra" is caught as readily as "rivera".
                 if (plain.Contains(fragment, StringComparison.Ordinal)
                     || folded.Contains(fragment, StringComparison.Ordinal))
                 {
@@ -248,8 +248,8 @@ public static class WeakPassword
     /// Breaks a term into the word-like pieces worth matching on.
     /// </summary>
     /// <remarks>
-    /// "naman.jain@techsarasolutions.com" has to yield "naman", "jain" and
-    /// "techsarasolutions" - matching the whole string would never fire, because
+    /// "sam.rivera@northwind.test" has to yield "sam", "rivera" and
+    /// "northwind" - matching the whole string would never fire, because
     /// nobody puts their entire e-mail address in a password, but plenty of
     /// people use their first name.
     /// </remarks>

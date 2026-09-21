@@ -36,14 +36,14 @@ public sealed class WeakPasswordTests
     /// against the only attacker who matters.
     /// </remarks>
     [Theory]
-    [InlineData("NamanJain2026x")]          // the given name
-    [InlineData("jain-jain-jain-x")]        // the family name
-    [InlineData("Techsarasolutions1")]      // the domain
-    [InlineData("xxnamanxxnamanxq")]        // buried, not at the start
-    [InlineData("N4m4nJ4in2026x")]          // leet-spelled
+    [InlineData("SamRivera2026x")]          // the family name
+    [InlineData("rivera-2026-quarry")]      // the family name, buried in a phrase
+    [InlineData("Northwind-2026-ok")]       // the domain
+    [InlineData("xxriveraxxquarryq")]       // buried, not at the start
+    [InlineData("S4mR1v3r4-2026x")]         // leet-spelled
     public void A_password_containing_the_account_identity_is_refused(string password)
     {
-        var context = PasswordContext.For("naman.jain@techsarasolutions.com", "Naman Jain");
+        var context = PasswordContext.For("sam.rivera@northwind.test", "Sam Rivera");
 
         WeakPassword.Inspect(password, context).ShouldNotBeNull();
     }
@@ -52,9 +52,9 @@ public sealed class WeakPasswordTests
     [Fact]
     public void A_password_containing_a_deployment_forbidden_term_is_refused()
     {
-        var context = PasswordContext.For("someone@example.com", "Some One", "Techsara", "EndpointPlatform");
+        var context = PasswordContext.For("someone@nowhere.test", "Some One", "Northwind", "EndpointPlatform");
 
-        WeakPassword.Inspect("Techsara@2026!", context).ShouldNotBeNull();
+        WeakPassword.Inspect("Northwind@2026!", context).ShouldNotBeNull();
         WeakPassword.Inspect("endpointplatform99", context).ShouldNotBeNull();
     }
 
@@ -70,10 +70,10 @@ public sealed class WeakPasswordTests
     [Fact]
     public void Without_context_the_identity_rules_do_not_fire()
     {
-        WeakPassword.Inspect("NamanJain2026x", PasswordContext.None).ShouldBeNull();
+        WeakPassword.Inspect("SamRivera2026x", PasswordContext.None).ShouldBeNull();
 
-        var context = PasswordContext.For("naman.jain@techsarasolutions.com", "Naman Jain");
-        WeakPassword.Inspect("NamanJain2026x", context).ShouldNotBeNull();
+        var context = PasswordContext.For("sam.rivera@northwind.test", "Sam Rivera");
+        WeakPassword.Inspect("SamRivera2026x", context).ShouldNotBeNull();
     }
 
     /// <summary>A short fragment is not matched, or ordinary words would be refused.</summary>
@@ -84,7 +84,7 @@ public sealed class WeakPasswordTests
     [Fact]
     public void A_fragment_below_the_stem_floor_is_not_matched()
     {
-        var context = PasswordContext.For("ali@example.com", "Ali Bo");
+        var context = PasswordContext.For("ali@nowhere.test", "Ali Bo");
 
         WeakPassword.Inspect("normalisation drift", context).ShouldBeNull();
     }

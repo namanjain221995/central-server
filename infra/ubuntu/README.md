@@ -31,7 +31,7 @@ bash infra/ubuntu/install.sh --host epp.example.com --email ops@example.com \
 drives the same scripts:
 
 ```powershell
-.\infra\ubuntu\Deploy-Ubuntu.ps1 -SshHost 192.168.1.50 -SshUser naman `
+.\infra\ubuntu\Deploy-Ubuntu.ps1 -SshHost 192.168.1.50 -SshUser ops `
     -KeyPath C:\keys\epp.pem -PublicHostName epp.example.com `
     -CertbotEmail ops@example.com -AdminEmail admin@example.com `
     -GenerateAdminPassword
