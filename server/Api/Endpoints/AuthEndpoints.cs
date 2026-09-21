@@ -39,10 +39,217 @@ public static class AuthEndpoints
             .WithName("AdminChangePassword")
             .RequireAuthorization();
 
+        // --- multi-factor ----------------------------------------------------
+        //
+        // Anonymous, and rate limited like the login route. The caller holds a
+        // challenge ticket rather than a session, so there is no principal to
+        // authorise; the ticket is the authority, it expires in five minutes and
+        // it burns after five wrong codes.
+        group.MapPost("/mfa/verify", VerifyMfaAsync)
+            .WithName("AdminVerifyMfa")
+            .AllowAnonymous()
+            .RequireRateLimiting(LoginRateLimitPolicy);
+
+        // Authenticated but behind no permission, for the same reason as
+        // change-password: enrolling your own second factor is not an
+        // administrative act over anybody else. MfaEnrolmentRequiredMiddleware
+        // allowlists these two so a not-yet-enrolled account can reach them.
+        group.MapPost("/mfa/enroll", BeginMfaEnrolmentAsync)
+            .WithName("AdminBeginMfaEnrolment")
+            .RequireAuthorization();
+
+        group.MapPost("/mfa/confirm", ConfirmMfaEnrolmentAsync)
+            .WithName("AdminConfirmMfaEnrolment")
+            .RequireAuthorization();
+
+        // Regenerating recovery codes requires a fully enrolled session, so it is
+        // NOT in the enrolment allowlist.
+        group.MapPost("/mfa/recovery-codes", RegenerateRecoveryCodesAsync)
+            .WithName("AdminRegenerateRecoveryCodes")
+            .RequireAuthorization();
+
         return endpoints;
     }
 
     public sealed record LoginRequest(string Email, string Password);
+
+    /// <param name="MfaRequired">
+    /// Always true. Present so the dashboard can branch on one field rather than
+    /// inferring the case from which other fields happen to be absent.
+    /// </param>
+    /// <param name="ChallengeToken">
+    /// The ticket to present at <c>/mfa/verify</c>. It is not a session token: it
+    /// authenticates nothing, carries no permissions, and is accepted at exactly
+    /// one route.
+    /// </param>
+    public sealed record MfaChallengeResponse(
+        bool MfaRequired, string ChallengeToken, DateTimeOffset ChallengeExpiresAt);
+
+    public sealed record VerifyMfaRequest(string ChallengeToken, string Code);
+
+    public sealed record BeginMfaEnrolmentResponse(string Secret, string OtpAuthUri, string QrCodeSvg);
+
+    public sealed record ConfirmMfaRequest(string Code);
+
+    /// <param name="RecoveryCodes">Shown exactly once. The server keeps only hashes.</param>
+    public sealed record RecoveryCodesResponse(IReadOnlyList<string> RecoveryCodes);
+
+    /// <summary>
+    /// Completes a sign-in that was waiting on a second factor.
+    /// </summary>
+    /// <remarks>
+    /// Every failure is the same 401 with the same title, whatever went wrong -
+    /// an unknown ticket, an expired one, a wrong code, a replayed code or an
+    /// exhausted attempt count. Distinguishing them would tell an attacker
+    /// whether the ticket was real and whether their guessing was making
+    /// progress. The audit trail records which it was.
+    /// </remarks>
+    private static async Task<IResult> VerifyMfaAsync(
+        [FromBody] VerifyMfaRequest request,
+        AdminAuthService authService,
+        MfaService mfaService,
+        HttpContext httpContext,
+        IHostEnvironment environment,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.ChallengeToken) || request.ChallengeToken.Length > 128
+            || string.IsNullOrWhiteSpace(request.Code) || request.Code.Length > 64)
+        {
+            return Results.Problem(title: "Sign-in failed.", statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var outcome = await authService.CompleteMfaSignInAsync(
+            request.ChallengeToken,
+            request.Code,
+            httpContext.Connection.RemoteIpAddress?.ToString(),
+            httpContext.Request.Headers.UserAgent.ToString(),
+            mfaService,
+            cancellationToken);
+
+        if (!outcome.Success)
+        {
+            return Results.Problem(title: "Sign-in failed.", statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        AppendSessionCookie(httpContext, outcome.Token!, outcome.ExpiresAt, environment);
+
+        var user = outcome.User!;
+
+        return Results.Ok(new LoginResponse(
+            user.Id,
+            user.Email,
+            user.DisplayName,
+            outcome.ExpiresAt,
+            outcome.Permissions,
+            outcome.Token!));
+    }
+
+    /// <summary>
+    /// Issues a TOTP secret for the signed-in administrator and renders its QR code.
+    /// </summary>
+    /// <remarks>
+    /// Refused once enrolment is confirmed. Replacing a working second factor from
+    /// a live session would let anyone who borrowed an unlocked browser swap the
+    /// authenticator for their own; that path is a reset by another administrator,
+    /// which is audited and rotates the security stamp.
+    /// </remarks>
+    private static async Task<IResult> BeginMfaEnrolmentAsync(
+        MfaService mfaService,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var actor = AdminActor.FromClaims(httpContext.User);
+        if (actor is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        var start = await mfaService.BeginEnrolmentAsync(actor.UserId, cancellationToken);
+
+        if (start is null)
+        {
+            return Results.Problem(
+                title: "Multi-factor authentication is already set up for this account.",
+                detail: "Ask another administrator to reset it if you have lost your authenticator.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        // The secret is in this body, so it must not be cached anywhere.
+        httpContext.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+
+        return Results.Ok(new BeginMfaEnrolmentResponse(
+            start.Secret, start.Uri, TotpQrCode.ToSvg(start.Uri)));
+    }
+
+    /// <summary>Confirms enrolment with a code and returns the recovery codes once.</summary>
+    private static async Task<IResult> ConfirmMfaEnrolmentAsync(
+        [FromBody] ConfirmMfaRequest request,
+        MfaService mfaService,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var actor = AdminActor.FromClaims(httpContext.User);
+        if (actor is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        var result = await mfaService.ConfirmEnrolmentAsync(actor.UserId, request.Code, cancellationToken);
+
+        if (!result.Success)
+        {
+            return result.Error switch
+            {
+                MfaError.NoEnrolmentInProgress => Results.Problem(
+                    title: "There is no enrolment in progress.",
+                    detail: "Start again from the beginning.",
+                    statusCode: StatusCodes.Status409Conflict),
+                _ => Results.Problem(
+                    title: "That code was not correct.",
+                    detail: "Check your authenticator app and try the current code.",
+                    statusCode: StatusCodes.Status400BadRequest),
+            };
+        }
+
+        httpContext.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+
+        return Results.Ok(new RecoveryCodesResponse(result.RecoveryCodes));
+    }
+
+    /// <summary>Replaces the recovery codes and returns the new set once.</summary>
+    /// <remarks>
+    /// Requires a confirmed second factor, so a half-enrolled account cannot mint
+    /// bypass codes for itself.
+    /// </remarks>
+    private static async Task<IResult> RegenerateRecoveryCodesAsync(
+        MfaService mfaService,
+        EndpointPlatform.Infrastructure.Persistence.EndpointPlatformDbContext dbContext,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var actor = AdminActor.FromClaims(httpContext.User);
+        if (actor is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        var user = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
+            .SingleOrDefaultAsync(dbContext.PlatformUsers, u => u.Id == actor.UserId, cancellationToken);
+
+        if (user is null || !user.HasConfirmedMfa)
+        {
+            return Results.Problem(
+                title: "Multi-factor authentication is not set up for this account.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        var codes = await mfaService.ReplaceRecoveryCodesAsync(actor.UserId, cancellationToken);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        httpContext.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+
+        return Results.Ok(new RecoveryCodesResponse(codes));
+    }
 
     /// <param name="SessionToken">
     /// The same opaque token the HttpOnly cookie carries, for non-browser clients
@@ -147,6 +354,16 @@ public static class AuthEndpoints
             httpContext.Request.Headers.UserAgent.ToString(),
             cancellationToken);
 
+        // The password was right and a second factor is owed. NOT a success: no
+        // cookie is set, no permissions are returned, and the ticket authenticates
+        // nothing except an attempt at /mfa/verify. 200 rather than 401 because
+        // the caller has something to do next, and the dashboard needs to tell
+        // "wrong password" apart from "now show the code screen".
+        if (outcome.MfaRequired)
+        {
+            return Results.Ok(new MfaChallengeResponse(true, outcome.MfaChallengeToken!, outcome.ExpiresAt));
+        }
+
         if (!outcome.Success)
         {
             // Uniform response for unknown account / wrong password / disabled /
@@ -205,6 +422,12 @@ public static class AuthEndpoints
             // the console at all; this field is for the experience, not the security.
             MustChangePassword = httpContext.User.HasClaim(
                 AdminAuthenticationHandler.PasswordChangeRequiredClaimType, bool.TrueString),
+            // Same contract as MustChangePassword: the console renders the
+            // enrolment interstitial from this, and
+            // MfaEnrolmentRequiredMiddleware enforces it independently for callers
+            // that never load the console.
+            MfaEnrolmentRequired = httpContext.User.HasClaim(
+                AdminAuthenticationHandler.MfaEnrolmentRequiredClaimType, bool.TrueString),
         });
     }
 

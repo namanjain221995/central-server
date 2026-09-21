@@ -46,6 +46,7 @@ public sealed class PackageAvailabilityTests(AdminApiPostgresFixture fixture)
             var user = new PlatformUser(org.Id, email, "Package Admin");
             user.SetPasswordHash(
                 PasswordHasher.Hash(AdminApiPostgresFixture.Password), DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
             user.GrantAllDeviceScope();
 

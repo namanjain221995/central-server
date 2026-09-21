@@ -50,6 +50,7 @@ public sealed class RetiredDeviceReEnrollmentTests(AdminApiPostgresFixture fixtu
             var user = new PlatformUser(org.Id, email, "Retire Admin");
             user.SetPasswordHash(
                 PasswordHasher.Hash(AdminApiPostgresFixture.Password), DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
 
             if (allDeviceScope)

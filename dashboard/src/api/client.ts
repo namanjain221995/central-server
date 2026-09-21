@@ -1421,9 +1421,50 @@ export interface CurrentUser {
    * value as false.
    */
   mustChangePassword?: boolean
+  /**
+   * True while this administrator has no confirmed second factor. Two-factor
+   * authentication is mandatory, so the API allows nothing except reading this
+   * identity, changing the password and enrolling until it is false.
+   *
+   * Optional for the same reason as `mustChangePassword`: the sign-in response
+   * does not carry it. Treat a missing value as false.
+   */
+  mfaEnrolmentRequired?: boolean
 }
 
-export async function login(email: string, password: string): Promise<CurrentUser> {
+/**
+ * Sign-in did not fail, but it did not finish either: the password was right and
+ * a code is owed.
+ *
+ * The challenge token is deliberately NOT a session token. It authenticates
+ * nothing, carries no permissions and is accepted at exactly one endpoint, so
+ * holding it in memory for the length of the code prompt is not the same as
+ * holding a credential. It is never written to storage.
+ */
+export interface MfaChallenge {
+  challengeToken: string
+  challengeExpiresAt: string
+}
+
+export type LoginResult =
+  | { kind: 'signed-in'; user: CurrentUser }
+  | { kind: 'mfa-required'; challenge: MfaChallenge }
+
+function toCurrentUser(body: {
+  userId: string
+  email: string
+  displayName: string
+  permissions: string[]
+}): CurrentUser {
+  return {
+    userId: body.userId,
+    email: body.email,
+    displayName: body.displayName,
+    permissions: body.permissions,
+  }
+}
+
+export async function login(email: string, password: string): Promise<LoginResult> {
   const response = await fetch('/api/admin/v1/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
@@ -1437,18 +1478,81 @@ export async function login(email: string, password: string): Promise<CurrentUse
   // The HttpOnly session cookie was set by this response; the sessionToken field
   // in the body exists for non-browser clients and is deliberately not stored.
   const body = (await response.json()) as {
+    mfaRequired?: boolean
+    challengeToken?: string
+    challengeExpiresAt?: string
     userId: string
     email: string
     displayName: string
     permissions: string[]
   }
 
-  return {
-    userId: body.userId,
-    email: body.email,
-    displayName: body.displayName,
-    permissions: body.permissions,
+  if (body.mfaRequired && body.challengeToken) {
+    return {
+      kind: 'mfa-required',
+      challenge: {
+        challengeToken: body.challengeToken,
+        challengeExpiresAt: body.challengeExpiresAt ?? '',
+      },
+    }
   }
+
+  return { kind: 'signed-in', user: toCurrentUser(body) }
+}
+
+/** Completes a sign-in with a code from the authenticator app, or a recovery code. */
+export async function verifyMfa(challengeToken: string, code: string): Promise<CurrentUser> {
+  const response = await fetch('/api/admin/v1/auth/mfa/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    body: JSON.stringify({ challengeToken, code }),
+  })
+
+  if (!response.ok) {
+    throw new ApiError(response.status, 'Sign-in failed', response.headers.get('X-Correlation-Id'))
+  }
+
+  return toCurrentUser(
+    (await response.json()) as {
+      userId: string
+      email: string
+      displayName: string
+      permissions: string[]
+    },
+  )
+}
+
+export interface MfaEnrolmentStart {
+  /** Base32, for hand entry when a camera will not read the code. */
+  secret: string
+  otpAuthUri: string
+  /** A complete SVG document, rendered by the server. Inlined, never fetched. */
+  qrCodeSvg: string
+}
+
+/** Issues a new authenticator secret for the signed-in administrator. */
+export async function beginMfaEnrolment(): Promise<MfaEnrolmentStart> {
+  return request<MfaEnrolmentStart>('/admin/v1/auth/mfa/enroll', { method: 'POST' })
+}
+
+/** Proves the authenticator works, and returns the recovery codes exactly once. */
+export async function confirmMfaEnrolment(code: string): Promise<{ recoveryCodes: string[] }> {
+  return request<{ recoveryCodes: string[] }>('/admin/v1/auth/mfa/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })
+}
+
+/** Replaces the recovery codes, returning the new set exactly once. */
+export async function regenerateRecoveryCodes(): Promise<{ recoveryCodes: string[] }> {
+  return request<{ recoveryCodes: string[] }>('/admin/v1/auth/mfa/recovery-codes', { method: 'POST' })
+}
+
+/** Clears another administrator's second factor. Requires Platform.UserManage. */
+export async function resetPlatformUserMfa(userId: string): Promise<void> {
+  await request<void>(`/admin/v1/platform-users/${encodeURIComponent(userId)}/reset-mfa`, {
+    method: 'POST',
+  })
 }
 
 export async function logout(): Promise<void> {

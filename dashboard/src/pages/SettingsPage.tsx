@@ -3,8 +3,9 @@ import { useAuth } from '../auth/AuthContext'
 import { Icon } from '../components/Icon'
 import { AccessLevelsPanel } from './AccessLevelsPanel'
 import { AdministratorsPanel } from './AdministratorsPanel'
+import { SecurityPanel } from './SecurityPanel'
 
-type Tab = 'administrators' | 'access-levels'
+type Tab = 'administrators' | 'access-levels' | 'security'
 
 /**
  * Who may use this console, and what each of them can do.
@@ -50,11 +51,24 @@ export function SettingsPage() {
           <Icon name="shield-check" size={14} />
           Access levels
         </button>
+        {/* Ungated: it shows only the signed-in administrator's own second factor. */}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'security'}
+          className={tab === 'security' ? 'active' : undefined}
+          onClick={() => setTab('security')}
+        >
+          <Icon name="key" size={14} />
+          My security
+        </button>
       </div>
 
-      {tab === 'administrators' && canViewAdministrators
-        ? <AdministratorsPanel />
-        : <AccessLevelsPanel />}
+      {tab === 'security' && <SecurityPanel />}
+      {tab !== 'security' &&
+        (tab === 'administrators' && canViewAdministrators
+          ? <AdministratorsPanel />
+          : <AccessLevelsPanel />)}
     </>
   )
 }

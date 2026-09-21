@@ -157,6 +157,7 @@ public sealed class CreateLocalUserEndpointTests(AdminApiPostgresFixture fixture
             var user = new PlatformUser(org.Id, email, "Creator Only");
             user.SetPasswordHash(
                 Infrastructure.Security.PasswordHasher.Hash(AdminApiPostgresFixture.Password), DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
             user.GrantAllDeviceScope();
             db.PlatformUsers.Add(user);

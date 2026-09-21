@@ -32,12 +32,12 @@ public sealed class LargeUploadKestrelTests(AdminApiPostgresFixture fixture)
         var client = factory.CreateClient();
         client.Timeout = TimeSpan.FromMinutes(3);
 
-        var login = await client.PostAsJsonAsync(
-            new Uri("/admin/v1/auth/login", UriKind.Relative),
-            new { email = AdminApiPostgresFixture.ItAdminEmail, password = AdminApiPostgresFixture.Password });
-        login.EnsureSuccessStatusCode();
-        var token = (await login.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>())
-            .GetProperty("sessionToken").GetString()!;
+        // Through the fixture rather than a login call written out here: sign-in is
+        // two steps now that multi-factor is mandatory, and an inline password POST
+        // receives a challenge with no sessionToken in it. The token is a Bearer
+        // credential against the shared database, so one obtained through the
+        // in-process host authenticates against this Kestrel host just as well.
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.ItAdminEmail);
 
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");

@@ -49,6 +49,7 @@ public sealed class ChangePasswordEndpointTests(AdminApiPostgresFixture fixture)
         user.SetPasswordHash(
             EndpointPlatform.Infrastructure.Security.PasswordHasher.Hash(AdminApiPostgresFixture.Password),
             DateTimeOffset.UtcNow);
+        AdminApiPostgresFixture.EnrolMfa(user);
         await db.SaveChangesAsync();
     }
 

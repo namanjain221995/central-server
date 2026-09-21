@@ -54,6 +54,7 @@ public sealed class EscrowAttemptResetTests(AdminApiPostgresFixture fixture)
             user.SetPasswordHash(
                 Infrastructure.Security.PasswordHasher.Hash(AdminApiPostgresFixture.Password),
                 DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
 
             if (allDeviceScope)

@@ -226,6 +226,14 @@ public sealed class Program
             // anything it blocks must be blocked before a policy can allow it.
             app.UseMiddleware<PasswordChangeRequiredMiddleware>();
 
+            // AFTER the password gate, deliberately. A new administrator is
+            // normally flagged for both, and a temporary password is the weaker
+            // credential of the two - it was displayed on somebody's screen - so
+            // it should be replaced before it is used to enrol a second factor.
+            // The password gate's allowlist does not include the MFA routes, so
+            // this ordering also means the two requirements cannot deadlock.
+            app.UseMiddleware<MfaEnrolmentRequiredMiddleware>();
+
             app.UseAuthorization();
 
             app.MapPlatformHealthChecks();

@@ -125,12 +125,54 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
         _factory = new AdminApiTestFactory(DatabaseConnectionString, redisConnectionString);
     }
 
+    /// <summary>
+    /// The TOTP secret every fixture account is enrolled with.
+    /// </summary>
+    /// <remarks>
+    /// Fixed so a test can compute a valid code for any of them. Not a secret in
+    /// any meaningful sense - it protects throwaway accounts in a throwaway
+    /// database.
+    /// </remarks>
+    public const string TotpSecret = "MZXW6YTBOIMZXW6YTBOIMZXW6YTBOIMZ";
+
+    /// <summary>
+    /// Marks an account as already enrolled for multi-factor authentication.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Every test that creates its own administrator must call this.</b>
+    /// Multi-factor authentication is mandatory, so an un-enrolled account is
+    /// confined to the enrolment screens by <c>MfaEnrolmentRequiredMiddleware</c>
+    /// and every other endpoint answers 403 — which reads as a permissions bug in
+    /// whatever test hits it, not as a missing enrolment.
+    /// </para>
+    /// <para>
+    /// Uses the shared <see cref="TotpSecret"/>, so
+    /// <see cref="CurrentTotpCode"/> produces a valid code for any account.
+    /// The enrolment flow itself is covered by <c>MfaEndpointTests</c>, which
+    /// deliberately creates an account WITHOUT calling this.
+    /// </para>
+    /// </remarks>
+    public static void EnrolMfa(PlatformUser user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+
+        user.BeginMfaEnrolment(new AesGcmTotpSecretProtector(
+            Options.Create(new MfaOptions { TotpKey = TestMfaKey })).Protect(TotpSecret));
+
+        // Counter 0 so the first real sign-in, whose counter is the current Unix
+        // time step, is always greater and therefore not seen as a replay.
+        user.ConfirmMfaEnrolment(DateTimeOffset.UtcNow, counter: 0);
+    }
+
     private static PlatformUser AddUser(
         EndpointPlatformDbContext dbContext, Guid organizationId, string email, Guid roleId)
     {
         var user = new PlatformUser(organizationId, email, email.Split('@')[0]);
         user.SetPasswordHash(PasswordHasher.Hash(Password), DateTimeOffset.UtcNow);
         user.AssignRole(roleId);
+
+        EnrolMfa(user);
 
         // These fixture accounts stand in for established operators, which the
         // production migration grants organization-wide scope. Tests that exercise
@@ -175,7 +217,16 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
         return new EndpointPlatformDbContext(options);
     }
 
-    /// <summary>Signs the account in through the real endpoint and returns a Bearer token.</summary>
+    /// <summary>
+    /// Signs the account in through the real endpoints and returns a Bearer token.
+    /// </summary>
+    /// <remarks>
+    /// Two steps, because the fixture accounts are enrolled for multi-factor
+    /// authentication: the password returns a challenge, and a code computed from
+    /// <see cref="TotpSecret"/> exchanges it for a session. Driven through the real
+    /// HTTP endpoints rather than shortcut in the database, so every test in this
+    /// suite exercises the actual sign-in path.
+    /// </remarks>
     public async Task<string> SignInAsync(string email, string password = Password)
     {
         using var client = Factory.CreateClient();
@@ -187,7 +238,50 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
         response.EnsureSuccessStatusCode();
 
         var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        return body.GetProperty("sessionToken").GetString()!;
+
+        if (!body.TryGetProperty("mfaRequired", out var required) || !required.GetBoolean())
+        {
+            // Not enrolled: the password alone produced a session.
+            return body.GetProperty("sessionToken").GetString()!;
+        }
+
+        // Clear the replay high-water mark first.
+        //
+        // TOTP replay protection refuses any time step already used, so an account
+        // can legitimately complete only ONE sign-in per 30-second window. That is
+        // correct in production and wrong for a test suite, where dozens of tests
+        // sign the same fixture account in within the same window and every one
+        // after the first would be refused as a replay.
+        //
+        // Cleared here rather than by weakening the guard: the guard is exactly
+        // what MfaEndpointTests.A_code_cannot_be_used_twice pins, and it must stay
+        // intact. This is the fixture opting out of a production rule it is not
+        // trying to exercise.
+        await using (var dbContext = CreateDbContext())
+        {
+            await dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE endpoint_platform.platform_users SET totp_last_counter = NULL WHERE normalized_email = {email.ToUpperInvariant()}");
+        }
+
+        var verified = await client.PostAsJsonAsync(
+            new Uri("/admin/v1/auth/mfa/verify", UriKind.Relative),
+            new
+            {
+                challengeToken = body.GetProperty("challengeToken").GetString(),
+                code = CurrentTotpCode(),
+            });
+
+        verified.EnsureSuccessStatusCode();
+
+        var session = await verified.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        return session.GetProperty("sessionToken").GetString()!;
+    }
+
+    /// <summary>The code an authenticator holding <see cref="TotpSecret"/> would show now.</summary>
+    public static string CurrentTotpCode(DateTimeOffset? at = null)
+    {
+        var moment = at ?? DateTimeOffset.UtcNow;
+        return Totp.ComputeCode(Totp.FromBase32(TotpSecret), Totp.CounterFor(moment));
     }
 
     public HttpClient CreateClientFor(string token)

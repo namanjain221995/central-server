@@ -321,6 +321,99 @@ public sealed class PlatformUserService(
         return new PlatformUserCredentialResult(PlatformUserChangeStatus.Success, user.Id, password);
     }
 
+    /// <summary>
+    /// Clears another administrator's second factor, returning them to enrolment.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The answer to "I lost my phone and I am out of recovery codes". Without it
+    /// that account is unreachable forever, because enrolment is mandatory and
+    /// there is nothing left to authenticate the second factor with.
+    /// </para>
+    /// <para>
+    /// <b>Self-reset is refused.</b> An administrator who could clear their own
+    /// second factor from a live session would reduce multi-factor to
+    /// single-factor: anyone who borrowed an unlocked browser could drop the
+    /// requirement and re-enrol their own authenticator. The password-reset path
+    /// refuses self-targeting for the same reason.
+    /// </para>
+    /// <para>
+    /// <see cref="PlatformUser.ResetMfa"/> rotates the security stamp, so every
+    /// session the account holds dies at once. If the reset is happening because
+    /// the account may be compromised, leaving its sessions alive would defeat
+    /// the point - and recovery codes are replaced rather than left usable.
+    /// </para>
+    /// </remarks>
+    public async Task<PlatformUserChangeStatus> ResetMfaAsync(
+        Guid organizationId,
+        Guid actorUserId,
+        string actorDisplay,
+        Guid targetUserId,
+        CancellationToken cancellationToken = default)
+    {
+        if (targetUserId == actorUserId)
+        {
+            return PlatformUserChangeStatus.CannotTargetSelf;
+        }
+
+        var user = await _dbContext.PlatformUsers
+            .SingleOrDefaultAsync(u => u.Id == targetUserId && u.OrganizationId == organizationId, cancellationToken);
+
+        if (user is null)
+        {
+            return PlatformUserChangeStatus.NotFound;
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        var hadMfa = user.HasConfirmedMfa;
+
+        user.ResetMfa();
+
+        // Unused codes would otherwise survive the reset and remain valid against
+        // whatever the account enrols next, which is a bypass nobody would expect.
+        var codes = await _dbContext.MfaRecoveryCodes
+            .Where(c => c.UserId == user.Id)
+            .ToListAsync(cancellationToken);
+        _dbContext.MfaRecoveryCodes.RemoveRange(codes);
+
+        // Any half-finished sign-in for this account must die with the reset.
+        var challenges = await _dbContext.AdminMfaChallenges
+            .Where(c => c.UserId == user.Id && c.ConsumedAt == null)
+            .ToListAsync(cancellationToken);
+        foreach (var challenge in challenges)
+        {
+            challenge.Consume(now);
+        }
+
+        await RevokeSessionsAsync(user.Id, now, cancellationToken);
+
+        _auditWriter.Stage(
+            organizationId,
+            AuditActorType.PlatformUser,
+            actorUserId,
+            actorDisplay,
+            "platform.user.mfa_reset",
+            AuditResult.Success,
+            audit => audit
+                .OnTarget("platform_user", user.Id.ToString(), user.Email)
+                .Requiring(Permissions.Platform.UserManage)
+                .WithStateChange(
+                    AuditStateRedactor.Redact(new Dictionary<string, object?> { ["mfaEnrolled"] = hadMfa }),
+                    AuditStateRedactor.Redact(new Dictionary<string, object?>
+                    {
+                        ["mfaEnrolled"] = false,
+                        ["recoveryCodesCleared"] = codes.Count,
+                        ["sessionsRevoked"] = true,
+                    })));
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        _logger.LogWarning(
+            "Multi-factor authentication reset for administrator {Email} by {Actor}.", user.Email, actorDisplay);
+
+        return PlatformUserChangeStatus.Success;
+    }
+
     /// <summary>Disables an administrator, ending every session they hold.</summary>
     public Task<PlatformUserChangeStatus> DisableAsync(
         Guid organizationId, Guid actorUserId, string actorDisplay, Guid targetUserId,

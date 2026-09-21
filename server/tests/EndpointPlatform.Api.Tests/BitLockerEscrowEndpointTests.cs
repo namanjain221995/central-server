@@ -111,6 +111,7 @@ public sealed class BitLockerEscrowEndpointTests(AdminApiPostgresFixture fixture
             user.SetPasswordHash(
                 Infrastructure.Security.PasswordHasher.Hash(AdminApiPostgresFixture.Password),
                 DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
 
             // Without this a new administrator is scoped to no devices at all --
@@ -243,6 +244,7 @@ public sealed class BitLockerEscrowEndpointTests(AdminApiPostgresFixture fixture
             user.SetPasswordHash(
                 Infrastructure.Security.PasswordHasher.Hash(AdminApiPostgresFixture.Password),
                 DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
             db.PlatformUsers.Add(user);
             await db.SaveChangesAsync();

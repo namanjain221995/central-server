@@ -133,6 +133,7 @@ internal sealed class GroupTestSupport(AdminApiPostgresFixture fixture)
             var user = new PlatformUser(org.Id, email, "Scoped Admin");
             user.SetPasswordHash(
                 Infrastructure.Security.PasswordHasher.Hash(AdminApiPostgresFixture.Password), DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
             db.PlatformUsers.Add(user);
             await db.SaveChangesAsync();

@@ -59,6 +59,7 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
             var user = new PlatformUser(org.Id, email, "Update Admin");
             user.SetPasswordHash(
                 PasswordHasher.Hash(AdminApiPostgresFixture.Password), DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
 
             if (allDeviceScope)

@@ -240,6 +240,7 @@ public sealed class RbacEnforcementTests(AdminApiPostgresFixture fixture)
             user.SetPasswordHash(
                 Infrastructure.Security.PasswordHasher.Hash(AdminApiPostgresFixture.Password),
                 DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             dbContext.PlatformUsers.Add(user);
             await dbContext.SaveChangesAsync();
             userId = user.Id;

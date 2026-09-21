@@ -54,6 +54,21 @@
     <PackageVersion Include="AspNetCore.HealthChecks.UI.Client" Version="9.0.0" />
   </ItemGroup>
 
+  <ItemGroup Label="Multi-factor authentication">
+    <!--
+      QR rendering for authenticator enrolment. MIT licensed (the .NET port of
+      Nayuki's generator), no System.Drawing dependency, and it emits SVG - so
+      nothing has to be added to the dashboard, which deliberately carries only
+      three runtime dependencies.
+
+      Taken as a package rather than written here, unlike the TOTP algorithm
+      alongside it. TOTP is forty lines with official RFC 6238 test vectors to
+      check it against; QR encoding is several hundred lines of Reed-Solomon and
+      masking with no comparable way to prove a hand-written version correct.
+    -->
+    <PackageVersion Include="Net.Codecrete.QrCodeGenerator" Version="3.2.1" />
+  </ItemGroup>
+
   <ItemGroup Label="API surface">
     <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.2.3" />
     <PackageVersion Include="FluentValidation" Version="12.1.1" />

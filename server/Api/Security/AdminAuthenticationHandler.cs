@@ -44,6 +44,12 @@ public sealed class AdminAuthenticationHandler(
     /// </summary>
     public const string PasswordChangeRequiredClaimType = "epp:password_change_required";
 
+    /// <summary>
+    /// Present and "True" while the administrator has no confirmed second factor.
+    /// Read by <see cref="MfaEnrolmentRequiredMiddleware"/>.
+    /// </summary>
+    public const string MfaEnrolmentRequiredClaimType = "epp:mfa_enrolment_required";
+
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         var token = ExtractToken();
@@ -77,6 +83,11 @@ public sealed class AdminAuthenticationHandler(
         if (admin.MustChangePassword)
         {
             claims.Add(new Claim(PasswordChangeRequiredClaimType, bool.TrueString));
+        }
+
+        if (admin.MfaEnrolmentRequired)
+        {
+            claims.Add(new Claim(MfaEnrolmentRequiredClaimType, bool.TrueString));
         }
 
         claims.AddRange(admin.Permissions.Select(p => new Claim(PermissionClaimType, p)));

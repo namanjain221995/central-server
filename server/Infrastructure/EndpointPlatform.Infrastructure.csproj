@@ -22,6 +22,7 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" />
     <PackageReference Include="StackExchange.Redis" />
+    <PackageReference Include="Net.Codecrete.QrCodeGenerator" />
     <!--
       Microsoft.Extensions.Options.ConfigurationExtensions / .DataAnnotations are
       part of the Microsoft.AspNetCore.App shared framework referenced above, so

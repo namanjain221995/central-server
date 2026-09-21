@@ -52,6 +52,7 @@ public sealed class UnsignedAgentReleaseTests(AdminApiPostgresFixture fixture)
             var user = new PlatformUser(org.Id, email, "Release Admin");
             user.SetPasswordHash(
                 PasswordHasher.Hash(AdminApiPostgresFixture.Password), DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
             user.GrantAllDeviceScope();
 

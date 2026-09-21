@@ -13,6 +13,7 @@ import { SoftwarePage } from './pages/SoftwarePage'
 import { UpdatesPage } from './pages/UpdatesPage'
 import { LoginPage } from './pages/LoginPage'
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage'
+import { MfaEnrolmentPage } from './pages/MfaEnrolmentPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TasksPage } from './pages/TasksPage'
@@ -47,6 +48,14 @@ function AuthGate() {
   // application at all.
   if (user.mustChangePassword) {
     return <ForcedPasswordChangePage />
+  }
+
+  // After the password gate, matching the server's middleware order. A new
+  // administrator is normally flagged for both, and the temporary password is the
+  // weaker credential of the two — it was displayed on somebody's screen — so it
+  // is replaced before it can be used to enrol a second factor.
+  if (user.mfaEnrolmentRequired) {
+    return <MfaEnrolmentPage />
   }
 
   return (

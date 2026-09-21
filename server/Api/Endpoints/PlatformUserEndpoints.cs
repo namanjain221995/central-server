@@ -51,6 +51,13 @@ public static class PlatformUserEndpoints
             .WithName("ResetPlatformUserPassword")
             .RequirePermission(Permissions.Platform.UserManage);
 
+        // Same permission as a password reset, and the same reason: this is the
+        // only way back in for somebody who has lost both their authenticator and
+        // their recovery codes. Self-targeting is refused in the service.
+        group.MapPost("/{userId:guid}/reset-mfa", ResetMfaAsync)
+            .WithName("AdminResetPlatformUserMfa")
+            .RequirePermission(Permissions.Platform.UserManage);
+
         return endpoints;
     }
 
@@ -105,6 +112,18 @@ public static class PlatformUserEndpoints
                 $"/admin/v1/platform-users/{result.UserId}",
                 new CreatePlatformUserResponse(result.UserId!.Value, result.GeneratedPassword!, ShownOnceWarning))
             : Failure(result.Status);
+    }
+
+    /// <summary>Clears another administrator's second factor, returning them to enrolment.</summary>
+    private static async Task<IResult> ResetMfaAsync(
+        Guid userId, HttpContext httpContext, PlatformUserService service, CancellationToken cancellationToken)
+    {
+        var actor = AdminActor.Required(httpContext.User);
+
+        var status = await service.ResetMfaAsync(
+            actor.OrganizationId, actor.UserId, actor.Email, userId, cancellationToken);
+
+        return status == PlatformUserChangeStatus.Success ? Results.NoContent() : Failure(status);
     }
 
     private static async Task<IResult> ResetPasswordAsync(

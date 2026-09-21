@@ -151,6 +151,7 @@ public sealed class DriverEndpointTests(AdminApiPostgresFixture fixture)
             user.SetPasswordHash(
                 Infrastructure.Security.PasswordHasher.Hash(AdminApiPostgresFixture.Password),
                 DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
             user.AssignRole(role.Id);
             db.PlatformUsers.Add(user);
             await db.SaveChangesAsync();

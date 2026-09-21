@@ -240,7 +240,15 @@ public sealed class AdminAuthService(
         var permissions = await ResolvePermissionsAsync(user.Id, cancellationToken);
 
         return new AuthenticatedAdmin(
-            user.Id, user.OrganizationId, user.Email, user.DisplayName, permissions, user.MustChangePassword);
+            user.Id,
+            user.OrganizationId,
+            user.Email,
+            user.DisplayName,
+            permissions,
+            user.MustChangePassword,
+            // Mandatory enrolment: any session without a CONFIRMED second factor is
+            // confined to the enrolment screens by MfaEnrolmentRequiredMiddleware.
+            MfaEnrolmentRequired: !user.HasConfirmedMfa);
     }
 
     /// <summary>
@@ -685,4 +693,5 @@ public sealed record AuthenticatedAdmin(
     string Email,
     string DisplayName,
     IReadOnlyList<string> Permissions,
-    bool MustChangePassword);
+    bool MustChangePassword,
+    bool MfaEnrolmentRequired);

@@ -1833,3 +1833,88 @@ details.evidence[open] > summary::before {
   color: var(--color-text-muted);
   line-height: 1.35;
 }
+
+/* --------------------------------------------------------------------------
+   Two-factor authentication
+   -------------------------------------------------------------------------- */
+
+/* A link-shaped button. Used where the action is secondary to the sentence it
+   sits in ("Cannot scan it? Enter the setup key by hand"), where a real button
+   would pull more weight than the choice deserves. Still a <button>, because it
+   performs an action rather than navigating. */
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.btn-link:hover { color: var(--color-primary-hover); }
+.btn-link:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+/* The QR code. White background and generous padding are not decoration: the
+   quiet zone is part of the QR specification and scanners fail without it, and
+   a code that inherits a dark theme inverts and stops scanning entirely. */
+.qr-frame {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+  margin: 16px 0;
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.qr-frame svg { width: 200px; height: 200px; display: block; }
+
+/* The Base32 setup key, for hand entry. Monospace and letter-spaced because it
+   is transcribed character by character from a screen to a phone. */
+.mono-block {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  word-break: break-all;
+  padding: 12px;
+  background: var(--color-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  user-select: all;
+}
+
+.recovery-codes {
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--color-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.recovery-codes-list {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+  padding: 0 0 0 20px;
+}
+.recovery-codes-list code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  user-select: all;
+}
+.recovery-codes-actions { display: flex; gap: 8px; margin-top: 16px; }
+
+/* One column on a narrow screen: two columns of hyphenated codes wrap mid-code
+   on a phone, which is exactly where somebody reads them back. */
+@media (max-width: 420px) {
+  .recovery-codes-list { grid-template-columns: 1fr; }
+}
+
+/* Printing a recovery-code sheet is a supported action, so make the printed
+   page carry only the codes rather than the whole console. */
+@media print {
+  body * { visibility: hidden; }
+  .recovery-codes, .recovery-codes * { visibility: visible; }
+  .recovery-codes { position: absolute; inset: 0; border: none; background: none; }
+  .recovery-codes-actions { display: none; }
+}

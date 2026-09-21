@@ -335,12 +335,11 @@ public sealed class GroupEndpointTests(AdminApiPostgresFixture fixture)
     {
         var factory = await _fixture.GetKestrelFactoryAsync();
         using var client = factory.CreateClient();
-        var login = await client.PostAsJsonAsync(
-            new Uri("/admin/v1/auth/login", UriKind.Relative),
-            new { email = AdminApiPostgresFixture.ItAdminEmail, password = AdminApiPostgresFixture.Password });
-        login.EnsureSuccessStatusCode();
-        client.DefaultRequestHeaders.Authorization = new("Bearer",
-            (await login.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("sessionToken").GetString());
+        // Through the fixture: sign-in is two steps now that multi-factor is
+        // mandatory, so an inline password POST receives a challenge rather than a
+        // session token.
+        client.DefaultRequestHeaders.Authorization = new(
+            "Bearer", await _fixture.SignInAsync(AdminApiPostgresFixture.ItAdminEmail));
         client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
 
         var group = await _support.CreateGroupAsync(client, UniqueName("Huge"));
