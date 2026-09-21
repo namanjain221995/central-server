@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Endpoint Management Platform — Architecture</title>
+<style>
+  /* ---------------------------------------------------------------------
+     Print sheet. Sized for A4 and intended to be rendered to PDF; exactly
+     three pages, one section each. Everything is inline so it renders
+     identically offline and in a headless browser.
+     --------------------------------------------------------------------- */
+  @page { size: A4; margin: 14mm 13mm; }
+
+  :root {
+    --ink:        #11161d;
+    --ink-soft:   #48525f;
+    --ink-faint:  #7b8794;
+    --rule:       #d7dde4;
+    --accent:     #1d4ed8;
+    --accent-bg:  #eef2ff;
+    --admin:      #1d4ed8;
+    --agent:      #0f766e;
+    --danger:     #b42318;
+    --warn-bg:    #fff7ed;
+    --warn-br:    #fdba74;
+    --surface:    #f7f9fb;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    color: var(--ink);
+    font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: 9.6pt;
+    line-height: 1.45;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .page {
+    page-break-after: always;
+    break-after: page;
+    position: relative;
+    min-height: 262mm;
+    padding-bottom: 10mm;
+  }
+  .page:last-of-type { page-break-after: auto; break-after: auto; }
+
+  /* --- masthead ------------------------------------------------------- */
+  .masthead {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 5px;
+    margin-bottom: 14px;
+  }
+  .masthead .title { font-size: 15pt; font-weight: 700; letter-spacing: -0.2px; }
+  .masthead .meta  { font-size: 7.6pt; color: var(--ink-faint); text-align: right; }
+
+  h2 {
+    font-size: 12pt;
+    margin: 0 0 3px;
+    letter-spacing: -0.2px;
+  }
+  .standfirst {
+    color: var(--ink-soft);
+    margin: 0 0 14px;
+    font-size: 9.2pt;
+    max-width: 165mm;
+  }
+  h3 {
+    font-size: 9.4pt;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--ink-faint);
+    margin: 16px 0 7px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 3px;
+  }
+
+  p { margin: 0 0 7px; }
+  strong { font-weight: 600; }
+  code {
+    font-family: "Cascadia Mono", Consolas, "SF Mono", monospace;
+    font-size: 8.6pt;
+    background: var(--surface);
+    padding: 0.5px 3px;
+    border-radius: 3px;
+  }
+
+  /* --- tables --------------------------------------------------------- */
+  table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; }
+  th, td {
+    text-align: left;
+    padding: 4px 7px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+    font-size: 8.8pt;
+  }
+  th {
+    font-size: 7.8pt;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--ink-faint);
+    border-bottom: 1.5px solid var(--rule);
+  }
+  td.k { width: 30%; font-weight: 600; }
+
+  /* --- callouts ------------------------------------------------------- */
+  .note {
+    background: var(--accent-bg);
+    border-left: 3px solid var(--accent);
+    padding: 7px 10px;
+    margin: 10px 0;
+    font-size: 8.8pt;
+  }
+  .warn {
+    background: var(--warn-bg);
+    border-left: 3px solid var(--warn-br);
+    padding: 7px 10px;
+    margin: 10px 0;
+    font-size: 8.8pt;
+  }
+  .note .lead, .warn .lead { font-weight: 700; }
+
+  .cols { display: flex; gap: 14px; }
+  .cols > * { flex: 1; min-width: 0; }
+
+  figure { margin: 0; }
+  figcaption {
+    font-size: 7.8pt;
+    color: var(--ink-faint);
+    margin-top: 5px;
+    text-align: center;
+  }
+
+  /* --- SVG type ------------------------------------------------------- */
+  svg { display: block; width: 100%; height: auto; }
+  svg text { font-family: "Segoe UI", Arial, sans-serif; }
+
+  /* Size classes carry the default colour. A CSS rule always beats a
+     fill="..." presentation attribute, so the colour exceptions below are
+     classes too, declared afterwards: equal specificity, later wins. */
+  .t-lbl  { font-size: 9px; font-weight: 600; fill: #11161d; }
+  .t-sm   { font-size: 7.6px; fill: #5b6672; }
+  .t-tiny { font-size: 6.8px; fill: #7b8794; }
+  .t-hd   { font-size: 8px; font-weight: 700; letter-spacing: 0.6px; fill: #7b8794; }
+
+  .cw { fill: #ffffff; }   /* on a dark fill */
+  .cb { fill: #1d4ed8; }   /* administrative */
+  .cg { fill: #0f766e; }   /* agent / endpoint */
+  .cr { fill: #b42318; }   /* refusal, boundary */
+
+  .footer {
+    position: absolute;
+    bottom: 0;
+    left: 0; right: 0;
+    border-top: 1px solid var(--rule);
+    padding-top: 4px;
+    font-size: 7.2pt;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+  }
+</style>
+</head>
+<body>
+
+<!-- ==================================================================== -->
+<!-- PAGE 1 — SYSTEM ARCHITECTURE                                          -->
+<!-- ==================================================================== -->
+<section class="page">
+  <div class="masthead">
+    <div class="title">Endpoint Management Platform</div>
+    <div class="meta">Architecture overview<br>Page 1 of 3 &middot; System &amp; deployment</div>
+  </div>
+
+  <h2>System architecture</h2>
+  <p class="standfirst">
+    Central management for organisation-owned Windows computers. Three .NET processes run
+    under <code>systemd</code> behind nginx on one Ubuntu machine. Nothing runs in a container.
+  </p>
+
+  <figure>
+  <svg viewBox="0 0 700 340" role="img" aria-label="Deployment topology">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#48525f"/>
+      </marker>
+      <marker id="arB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#1d4ed8"/>
+      </marker>
+      <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+      </marker>
+    </defs>
+
+    <!-- outside -->
+    <rect x="8" y="14" width="150" height="52" rx="6" fill="#fff" stroke="#1d4ed8" stroke-width="1.4"/>
+    <text class="t-lbl cb" x="83" y="36" text-anchor="middle">Administrator</text>
+    <text class="t-sm"  x="83" y="49" text-anchor="middle">Browser &middot; React SPA</text>
+    <text class="t-tiny" x="83" y="60" text-anchor="middle">anywhere on the internet</text>
+
+    <rect x="8" y="258" width="150" height="62" rx="6" fill="#fff" stroke="#0f766e" stroke-width="1.4"/>
+    <text class="t-lbl cg" x="83" y="279" text-anchor="middle">Windows endpoints</text>
+    <text class="t-sm"  x="83" y="292" text-anchor="middle">Agent (Windows service)</text>
+    <text class="t-tiny" x="83" y="304" text-anchor="middle">office, home, roaming</text>
+    <text class="t-tiny" x="83" y="314" text-anchor="middle">outbound connections only</text>
+
+    <!-- the machine -->
+    <rect x="212" y="8" width="478" height="324" rx="8" fill="#fbfcfe" stroke="#c3ccd6" stroke-width="1.2" stroke-dasharray="5 3"/>
+    <text class="t-hd" x="228" y="26">UBUNTU MACHINE &mdash; SINGLE HOST</text>
+
+    <!-- nginx -->
+    <rect x="234" y="40" width="130" height="258" rx="6" fill="#eef2ff" stroke="#1d4ed8" stroke-width="1.3"/>
+    <text class="t-lbl cb" x="299" y="62" text-anchor="middle">nginx</text>
+    <text class="t-sm"  x="299" y="76" text-anchor="middle">TLS terminates here</text>
+    <text class="t-sm"  x="299" y="89" text-anchor="middle">port 443 &mdash; the only</text>
+    <text class="t-sm"  x="299" y="100" text-anchor="middle">published port</text>
+    <line x1="248" y1="112" x2="350" y2="112" stroke="#c7d2fe"/>
+    <text class="t-sm" x="252" y="130">/</text>
+    <text class="t-tiny" x="266" y="130">dashboard (static)</text>
+    <text class="t-sm" x="252" y="150">/api/</text>
+    <text class="t-tiny" x="284" y="150">&rarr; Admin API</text>
+    <text class="t-sm" x="252" y="170">/agent/</text>
+    <text class="t-tiny" x="292" y="170">&rarr; Agent API</text>
+    <line x1="248" y1="182" x2="350" y2="182" stroke="#c7d2fe"/>
+    <text class="t-tiny" x="299" y="200" text-anchor="middle">One origin for all three.</text>
+    <text class="t-tiny" x="299" y="211" text-anchor="middle">The session cookie uses</text>
+    <text class="t-tiny" x="299" y="222" text-anchor="middle">the __Host- prefix, so a</text>
+    <text class="t-tiny" x="299" y="233" text-anchor="middle">split origin means nobody</text>
+    <text class="t-tiny" x="299" y="244" text-anchor="middle">can sign in at all.</text>
+    <text class="t-tiny" x="299" y="264" text-anchor="middle">Let's Encrypt certificate</text>
+    <text class="t-tiny" x="299" y="275" text-anchor="middle">via Cloudflare DNS-01</text>
+    <text class="t-tiny" x="299" y="286" text-anchor="middle">(no inbound needed)</text>
+
+    <!-- APIs -->
+    <rect x="404" y="48" width="150" height="72" rx="6" fill="#fff" stroke="#1d4ed8" stroke-width="1.3"/>
+    <text class="t-lbl cb" x="479" y="68" text-anchor="middle">Admin API</text>
+    <text class="t-sm"  x="479" y="82" text-anchor="middle">127.0.0.1 : 5080</text>
+    <text class="t-tiny" x="479" y="96" text-anchor="middle">sign-in, RBAC, audit,</text>
+    <text class="t-tiny" x="479" y="107" text-anchor="middle">BitLocker key reveal</text>
+
+    <rect x="404" y="212" width="150" height="72" rx="6" fill="#fff" stroke="#0f766e" stroke-width="1.3"/>
+    <text class="t-lbl cg" x="479" y="232" text-anchor="middle">Agent API</text>
+    <text class="t-sm"  x="479" y="246" text-anchor="middle">127.0.0.1 : 5081</text>
+    <text class="t-tiny" x="479" y="260" text-anchor="middle">enrolment, heartbeat,</text>
+    <text class="t-tiny" x="479" y="271" text-anchor="middle">inventory, task delivery</text>
+
+    <!-- trust boundary -->
+    <line x1="398" y1="166" x2="560" y2="166" stroke="#b42318" stroke-width="1.2" stroke-dasharray="4 3"/>
+    <text class="t-tiny cr" x="479" y="161" text-anchor="middle">TRUST BOUNDARY &mdash; separate processes, never merged</text>
+    <text class="t-tiny cr" x="479" y="180" text-anchor="middle">enforced by architecture tests at build time</text>
+
+    <!-- data -->
+    <rect x="590" y="88" width="92" height="56" rx="6" fill="#f7f9fb" stroke="#94a3b8" stroke-width="1.2"/>
+    <text class="t-lbl" x="636" y="108" text-anchor="middle">PostgreSQL 17</text>
+    <text class="t-tiny" x="636" y="122" text-anchor="middle">loopback only</text>
+    <text class="t-tiny" x="636" y="133" text-anchor="middle">append-only audit</text>
+
+    <rect x="590" y="192" width="92" height="46" rx="6" fill="#f7f9fb" stroke="#94a3b8" stroke-width="1.2"/>
+    <text class="t-lbl" x="636" y="212" text-anchor="middle">Redis</text>
+    <text class="t-tiny" x="636" y="226" text-anchor="middle">loopback only</text>
+
+    <!-- arrows -->
+    <path d="M158,40 L234,62" stroke="#1d4ed8" stroke-width="1.4" fill="none" marker-end="url(#arB)"/>
+    <text class="t-tiny cb" x="186" y="43">HTTPS 443</text>
+
+    <path d="M158,282 L234,250" stroke="#0f766e" stroke-width="1.4" fill="none" marker-end="url(#arG)"/>
+    <text class="t-tiny cg" x="180" y="276">HTTPS 443</text>
+
+    <path d="M364,96 L404,84" stroke="#48525f" stroke-width="1.2" fill="none" marker-end="url(#ar)"/>
+    <path d="M364,232 L404,244" stroke="#48525f" stroke-width="1.2" fill="none" marker-end="url(#ar)"/>
+
+    <path d="M554,100 L590,110" stroke="#48525f" stroke-width="1.1" fill="none" marker-end="url(#ar)"/>
+    <path d="M554,240 L590,222" stroke="#48525f" stroke-width="1.1" fill="none" marker-end="url(#ar)"/>
+    <path d="M554,110 L582,128 L582,200 L590,205" stroke="#48525f" stroke-width="1.1" fill="none" marker-end="url(#ar)" opacity="0.55"/>
+    <path d="M554,228 L578,210 L578,132 L590,126" stroke="#48525f" stroke-width="1.1" fill="none" marker-end="url(#ar)" opacity="0.55"/>
+  </svg>
+  <figcaption>Every arrow is outbound from the endpoint. No inbound port is ever opened on a managed PC.</figcaption>
+  </figure>
+
+  <h3>The two API hosts</h3>
+  <table>
+    <tr><th>&nbsp;</th><th>Admin API</th><th>Agent API</th></tr>
+    <tr><td class="k">Who calls it</td><td>A human administrator</td><td>An enrolled machine</td></tr>
+    <tr><td class="k">Authenticates with</td><td>Session cookie or bearer token, after password + second factor</td><td>Per-device credential issued at enrolment</td></tr>
+    <tr><td class="k">Can decrypt recovery keys</td><td>Yes</td><td><strong>No</strong> — the key is withheld from this process</td></tr>
+    <tr><td class="k">CORS</td><td>Dashboard origin only</td><td>None — machine to machine</td></tr>
+  </table>
+
+  <div class="note">
+    <span class="lead">Why two processes rather than one.</span>
+    A stolen device credential must never reach an administrative endpoint, and an administrator's
+    session must never be replayable against an agent endpoint. Separation is not a convention here:
+    the build fails if either host references the other.
+  </div>
+
+  <div class="warn">
+    <span class="lead">Publish port 443 only.</span>
+    Both APIs bind to loopback and trust <code>X-Forwarded-For</code> from nginx. Forwarding 5080 or
+    5081 straight through would let anyone on the internet forge their own client IP and assert that
+    their request arrived over HTTPS.
+  </div>
+
+  <div class="footer"><span>Endpoint Management Platform — architecture overview</span><span>Page 1 of 3</span></div>
+</section>
+
+<!-- ==================================================================== -->
+<!-- PAGE 2 — SIGN-IN FLOW                                                 -->
+<!-- ==================================================================== -->
+<section class="page">
+  <div class="masthead">
+    <div class="title">Endpoint Management Platform</div>
+    <div class="meta">Architecture overview<br>Page 2 of 3 &middot; Administrator sign-in</div>
+  </div>
+
+  <h2>Administrator sign-in</h2>
+  <p class="standfirst">
+    Two-factor authentication is mandatory for every administrator and cannot be switched off.
+    A correct password alone never produces a session.
+  </p>
+
+  <figure>
+  <svg viewBox="0 0 700 430" role="img" aria-label="Sign-in flowchart">
+    <defs>
+      <marker id="f1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#48525f"/>
+      </marker>
+      <marker id="f2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#b42318"/>
+      </marker>
+    </defs>
+
+    <!-- start -->
+    <rect x="252" y="6" width="196" height="28" rx="14" fill="#11161d"/>
+    <text class="t-lbl cw" x="350" y="24" text-anchor="middle">E-mail + password submitted</text>
+    <path d="M350,34 L350,50" stroke="#48525f" stroke-width="1.3" marker-end="url(#f1)"/>
+
+    <!-- gate 1 -->
+    <path d="M350,52 L470,78 L350,104 L230,78 Z" fill="#fff" stroke="#48525f" stroke-width="1.2"/>
+    <text class="t-lbl" x="350" y="75" text-anchor="middle">Is this address over budget?</text>
+    <text class="t-tiny" x="350" y="88" text-anchor="middle">25 failed attempts in 15 minutes</text>
+
+    <!-- refuse column -->
+    <rect x="516" y="62" width="172" height="46" rx="6" fill="#fef2f2" stroke="#b42318" stroke-width="1.2"/>
+    <text class="t-lbl cr" x="602" y="80" text-anchor="middle">Refused</text>
+    <text class="t-tiny" x="602" y="93" text-anchor="middle">One identical message for every</text>
+    <text class="t-tiny" x="602" y="102" text-anchor="middle">failure. Reason goes to the audit log.</text>
+    <path d="M470,78 L516,80" stroke="#b42318" stroke-width="1.2" marker-end="url(#f2)"/>
+    <text class="t-tiny cr" x="492" y="73" text-anchor="middle">yes</text>
+
+    <path d="M350,104 L350,120" stroke="#48525f" stroke-width="1.3" marker-end="url(#f1)"/>
+    <text class="t-tiny" x="360" y="116">no</text>
+
+    <!-- gate 2 -->
+    <path d="M350,122 L470,148 L350,174 L230,148 Z" fill="#fff" stroke="#48525f" stroke-width="1.2"/>
+    <text class="t-lbl" x="350" y="145" text-anchor="middle">Password correct?</text>
+    <text class="t-tiny" x="350" y="158" text-anchor="middle">account known, enabled, not locked</text>
+
+    <path d="M470,148 L500,148 L500,104 L516,100" stroke="#b42318" stroke-width="1.2" fill="none" marker-end="url(#f2)"/>
+    <text class="t-tiny cr" x="486" y="143">no</text>
+    <text class="t-tiny cr" x="506" y="128">count</text>
+    <text class="t-tiny cr" x="506" y="137">failure</text>
+
+    <path d="M350,174 L350,190" stroke="#48525f" stroke-width="1.3" marker-end="url(#f1)"/>
+    <text class="t-tiny" x="360" y="186">yes</text>
+
+    <!-- gate 3 -->
+    <path d="M350,192 L470,218 L350,244 L230,218 Z" fill="#fff" stroke="#48525f" stroke-width="1.2"/>
+    <text class="t-lbl" x="350" y="215" text-anchor="middle">Second factor set up?</text>
+    <text class="t-tiny" x="350" y="228" text-anchor="middle">a confirmed authenticator</text>
+
+    <!-- enrolment branch (left) -->
+    <path d="M230,218 L150,218 L150,250" stroke="#48525f" stroke-width="1.2" fill="none" marker-end="url(#f1)"/>
+    <text class="t-tiny" x="176" y="213">no</text>
+
+    <rect x="34" y="252" width="232" height="76" rx="6" fill="#f7f9fb" stroke="#94a3b8" stroke-width="1.2"/>
+    <text class="t-lbl" x="150" y="270" text-anchor="middle">Confined to enrolment</text>
+    <text class="t-tiny" x="150" y="284" text-anchor="middle">A session is issued, but every other</text>
+    <text class="t-tiny" x="150" y="294" text-anchor="middle">endpoint answers 403 until enrolment</text>
+    <text class="t-tiny" x="150" y="304" text-anchor="middle">is finished. Scan the QR code, enter</text>
+    <text class="t-tiny" x="150" y="314" text-anchor="middle">a code, then save ten recovery codes</text>
+    <text class="t-tiny" x="150" y="324" text-anchor="middle">— shown once and never again.</text>
+
+    <path d="M150,328 L150,368 L300,368" stroke="#48525f" stroke-width="1.2" fill="none" marker-end="url(#f1)"/>
+
+    <!-- challenge branch (right/centre) -->
+    <path d="M350,244 L350,260" stroke="#48525f" stroke-width="1.3" marker-end="url(#f1)"/>
+    <text class="t-tiny" x="360" y="256">yes</text>
+
+    <rect x="286" y="262" width="230" height="52" rx="6" fill="#eef2ff" stroke="#1d4ed8" stroke-width="1.3"/>
+    <text class="t-lbl cb" x="401" y="280" text-anchor="middle">Challenge issued — not a session</text>
+    <text class="t-tiny" x="401" y="293" text-anchor="middle">Valid 5 minutes. Burns after 5 wrong codes.</text>
+    <text class="t-tiny" x="401" y="304" text-anchor="middle">Grants nothing except one verify attempt.</text>
+
+    <path d="M401,314 L401,330" stroke="#48525f" stroke-width="1.3" marker-end="url(#f1)"/>
+
+    <path d="M401,332 L516,352 L401,372 L286,352 Z" fill="#fff" stroke="#48525f" stroke-width="1.2"/>
+    <text class="t-lbl" x="401" y="350" text-anchor="middle">Code valid, and unused?</text>
+    <text class="t-tiny" x="401" y="362" text-anchor="middle">6-digit code, or a recovery code</text>
+
+    <path d="M516,352 L560,352 L560,112 L602,108" stroke="#b42318" stroke-width="1.2" fill="none" marker-end="url(#f2)"/>
+    <text class="t-tiny cr" x="534" y="347">no</text>
+
+    <!-- success -->
+    <path d="M401,372 L401,392 L352,392" stroke="#48525f" stroke-width="1.3" fill="none" marker-end="url(#f1)"/>
+    <text class="t-tiny" x="410" y="386">yes</text>
+
+    <rect x="200" y="378" width="152" height="30" rx="15" fill="#065f46"/>
+    <text class="t-lbl cw" x="276" y="397" text-anchor="middle">Signed in</text>
+  </svg>
+  <figcaption>A code works only once, even during the ~90 seconds it stays mathematically valid.</figcaption>
+  </figure>
+
+  <div class="cols">
+    <div>
+      <h3>Protecting the account</h3>
+      <table>
+        <tr><td class="k">Lockout</td><td>5 failures locks for 15 minutes</td></tr>
+        <tr><td class="k">Forgetting</td><td>The count decays after 60 minutes</td></tr>
+        <tr><td class="k">Session life</td><td>12 hours, no sliding renewal</td></tr>
+        <tr><td class="k">Password floor</td><td>12 characters, screened for guessability</td></tr>
+      </table>
+    </div>
+    <div>
+      <h3>Protecting against lockout abuse</h3>
+      <p>
+        An address that keeps failing is refused for 15 minutes, and while refused it
+        <strong>cannot drive any account's lockout counter</strong>. Without that pairing, anyone who
+        knew an administrator's e-mail address — which is simply their username — could keep that
+        person locked out indefinitely at almost no cost.
+      </p>
+    </div>
+  </div>
+
+  <div class="footer"><span>Endpoint Management Platform — architecture overview</span><span>Page 2 of 3</span></div>
+</section>
+
+<!-- ==================================================================== -->
+<!-- PAGE 3 — AGENT LIFECYCLE                                              -->
+<!-- ==================================================================== -->
+<section class="page">
+  <div class="masthead">
+    <div class="title">Endpoint Management Platform</div>
+    <div class="meta">Architecture overview<br>Page 3 of 3 &middot; Agent lifecycle &amp; data</div>
+  </div>
+
+  <h2>Agent lifecycle</h2>
+  <p class="standfirst">
+    A managed PC never listens for instructions. It connects outbound, on its own schedule, and
+    receives nothing at all until an administrator has approved it.
+  </p>
+
+  <figure>
+  <svg viewBox="0 0 700 250" role="img" aria-label="Agent enrolment and polling flowchart">
+    <defs>
+      <marker id="g1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#0f766e"/>
+      </marker>
+      <marker id="g2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#48525f"/>
+      </marker>
+    </defs>
+
+    <!-- lane labels -->
+    <text class="t-hd cg" x="8" y="20">ENDPOINT</text>
+    <text class="t-hd" x="8" y="120">SERVER</text>
+    <text class="t-hd cb" x="8" y="212">ADMINISTRATOR</text>
+    <line x1="0" y1="86" x2="700" y2="86" stroke="#e5e9ee"/>
+    <line x1="0" y1="178" x2="700" y2="178" stroke="#e5e9ee"/>
+
+    <!-- step 1 -->
+    <rect x="96" y="28" width="122" height="46" rx="6" fill="#fff" stroke="#0f766e" stroke-width="1.2"/>
+    <text class="t-lbl" x="157" y="46" text-anchor="middle">1. Install</text>
+    <text class="t-tiny" x="157" y="59" text-anchor="middle">MSI with the server</text>
+    <text class="t-tiny" x="157" y="69" text-anchor="middle">address baked in</text>
+
+    <path d="M218,52 L262,52" stroke="#0f766e" stroke-width="1.3" marker-end="url(#g1)"/>
+
+    <rect x="262" y="28" width="122" height="46" rx="6" fill="#fff" stroke="#0f766e" stroke-width="1.2"/>
+    <text class="t-lbl" x="323" y="46" text-anchor="middle">2. Request enrolment</text>
+    <text class="t-tiny" x="323" y="59" text-anchor="middle">proves possession of</text>
+    <text class="t-tiny" x="323" y="69" text-anchor="middle">its own key</text>
+
+    <path d="M323,74 L323,104" stroke="#0f766e" stroke-width="1.3" marker-end="url(#g1)"/>
+
+    <!-- server -->
+    <rect x="262" y="106" width="122" height="46" rx="6" fill="#f7f9fb" stroke="#94a3b8" stroke-width="1.2"/>
+    <text class="t-lbl" x="323" y="124" text-anchor="middle">3. Held pending</text>
+    <text class="t-tiny" x="323" y="137" text-anchor="middle">nothing is issued,</text>
+    <text class="t-tiny" x="323" y="147" text-anchor="middle">nothing is trusted</text>
+
+    <path d="M323,152 L323,196" stroke="#48525f" stroke-width="1.3" marker-end="url(#g2)"/>
+
+    <rect x="248" y="198" width="150" height="40" rx="6" fill="#eef2ff" stroke="#1d4ed8" stroke-width="1.3"/>
+    <text class="t-lbl cb" x="323" y="216" text-anchor="middle">4. Administrator approves</text>
+    <text class="t-tiny" x="323" y="229" text-anchor="middle">mandatory — no auto-enrolment</text>
+
+    <path d="M398,214 L440,214 L440,152" stroke="#48525f" stroke-width="1.3" fill="none" marker-end="url(#g2)"/>
+
+    <rect x="404" y="106" width="130" height="46" rx="6" fill="#f7f9fb" stroke="#94a3b8" stroke-width="1.2"/>
+    <text class="t-lbl" x="469" y="124" text-anchor="middle">5. Credential issued</text>
+    <text class="t-tiny" x="469" y="137" text-anchor="middle">unique to this one</text>
+    <text class="t-tiny" x="469" y="147" text-anchor="middle">machine</text>
+
+    <path d="M469,106 L469,74" stroke="#0f766e" stroke-width="1.3" marker-end="url(#g1)"/>
+
+    <rect x="404" y="28" width="130" height="46" rx="6" fill="#fff" stroke="#0f766e" stroke-width="1.2"/>
+    <text class="t-lbl" x="469" y="46" text-anchor="middle">6. Managed</text>
+    <text class="t-tiny" x="469" y="59" text-anchor="middle">polls every 60 seconds,</text>
+    <text class="t-tiny" x="469" y="69" text-anchor="middle">outbound only</text>
+
+    <!-- loop -->
+    <path d="M534,52 L566,52" stroke="#0f766e" stroke-width="1.3" marker-end="url(#g1)"/>
+    <rect x="566" y="20" width="126" height="62" rx="6" fill="#ecfdf5" stroke="#0f766e" stroke-width="1.2"/>
+    <text class="t-lbl cg" x="629" y="38" text-anchor="middle">Each check-in</text>
+    <text class="t-tiny" x="629" y="52" text-anchor="middle">heartbeat &middot; inventory</text>
+    <text class="t-tiny" x="629" y="63" text-anchor="middle">fetch tasks &middot; post results</text>
+    <text class="t-tiny" x="629" y="76" text-anchor="middle">offline for days is fine</text>
+  </svg>
+  <figcaption>Backoff is jittered from 30 seconds to 5 minutes, so a fleet never stampedes a recovering server.</figcaption>
+  </figure>
+
+  <h3>BitLocker recovery keys</h3>
+  <p>
+    Recovery passwords are the most sensitive data the platform holds, and there are two ways one
+    arrives. Both end up encrypted at rest under a key that <strong>only the Admin API process
+    holds</strong> — the endpoint-facing Agent API is started without it and refuses to run if it is
+    ever given it.
+  </p>
+
+  <table>
+    <tr><th>Path</th><th>How the key travels</th><th>Who can read it in transit</th></tr>
+    <tr>
+      <td class="k">Automatic</td>
+      <td>The agent encrypts it on the endpoint before sending. The Agent API stores something it
+          cannot itself open.</td>
+      <td>Nobody</td>
+    </tr>
+    <tr>
+      <td class="k">Manual</td>
+      <td>An administrator types it into the console; the server encrypts it on arrival.</td>
+      <td>Protected by HTTPS alone</td>
+    </tr>
+  </table>
+
+  <p>
+    Revealing a key is deliberately awkward: it needs the right permission, a re-entered password,
+    and it is rate limited per administrator and per device. Every reveal is recorded.
+  </p>
+
+  <div class="note">
+    <span class="lead">The audit trail cannot be edited.</span>
+    Audit rows are append-only, enforced by the database itself: the account the application runs as
+    has had UPDATE and DELETE on that table revoked. Even a full compromise of the application cannot
+    quietly rewrite history.
+  </div>
+
+  <div class="warn">
+    <span class="lead">Two keys that cannot be replaced if lost.</span>
+    <code>RECOVERY_ESCROW_KEY</code> decrypts every escrowed BitLocker password;
+    <code>MFA_TOTP_KEY</code> decrypts every authenticator enrolment. Both live in
+    <code>/etc/endpoint-platform/secrets.env</code>. Losing that file does not degrade the platform —
+    it makes recovery keys permanently unreadable and stops every administrator signing in. Back it
+    up wherever the database backups go, and somewhere the platform itself does not depend on.
+  </div>
+
+  <div class="footer"><span>Endpoint Management Platform — architecture overview</span><span>Page 3 of 3</span></div>
+</section>
+
+</body>
+</html>
