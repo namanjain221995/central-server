@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { getPendingEnrollments } from '../api/client'
+import { AgentDownloadButton } from './AgentDownloadButton'
 import { Icon, type IconName } from './Icon'
 import { ChangePasswordDialog } from '../pages/ChangePasswordDialog'
 import {
@@ -178,6 +179,12 @@ export function AppShell() {
             <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} size={16} />
           </button>
           <h1>{title}</h1>
+          {/*
+            The current agent installer, one click from every page. Getting a
+            machine managed starts with running this on it, and an administrator
+            should not have to know that it lives under Configuration > Agent.
+          */}
+          <AgentDownloadButton canView={hasPermission('software.view')} />
           <div className="topbar-user">
             <span className="avatar" aria-hidden="true">
               {initialsOf(user?.email)}

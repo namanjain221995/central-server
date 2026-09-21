@@ -119,6 +119,14 @@ public static class AgentApiKeyBoundaryGuard
     [
         "RecoveryEscrow:Key",
         "RecoveryEscrow:SealingPrivateKey",
+
+        // Multi-factor secrets. Not escrow material, but the same boundary
+        // applies: holding this key would let the endpoint-facing process derive
+        // a valid second factor for any administrator, which is precisely what
+        // the second factor exists to prevent. Listed here rather than trusted to
+        // gen-env.sh, so a hand-edited environment file fails at startup instead
+        // of silently widening the blast radius of an agent compromise.
+        "Mfa:TotpKey",
     ];
 
     public static void AssertNoDecryptionKeys(IConfiguration configuration)

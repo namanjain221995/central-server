@@ -82,10 +82,12 @@ agent-state/
 *.agentcred
 
 # ---------------------------------------------------------------------------
-# Docker / infra local overrides
+# Deployment build output
+#
+# infra/ubuntu/deploy.sh publishes here before installing to
+# /opt/endpoint-platform on the target machine.
 # ---------------------------------------------------------------------------
-docker-compose.override.yml
-infra/data/
+artifacts/publish/
 
 # ---------------------------------------------------------------------------
 # OS noise

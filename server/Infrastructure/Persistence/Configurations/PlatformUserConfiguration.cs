@@ -41,8 +41,26 @@ internal sealed class PlatformUserConfiguration : IEntityTypeConfiguration<Platf
             .IsRequired();
 
         builder.Property(u => u.FailedSignInCount).IsRequired();
+
+        // Nullable, and null means "the counter is clear". Not defaulted to a
+        // timestamp: a default would make every existing row look as though it had
+        // just failed, and the decay window would then keep counters alive that
+        // should have been forgotten.
+        builder.Property(u => u.LastFailedSignInAt);
         builder.Property(u => u.IsSystemAccount).IsRequired();
         builder.Property(u => u.HasAllDeviceScope).IsRequired();
+
+        // Defaults to false, so no existing administrator is forced into a change
+        // screen by the deployment that adds the column.
+        builder.Property(u => u.MustChangePassword).IsRequired();
+
+        // Multi-factor state. All three nullable, and all three null together
+        // means "has not enrolled": a secret without a confirmation timestamp is
+        // an interrupted enrolment and must not count as a second factor.
+        // The secret is ciphertext under a key the Agent API is forbidden to hold.
+        builder.Property(u => u.TotpSealedSecret).HasMaxLength(512);
+        builder.Property(u => u.TotpConfirmedAt);
+        builder.Property(u => u.TotpLastCounter);
         builder.Property(u => u.CreatedAt).IsRequired();
         builder.Property(u => u.UpdatedAt).IsRequired();
 

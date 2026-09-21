@@ -1,6 +1,7 @@
 ﻿using EndpointPlatform.Infrastructure.Persistence;
 using EndpointPlatform.Infrastructure.Persistence.Interceptors;
 using EndpointPlatform.Infrastructure.Persistence.Seeding;
+using EndpointPlatform.Infrastructure.Tests;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -8,22 +9,21 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
 
 namespace EndpointPlatform.AgentApi.Tests;
 
 /// <summary>
-/// The full Agent API stack against a real PostgreSQL container: enrollment and
+/// The full Agent API stack against a real PostgreSQL server: enrollment and
 /// heartbeat behaviour is only meaningful with real uniqueness constraints,
 /// optimistic concurrency (xmin) and triggers underneath it.
 /// </summary>
 public sealed class AgentApiPostgresFixture : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17.6-alpine")
-        .WithDatabase("endpoint_platform_agentapi_test")
-        .WithUsername("test_owner")
-        .WithPassword("test_owner_password_not_a_real_secret")
-        .Build();
+    // A throwaway database on the local PostgreSQL server, dropped on dispose.
+    private TestDatabase? _database;
+
+    private string DatabaseConnectionString =>
+        _database?.ConnectionString ?? throw new InvalidOperationException("Fixture not initialised.");
 
     private WebApplicationFactory<Program>? _factory;
 
@@ -32,7 +32,7 @@ public sealed class AgentApiPostgresFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        await _container.StartAsync();
+        _database = await TestDatabase.CreateAsync("agentapi");
 
         // Migrate + seed before the host starts.
         await using (var dbContext = CreateDbContext())
@@ -46,9 +46,7 @@ public sealed class AgentApiPostgresFixture : IAsyncLifetime
             await seeder.SeedAsync();
         }
 
-        var connectionString = _container.GetConnectionString();
-
-        _factory = new AgentApiTestFactory(connectionString);
+        _factory = new AgentApiTestFactory(DatabaseConnectionString);
     }
 
     public async Task DisposeAsync()
@@ -58,13 +56,16 @@ public sealed class AgentApiPostgresFixture : IAsyncLifetime
             await _factory.DisposeAsync();
         }
 
-        await _container.DisposeAsync();
+        if (_database is not null)
+        {
+            await _database.DisposeAsync();
+        }
     }
 
     public EndpointPlatformDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<EndpointPlatformDbContext>()
-            .UseNpgsql(_container.GetConnectionString(), npgsql =>
+            .UseNpgsql(DatabaseConnectionString, npgsql =>
             {
                 npgsql.MigrationsAssembly(EndpointPlatformDbContext.MigrationsAssemblyName);
                 npgsql.MigrationsHistoryTable("__ef_migrations_history", EndpointPlatformDbContext.Schema);

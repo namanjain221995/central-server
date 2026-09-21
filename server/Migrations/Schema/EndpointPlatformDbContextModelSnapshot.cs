@@ -1861,6 +1861,79 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("admin_device_scopes", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Identity.AdminMfaChallenge", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<DateTimeOffset?>("ConsumedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset>("IssuedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("issued_at");
+
+                    b.Property<string>("SecurityStamp")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("security_stamp");
+
+                    b.Property<string>("SourceIp")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_ip");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("token_hash");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("UserAgent")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("user_agent");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_admin_mfa_challenges");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_admin_mfa_challenges_expires_at");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_admin_mfa_challenges_token_hash");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_admin_mfa_challenges_user_id");
+
+                    b.ToTable("admin_mfa_challenges", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Identity.AdminSession", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2044,6 +2117,45 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("local_admin_elevations", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Identity.MfaRecoveryCode", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("code_hash");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<DateTimeOffset?>("UsedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("used_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_mfa_recovery_codes");
+
+                    b.HasIndex("UserId", "CodeHash")
+                        .IsUnique()
+                        .HasDatabaseName("ix_mfa_recovery_codes_user_hash");
+
+                    b.ToTable("mfa_recovery_codes", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Identity.Organization", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2167,6 +2279,10 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasColumnType("boolean")
                         .HasColumnName("is_system_account");
 
+                    b.Property<DateTimeOffset?>("LastFailedSignInAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_failed_sign_in_at");
+
                     b.Property<DateTimeOffset?>("LastLoginAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_login_at");
@@ -2174,6 +2290,10 @@ namespace EndpointPlatform.Migrations.Schema
                     b.Property<DateTimeOffset?>("LockedUntil")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("locked_until");
+
+                    b.Property<bool>("MustChangePassword")
+                        .HasColumnType("boolean")
+                        .HasColumnName("must_change_password");
 
                     b.Property<string>("NormalizedEmail")
                         .IsRequired()
@@ -2205,6 +2325,19 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)")
                         .HasColumnName("status");
+
+                    b.Property<DateTimeOffset?>("TotpConfirmedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("totp_confirmed_at");
+
+                    b.Property<long?>("TotpLastCounter")
+                        .HasColumnType("bigint")
+                        .HasColumnName("totp_last_counter");
+
+                    b.Property<string>("TotpSealedSecret")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("totp_sealed_secret");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -3293,6 +3426,18 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasConstraintName("fk_admin_device_scopes_platform_users_platform_user_id");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Identity.AdminMfaChallenge", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Identity.PlatformUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_admin_mfa_challenges_platform_users_user_id");
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Identity.AdminSession", b =>
                 {
                     b.HasOne("EndpointPlatform.Domain.Identity.PlatformUser", "PlatformUser")
@@ -3313,6 +3458,18 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_local_admin_elevations_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Identity.MfaRecoveryCode", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Identity.PlatformUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_mfa_recovery_codes_platform_users_user_id");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Identity.PlatformUser", b =>

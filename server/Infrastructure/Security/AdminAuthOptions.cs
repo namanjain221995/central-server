@@ -18,6 +18,26 @@ public sealed class AdminAuthOptions
     [Range(1, 1440)]
     public int LockoutMinutes { get; init; } = 15;
 
+    /// <summary>
+    /// How long a failed sign-in counts toward the lockout threshold.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without a decay the counter is a ratchet - it only ever moves toward locked
+    /// - so an account accumulates failures across months of ordinary typos and
+    /// eventually locks on an unrelated one. Sixty minutes is long enough that a
+    /// real guessing run cannot outwait it at any useful rate, and short enough
+    /// that yesterday's mistyped password is forgotten.
+    /// </para>
+    /// <para>
+    /// This is NOT on its own the answer to somebody deliberately locking an
+    /// administrator out; see <see cref="SignInAddressThrottle"/>, which is what
+    /// stops a failing address from driving the counter at all.
+    /// </para>
+    /// </remarks>
+    [Range(1, 10_080)]
+    public int FailureDecayMinutes { get; init; } = 60;
+
     /// <summary>Sign-in attempts allowed per client address per minute.</summary>
     [Range(1, 10_000)]
     public int LoginAttemptsPerMinutePerAddress { get; init; } = 10;

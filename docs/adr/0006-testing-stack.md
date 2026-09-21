@@ -1,4 +1,4 @@
-# ADR-0006: Testing stack — xUnit v2 + VSTest, Shouldly, Testcontainers
+# ADR-0006: Testing stack — xUnit v2 + VSTest, Shouldly, real PostgreSQL
 
 Status: accepted (Phase 0)
 
@@ -23,8 +23,24 @@ needed recording:
   (the VSTest path `dotnet test` supports natively). Common settings live in
   `build/Tests.props`.
 - **Shouldly** (BSD-3-Clause) for assertions; NSubstitute for mocking.
-- **Testcontainers** for integration tests against real PostgreSQL, image
-  pinned to the same tag as `infra/docker-compose.yml`.
+- Integration tests run against a **real, locally installed PostgreSQL** (and
+  Redis for the Admin API suite), reached through
+  `ENDPOINTPLATFORM_TEST_POSTGRES` / `ENDPOINTPLATFORM_TEST_REDIS`. Each
+  fixture creates a throwaway database and drops it afterwards.
+
+## Amendment (2026-09-20): Testcontainers removed
+
+The integration suites originally started PostgreSQL and Redis with
+**Testcontainers**, which requires a Docker daemon. Docker was removed from the
+project entirely — development, tests and deployment now use natively installed
+services — so the fixtures connect to a local server instead.
+
+The property that mattered is unchanged: these tests run against a real
+PostgreSQL, because triggers, `jsonb`, `inet`, partial indexes, role privileges
+and up/down migrations do not exist in an in-memory or SQLite provider. What is
+lost is the pinned image tag: the server version is now whatever the developer
+or CI has installed, so docs/development.md states the expected version (17.x)
+rather than enforcing it.
 
 ## Consequences
 

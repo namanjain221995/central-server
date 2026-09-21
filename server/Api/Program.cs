@@ -74,6 +74,25 @@ public sealed class Program
                 .ValidateOnStart();
 
             builder.Services.AddScoped<AdminAuthService>();
+            builder.Services.AddScoped<EndpointPlatform.Infrastructure.Identity.PlatformUserService>();
+
+            // Singleton, like RevealRateLimiter: it holds only the Redis
+            // multiplexer and a clock, and the counters live in Redis so nothing
+            // per-request belongs here. Admin API only - the Agent API has no
+            // sign-in form to protect.
+            builder.Services.AddSingleton<SignInAddressThrottle>();
+
+            // Multi-factor. Registered here rather than in shared infrastructure
+            // for the same reason as the escrow key: the Agent API must never hold
+            // the key that unseals a TOTP secret, because that would let the
+            // endpoint-facing process derive a valid second factor for any
+            // administrator. AgentApiKeyBoundaryGuard enforces it at startup.
+            builder.Services.AddOptions<MfaOptions>()
+                .Bind(builder.Configuration.GetSection(MfaOptions.SectionName))
+                .ValidateDataAnnotations()
+                .ValidateOnStart();
+            builder.Services.AddSingleton<ITotpSecretProtector, AesGcmTotpSecretProtector>();
+            builder.Services.AddScoped<MfaService>();
 
             // Registered here rather than in the shared infrastructure, so the
             // Agent API never holds the key that decrypts recovery passwords.
@@ -202,11 +221,18 @@ public sealed class Program
             app.UseRateLimiter();
             app.UseMiddleware<CsrfProtectionMiddleware>();
             app.UseAuthentication();
+
+            // Between authentication and authorization: it needs the identity, and
+            // anything it blocks must be blocked before a policy can allow it.
+            app.UseMiddleware<PasswordChangeRequiredMiddleware>();
+
             app.UseAuthorization();
 
             app.MapPlatformHealthChecks();
 
             app.MapAuthEndpoints();
+            app.MapPlatformUserEndpoints();
+            app.MapAccessLevelEndpoints();
             app.MapEnrollmentTokenEndpoints();
             app.MapEnrollmentApprovalEndpoints();
             app.MapDeviceEndpoints();

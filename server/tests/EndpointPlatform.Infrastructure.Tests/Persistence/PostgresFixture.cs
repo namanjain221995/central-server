@@ -1,12 +1,12 @@
 using EndpointPlatform.Infrastructure.Persistence;
 using EndpointPlatform.Infrastructure.Persistence.Interceptors;
 using Microsoft.EntityFrameworkCore;
-using Testcontainers.PostgreSql;
 
 namespace EndpointPlatform.Infrastructure.Tests.Persistence;
 
 /// <summary>
-/// Spins up a throwaway PostgreSQL container and applies the real migrations to it.
+/// Creates a throwaway database on the local PostgreSQL server and applies the real
+/// migrations to it.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -16,31 +16,32 @@ namespace EndpointPlatform.Infrastructure.Tests.Persistence;
 /// about what actually runs.
 /// </para>
 /// <para>
-/// The image is pinned to the same tag as infra/docker-compose.yml, so tests
-/// exercise the same server version development and deployment use.
+/// Which server is decided by <see cref="TestDatabase.PostgresVariable"/>. Run the
+/// suite against PostgreSQL 17, the version development and deployment use.
 /// </para>
 /// </remarks>
 public sealed class PostgresFixture : IAsyncLifetime
 {
-    public const string PostgresImage = "postgres:17.6-alpine";
+    private TestDatabase? _database;
 
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder(PostgresImage)
-        .WithDatabase("endpoint_platform_test")
-        .WithUsername("test_owner")
-        .WithPassword("test_owner_password_not_a_real_secret")
-        .Build();
-
-    public string ConnectionString => _container.GetConnectionString();
+    public string ConnectionString =>
+        _database?.ConnectionString ?? throw new InvalidOperationException("Fixture not initialised.");
 
     public async Task InitializeAsync()
     {
-        await _container.StartAsync();
+        _database = await TestDatabase.CreateAsync("infra");
 
         await using var dbContext = CreateDbContext();
         await dbContext.Database.MigrateAsync();
     }
 
-    public async Task DisposeAsync() => await _container.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        if (_database is not null)
+        {
+            await _database.DisposeAsync();
+        }
+    }
 
     public EndpointPlatformDbContext CreateDbContext(TimeProvider? timeProvider = null)
     {

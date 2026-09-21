@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# Agent API: the only surface exposed to the endpoint network (ADR-0001).
+#
+# Listens on 127.0.0.1:5081 only. nginx proxies /agent/ here, so endpoints reach
+# it over the same public HTTPS origin and 5081 is never published.
+#
+# Must be given the SAME SecretProtection key as the Admin API (that API seals
+# ephemeral secrets, this one redeems them) and must NEVER be given the escrow
+# master key or the private sealing key: AgentApiKeyBoundaryGuard fails the host
+# at startup if either appears. gen-env.sh renders agent-api.env accordingly.
+#
+# The whole filesystem is read-only to this process. Agents download package
+# content; they never write it.
+#
+# Installed by infra/ubuntu/install-release.sh. Paths and account names mirror
+# infra/ubuntu/common.sh; change both together.
+# ---------------------------------------------------------------------------
+[Unit]
+Description=Endpoint Platform - Agent API
+After=network-online.target postgresql.service redis-server.service endpoint-platform-migrations.service
+Wants=network-online.target
+Requires=endpoint-platform-migrations.service
+
+[Service]
+Type=simple
+User=epp-agent-api
+Group=endpoint-platform
+EnvironmentFile=/etc/endpoint-platform/agent-api.env
+Environment=DOTNET_ROOT=/opt/dotnet
+Environment=DOTNET_NOLOGO=1
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=DOTNET_EnableDiagnostics=0
+WorkingDirectory=/opt/endpoint-platform/current/agent-api
+ExecStart=/usr/local/bin/dotnet /opt/endpoint-platform/current/agent-api/EndpointPlatform.AgentApi.dll
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+SyslogIdentifier=epp-agent-api
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# MemoryDenyWriteExecute is deliberately absent: the .NET JIT needs W+X pages.
+
+[Install]
+WantedBy=multi-user.target

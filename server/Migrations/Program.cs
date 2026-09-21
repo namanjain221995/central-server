@@ -16,8 +16,9 @@ namespace EndpointPlatform.Migrations;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Runs as a one-shot job before the APIs start (docker compose depends on its
-/// successful completion). Separating it from the API hosts matters for two
+/// Runs as a one-shot job before the APIs start (both API units Require= it, so
+/// systemd runs it first and a failure stops them starting on a schema they do
+/// not match). Separating it from the API hosts matters for two
 /// reasons: schema changes execute exactly once instead of racing between API
 /// replicas, and the job can connect as a database owner while the APIs connect as
 /// a restricted runtime role that has no DDL rights and cannot UPDATE or DELETE

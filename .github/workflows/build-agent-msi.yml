@@ -3,20 +3,48 @@ name: Build Windows agent MSI
 # ---------------------------------------------------------------------------
 # Produces EndpointPlatformAgent-<version>-x64.msi on a Windows runner and
 # publishes it as a workflow artifact. It never publishes a release, never
-# uploads to the platform and never touches AWS -- a build here is a candidate,
-# and promoting it stays a deliberate human act (upload on the dashboard's
-# Agent page, which re-verifies the hash as it stores the bytes).
+# uploads to the platform and never deploys anything -- a build here is a
+# candidate, and promoting it stays a deliberate human act (upload on the
+# dashboard's Agent page, which re-verifies the hash as it stores the bytes).
+#
+# TWO WAYS IN, and the difference matters:
+#
+#   push to agent/** ........ a CANDIDATE build, versioned <major>.<minor>.<run>
+#                             so every commit produces a distinct, increasing
+#                             number. This is what makes an edit to the agent
+#                             yield a fresh installer without anyone asking.
+#   workflow_dispatch ....... a RELEASE candidate, at the exact version you
+#                             type. Use this for anything you intend to publish.
+#
+# Both paths run the agent test suites first and refuse to package a failing
+# build, because an installer that was never tested is worse than no installer.
+#
+# The MSI bakes in the management server URL. On a dispatch you supply it; on a
+# push it comes from the AGENT_SERVER_BASE_URL repository variable. With that
+# variable unset the push path still builds and tests the agent but SKIPS
+# packaging, rather than baking in a wrong URL -- an installer pointing at the
+# wrong server enrolls machines into the wrong place, which is worse than no
+# artifact. (An administrator can always override at install time with
+# `msiexec /i ... SERVERBASEURL=https://...`.)
 #
 # Signing is one clearly isolated step that runs only when the certificate
 # secrets exist. Without them the build still succeeds and the artifact is
 # named and reported UNSIGNED, because a build that quietly skipped signing
 # and looked identical to a signed one is the failure mode worth engineering
 # against.
-#
-# Manual by design: agent releases are cut deliberately, not on every push.
 # ---------------------------------------------------------------------------
 
 on:
+  push:
+    paths:
+      # The agent itself, and the wire contracts it is compiled against -- a
+      # change to a contract changes what the installed agent speaks.
+      - 'agent/**'
+      - 'shared/Contracts/**'
+      - 'Directory.Packages.props'
+      - 'Directory.Build.props'
+      - 'global.json'
+      - '.github/workflows/build-agent-msi.yml'
   workflow_dispatch:
     inputs:
       version:
@@ -26,8 +54,14 @@ on:
       serverBaseUrl:
         description: 'Management server the MSI points at (https://, public, not a secret)'
         required: true
-        default: 'https://65.2.37.254.nip.io'
         type: string
+
+# One packaging run at a time per branch. Two concurrent runs would race for the
+# same run-number-derived version and produce two different artifacts claiming
+# to be the same build.
+concurrency:
+  group: build-agent-msi-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -40,8 +74,35 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
 
 jobs:
+  # Tests gate packaging. They are a separate job so a dispatch that fails them
+  # never reaches the MSI steps, and so the failure reads as "tests failed"
+  # rather than as a packaging error.
+  test:
+    name: Agent tests
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET (from global.json)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # Agent projects only. The server suites need a real PostgreSQL and Redis
+      # on the runner, which is not this workflow's job; they run where those
+      # services exist. These two need neither.
+      - name: Run agent test suites
+        shell: pwsh
+        run: |
+          dotnet test agent/tests/EndpointAgent.Core.Tests/EndpointAgent.Core.Tests.csproj --nologo -v q
+          if ($LASTEXITCODE -ne 0) { throw 'EndpointAgent.Core.Tests failed.' }
+          dotnet test agent/tests/EndpointAgent.Windows.Tests/EndpointAgent.Windows.Tests.csproj --nologo -v q
+          if ($LASTEXITCODE -ne 0) { throw 'EndpointAgent.Windows.Tests failed.' }
+
   build:
     name: Build MSI (windows-2022)
+    needs: test
     # Pinned runner image, not windows-latest: the MSI is the artifact whose
     # reproducibility matters most, and "latest" silently changes underneath it.
     runs-on: windows-2022
@@ -57,17 +118,67 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Validate version input
+      # ---- what are we building, and against which server? ------------------
+      #
+      # One step decides both, so every later step reads a single resolved value
+      # and no step has to know which trigger it is running under.
+      - name: Resolve version and server URL
+        id: resolve
         shell: pwsh
+        env:
+          # Read through the environment, not interpolated into the script: a
+          # repository variable is attacker-controllable in a fork and must not
+          # be able to inject PowerShell.
+          DISPATCH_VERSION: ${{ inputs.version }}
+          DISPATCH_URL: ${{ inputs.serverBaseUrl }}
+          REPO_URL: ${{ vars.AGENT_SERVER_BASE_URL }}
+          RUN_NUMBER: ${{ github.run_number }}
         run: |
-          if ('${{ inputs.version }}' -notmatch '^\d+\.\d+\.\d+$') {
-            throw "Version must be three-part numeric, e.g. 1.1.2 (got '${{ inputs.version }}')."
+          $isDispatch = '${{ github.event_name }}' -eq 'workflow_dispatch'
+
+          if ($isDispatch) {
+            $version = $env:DISPATCH_VERSION
+            $url     = $env:DISPATCH_URL
+            $kind    = 'release-candidate'
           }
-          if ('${{ inputs.serverBaseUrl }}' -notmatch '^https://') {
-            throw "Server URL must be https:// -- an agent on plain HTTP would send its credential in clear."
+          else {
+            # major.minor come from the project file, so the agent's own version
+            # remains the source of truth; the run number makes each commit's
+            # build distinct and monotonically increasing.
+            $csproj = 'agent/EndpointAgent.Service/EndpointAgent.Service.csproj'
+            $prefix = ([xml](Get-Content $csproj)).Project.PropertyGroup.VersionPrefix |
+                      Where-Object { $_ } | Select-Object -First 1
+            if ($prefix -notmatch '^(\d+)\.(\d+)') {
+              throw "Could not read a major.minor VersionPrefix from $csproj (got '$prefix')."
+            }
+            $version = '{0}.{1}.{2}' -f $Matches[1], $Matches[2], $env:RUN_NUMBER
+            $url     = $env:REPO_URL
+            $kind    = 'candidate'
           }
 
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Version must be three-part numeric, e.g. 1.1.2 (got '$version')."
+          }
+
+          $package = $true
+          if ([string]::IsNullOrWhiteSpace($url)) {
+            if ($isDispatch) { throw 'serverBaseUrl is required.' }
+            # Push path with nothing configured: say so loudly, skip packaging.
+            Write-Host '::warning::AGENT_SERVER_BASE_URL repository variable is not set, so no MSI was packaged. The agent still built and its tests passed. Set the variable (Settings > Secrets and variables > Actions > Variables) to get an installer from every agent change.'
+            $package = $false
+          }
+          elseif ($url -notmatch '^https://') {
+            throw "Server URL must be https:// -- an agent on plain HTTP would send its credential in clear (got '$url')."
+          }
+
+          "version=$version"          | Out-File $env:GITHUB_OUTPUT -Append
+          "serverBaseUrl=$url"        | Out-File $env:GITHUB_OUTPUT -Append
+          "package=$($package.ToString().ToLower())" | Out-File $env:GITHUB_OUTPUT -Append
+          "kind=$kind"                | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "Building $kind version $version"
+
       - name: Install pinned WiX toolset
+        if: steps.resolve.outputs.package == 'true'
         shell: pwsh
         run: |
           dotnet tool install --global wix --version $env:WIX_VERSION
@@ -77,9 +188,21 @@ jobs:
       # The existing script is the single build definition -- this workflow
       # drives it, it does not reimplement it.
       - name: Build MSI
+        if: steps.resolve.outputs.package == 'true'
         shell: pwsh
         working-directory: agent/EndpointAgent.Installer
-        run: ./build-msi.ps1 -Version '${{ inputs.version }}' -ServerBaseUrl '${{ inputs.serverBaseUrl }}'
+        run: ./build-msi.ps1 -Version '${{ steps.resolve.outputs.version }}' -ServerBaseUrl '${{ steps.resolve.outputs.serverBaseUrl }}'
+
+      # A push-triggered run with no server URL still proves the agent compiles
+      # and publishes self-contained, which is the part a code change breaks.
+      - name: Verify the agent publishes (no MSI packaged)
+        if: steps.resolve.outputs.package != 'true'
+        shell: pwsh
+        run: |
+          dotnet publish agent/EndpointAgent.Service/EndpointAgent.Service.csproj `
+            -c Release -p:PublishAgent=true -o "$env:RUNNER_TEMP/agent-publish" --nologo
+          if ($LASTEXITCODE -ne 0) { throw 'Agent publish failed.' }
+          Write-Host 'Agent publishes cleanly; packaging was skipped (no server URL configured).'
 
       # ---- signing: isolated, and only with real credentials ----------------
       #
@@ -89,6 +212,7 @@ jobs:
       # signature check pass locally while proving nothing.
       - name: Check for signing credentials
         id: signing
+        if: steps.resolve.outputs.package == 'true'
         shell: pwsh
         env:
           CERT_PFX_BASE64: ${{ secrets.AGENT_SIGNING_CERT_PFX_BASE64 }}
@@ -144,6 +268,7 @@ jobs:
 
       - name: Verify MSI and compute SHA-256
         id: verify
+        if: steps.resolve.outputs.package == 'true'
         shell: pwsh
         run: |
           $msi = Get-ChildItem 'build/installer' -Filter '*.msi' | Select-Object -First 1
@@ -163,16 +288,17 @@ jobs:
           $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
           $productVersion = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, @(1))
 
-          if ($productVersion -ne '${{ inputs.version }}') {
-            throw "MSI ProductVersion is $productVersion but $('${{ inputs.version }}') was requested."
+          $expected = '${{ steps.resolve.outputs.version }}'
+          if ($productVersion -ne $expected) {
+            throw "MSI ProductVersion is $productVersion but $expected was requested."
           }
 
           $signed = '${{ steps.signing.outputs.available }}' -eq 'true'
           $suffix = if ($signed) { 'signed' } else { 'UNSIGNED' }
 
-          "sha256=$sha"                  | Out-File $env:GITHUB_OUTPUT -Append
-          "name=$($msi.Name)"            | Out-File $env:GITHUB_OUTPUT -Append
-          "suffix=$suffix"               | Out-File $env:GITHUB_OUTPUT -Append
+          "sha256=$sha"                    | Out-File $env:GITHUB_OUTPUT -Append
+          "name=$($msi.Name)"              | Out-File $env:GITHUB_OUTPUT -Append
+          "suffix=$suffix"                 | Out-File $env:GITHUB_OUTPUT -Append
           "productVersion=$productVersion" | Out-File $env:GITHUB_OUTPUT -Append
 
           @"
@@ -180,12 +306,13 @@ jobs:
 
           | Field | Value |
           |---|---|
+          | Build | ${{ steps.resolve.outputs.kind }} |
           | File | ``$($msi.Name)`` |
           | ProductVersion | $productVersion |
           | Size | $sizeMb MB |
           | SHA-256 | ``$sha`` |
-          | Signing | **$(if ($signed) { 'Signed (Authenticode)' } else { 'UNSIGNED — no certificate configured' })** |
-          | Server URL | ${{ inputs.serverBaseUrl }} |
+          | Signing | **$(if ($signed) { 'Signed (Authenticode)' } else { 'UNSIGNED - no certificate configured' })** |
+          | Server URL | ${{ steps.resolve.outputs.serverBaseUrl }} |
 
           Paste this SHA-256 when uploading the release on the dashboard's Agent page; the
           server recomputes it while storing the bytes and rejects a mismatch.
@@ -194,45 +321,26 @@ jobs:
       # The UNSIGNED marker rides in the artifact name so it is impossible to
       # download a build without noticing what it is.
       - name: Upload MSI artifact
+        if: steps.resolve.outputs.package == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: EndpointPlatformAgent-${{ inputs.version }}-x64-${{ steps.verify.outputs.suffix }}
+          name: EndpointPlatformAgent-${{ steps.resolve.outputs.version }}-x64-${{ steps.verify.outputs.suffix }}
           path: build/installer/*.msi
           if-no-files-found: error
           retention-days: 30
 
       - name: Record SHA-256 alongside the artifact
+        if: steps.resolve.outputs.package == 'true'
         shell: pwsh
         run: |
           "${{ steps.verify.outputs.sha256 }} *${{ steps.verify.outputs.name }}" |
             Out-File 'build/installer/SHA256SUMS.txt' -Encoding ascii
 
       - name: Upload checksum
+        if: steps.resolve.outputs.package == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: EndpointPlatformAgent-${{ inputs.version }}-SHA256SUMS
+          name: EndpointPlatformAgent-${{ steps.resolve.outputs.version }}-SHA256SUMS
           path: build/installer/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
-
-  test:
-    name: Agent tests
-    runs-on: windows-2022
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up .NET (from global.json)
-        uses: actions/setup-dotnet@v4
-        with:
-          global-json-file: global.json
-
-      # Agent projects only. The server suites need PostgreSQL and Redis
-      # containers, which is the deploy pipeline's job, not the installer's.
-      - name: Run agent test suites
-        shell: pwsh
-        run: |
-          dotnet test agent/tests/EndpointAgent.Core.Tests/EndpointAgent.Core.Tests.csproj --nologo -v q
-          if ($LASTEXITCODE -ne 0) { throw 'EndpointAgent.Core.Tests failed.' }
-          dotnet test agent/tests/EndpointAgent.Windows.Tests/EndpointAgent.Windows.Tests.csproj --nologo -v q
-          if ($LASTEXITCODE -ne 0) { throw 'EndpointAgent.Windows.Tests failed.' }

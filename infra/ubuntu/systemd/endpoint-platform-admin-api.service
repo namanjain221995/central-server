@@ -1,0 +1,66 @@
+# ---------------------------------------------------------------------------
+# Admin API: the administrator/dashboard surface (ADR-0001).
+#
+# Listens on 127.0.0.1:5080 only. nginx is the single public entry point and
+# proxies /api/ here, which keeps the dashboard and this API on ONE origin, a
+# hard requirement of the __Host- session cookie.
+#
+# Holds the restricted database role, never the owner credential. It is the only
+# process given the recovery-escrow keys, and it runs under its own account so
+# the Agent API cannot read them out of /proc/<pid>/environ.
+#
+# Installed by infra/ubuntu/install-release.sh. Paths and account names mirror
+# infra/ubuntu/common.sh; change both together.
+# ---------------------------------------------------------------------------
+[Unit]
+Description=Endpoint Platform - Admin API
+After=network-online.target postgresql.service redis-server.service endpoint-platform-migrations.service
+Wants=network-online.target
+Requires=endpoint-platform-migrations.service
+
+[Service]
+Type=simple
+User=epp-admin-api
+Group=endpoint-platform
+# Uploaded package content must be readable by the Agent API (same group) and
+# by nobody else.
+UMask=0027
+EnvironmentFile=/etc/endpoint-platform/admin-api.env
+Environment=DOTNET_ROOT=/opt/dotnet
+Environment=DOTNET_NOLOGO=1
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=DOTNET_EnableDiagnostics=0
+WorkingDirectory=/opt/endpoint-platform/current/admin-api
+ExecStart=/usr/local/bin/dotnet /opt/endpoint-platform/current/admin-api/EndpointPlatform.Api.dll
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+SyslogIdentifier=epp-admin-api
+
+NoNewPrivileges=true
+ProtectSystem=strict
+# The one place this process writes: uploaded installer content.
+ReadWritePaths=/var/lib/endpoint-platform/packages
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# MemoryDenyWriteExecute is deliberately absent: the .NET JIT needs W+X pages.
+
+[Install]
+WantedBy=multi-user.target

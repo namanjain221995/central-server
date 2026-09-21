@@ -9,8 +9,6 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
-    <PackageReference Include="Testcontainers.PostgreSql" />
-    <PackageReference Include="Testcontainers.Redis" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,6 +21,12 @@
       assemblies only; neither API gains a reference to the agent.
     -->
     <ProjectReference Include="..\..\..\agent\EndpointAgent.Core\EndpointAgent.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- How a test reaches the locally installed PostgreSQL. Linked rather than
+         referenced so this project does not depend on another test assembly. -->
+    <Compile Include="..\EndpointPlatform.Infrastructure.Tests\TestInfrastructure.cs" Link="TestInfrastructure.cs" />
   </ItemGroup>
 
 </Project>

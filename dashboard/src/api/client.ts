@@ -1411,6 +1411,16 @@ export interface CurrentUser {
   email: string
   displayName: string
   permissions: string[]
+  /**
+   * True while this administrator still holds a password the server generated.
+   * The API refuses everything except reading this identity and changing that
+   * password until it is false, so the console must gate on it too — though the
+   * server is what actually enforces it.
+   *
+   * Optional because the sign-in response predates the field; treat a missing
+   * value as false.
+   */
+  mustChangePassword?: boolean
 }
 
 export async function login(email: string, password: string): Promise<CurrentUser> {
@@ -2088,6 +2098,105 @@ export async function revokeAgentRelease(releaseId: string): Promise<void> {
  * HttpOnly __Host- session cookie, and the server answers with
  * Content-Disposition: attachment, so the SPA never navigates away.
  */
+// ---------------------------------------------------------------------------
+// Administrators and access levels (Settings)
+// ---------------------------------------------------------------------------
+
+export interface PlatformUserSummary {
+  id: string
+  email: string
+  displayName: string
+  status: 'Invited' | 'Active' | 'Disabled' | 'Locked'
+  roleKey: string | null
+  roleDisplayName: string | null
+  hasAllDeviceScope: boolean
+  mustChangePassword: boolean
+  isSystemAccount: boolean
+  createdAt: string
+  lastLoginAt: string | null
+}
+
+/**
+ * A password the server generated and will never show again.
+ *
+ * Modelled as its own type so it is obvious at every call site that this value
+ * is not retrievable: there is no endpoint that returns it a second time, and
+ * losing it means resetting the password to issue a new one.
+ */
+export interface GeneratedCredential {
+  userId: string
+  password: string
+  warning: string
+}
+
+export function getPlatformUsers(): Promise<PlatformUserSummary[]> {
+  return request<PlatformUserSummary[]>('/admin/v1/platform-users/')
+}
+
+export function createPlatformUser(input: {
+  email: string
+  displayName: string
+  roleKey: string
+}): Promise<GeneratedCredential> {
+  return request('/admin/v1/platform-users/', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function disablePlatformUser(userId: string): Promise<void> {
+  return request<void>(`/admin/v1/platform-users/${encodeURIComponent(userId)}/disable`, { method: 'POST' })
+}
+
+export function enablePlatformUser(userId: string): Promise<void> {
+  return request<void>(`/admin/v1/platform-users/${encodeURIComponent(userId)}/enable`, { method: 'POST' })
+}
+
+export function resetPlatformUserPassword(userId: string): Promise<GeneratedCredential> {
+  return request(`/admin/v1/platform-users/${encodeURIComponent(userId)}/reset-password`, { method: 'POST' })
+}
+
+export interface AccessLevel {
+  key: string
+  displayName: string
+  description: string
+  /**
+   * True for Super Administrator, whose permissions are computed as "the whole
+   * catalogue" rather than listed. Rendered as a statement rather than as a
+   * column of ticks that would silently become incomplete when the catalogue grows.
+   */
+  holdsEveryPermission: boolean
+  grantedCount: number
+  deniedCount: number
+  permissionKeys: string[]
+}
+
+export interface PermissionEntry {
+  key: string
+  description: string
+  highRisk: boolean
+}
+
+export interface PermissionCategory {
+  name: string
+  permissions: PermissionEntry[]
+}
+
+export interface AccessLevelsResponse {
+  accessLevels: AccessLevel[]
+  categories: PermissionCategory[]
+  totalPermissions: number
+}
+
+/**
+ * The permission model, already grouped and ordered by the server.
+ *
+ * Nothing here is derived in the browser on purpose. Grouping on a key prefix
+ * rather than the server's category would, for one real example, split
+ * `localuser.elevate` away from the seven `user.*` permissions it belongs with —
+ * hiding the single most policy-laden row in that section.
+ */
+export function getAccessLevels(): Promise<AccessLevelsResponse> {
+  return request<AccessLevelsResponse>('/admin/v1/access-levels')
+}
+
 export function downloadAgentRelease(releaseId: string, _fileName: string): void {
   const anchor = document.createElement('a')
   anchor.href = `/api/admin/v1/agent-releases/${encodeURIComponent(releaseId)}/download`

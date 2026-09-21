@@ -19,7 +19,8 @@ multiple replicas start simultaneously.
   - **owner** — DDL; used only by the migration job.
   - **runtime** — DML on ordinary tables; `SELECT, INSERT` only on
     `audit_log_entries`; no `CREATE` on the schema. Created by
-    `infra/postgres/init/01-create-app-role.sh` locally.
+    `infra/postgres/setup-database.sql`, which both the Ubuntu host and
+    `scripts/run-local.ps1` run.
 - The migration job re-applies grants (idempotent) every run, with
   `ALTER DEFAULT PRIVILEGES` so tables added by future migrations are covered
   automatically, and the audit-table exception re-asserted afterwards.
@@ -33,4 +34,5 @@ multiple replicas start simultaneously.
 - APIs cannot perform DDL even if fully compromised (verified by live test:
   CREATE TABLE, DROP TRIGGER, UPDATE/DELETE/TRUNCATE on audit all denied).
 - `Database:MigrateOnStartup` exists for convenience but defaults to false and
-  is not used by the compose/dev flow; the runner is the supported path.
+  is not used by the development or deployment flow; the runner is the
+  supported path.

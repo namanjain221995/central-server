@@ -49,6 +49,10 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
 
     public DbSet<AdminSession> AdminSessions => Set<AdminSession>();
 
+    public DbSet<MfaRecoveryCode> MfaRecoveryCodes => Set<MfaRecoveryCode>();
+
+    public DbSet<AdminMfaChallenge> AdminMfaChallenges => Set<AdminMfaChallenge>();
+
     public DbSet<LocalAdminElevation> LocalAdminElevations => Set<LocalAdminElevation>();
 
     public DbSet<Device> Devices => Set<Device>();

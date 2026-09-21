@@ -41,11 +41,30 @@ public static class PasswordPolicy
     /// Returns a refusal reason, or null when the password is acceptable.
     /// </summary>
     /// <remarks>
+    /// Applies the universal rules only. Prefer
+    /// <see cref="Validate(string?, PasswordContext)"/> wherever the account is
+    /// known: without it, the rule that refuses a password built from the
+    /// account's own name or e-mail cannot fire, and that is the most valuable
+    /// rule on an internet-facing console.
+    /// </remarks>
+    public static string? Validate(string? password) => Validate(password, PasswordContext.None);
+
+    /// <summary>
+    /// Returns a refusal reason, or null when the password is acceptable.
+    /// </summary>
+    /// <remarks>
+    /// <para>
     /// Returns the first failure rather than a list. The caller shows this to a
     /// person who is retyping a password, and a wall of simultaneous complaints is
     /// harder to act on than one clear instruction.
+    /// </para>
+    /// <para>
+    /// The length rules run before <see cref="WeakPassword"/>, so a short
+    /// password is told it is short rather than told it is guessable. Both are
+    /// true; the length message is the one that can be acted on.
+    /// </para>
     /// </remarks>
-    public static string? Validate(string? password)
+    public static string? Validate(string? password, PasswordContext context)
     {
         if (string.IsNullOrWhiteSpace(password))
         {
@@ -73,6 +92,9 @@ public static class PasswordPolicy
             return "The password must not be a single repeated character.";
         }
 
-        return null;
+        // Everything above is a property of the string. Everything in
+        // WeakPassword is a judgement about how guessable it is, which is why it
+        // lives in its own type and runs last.
+        return WeakPassword.Inspect(password, context);
     }
 }

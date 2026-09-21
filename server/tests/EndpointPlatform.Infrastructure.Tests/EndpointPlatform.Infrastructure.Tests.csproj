@@ -7,11 +7,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Testcontainers.PostgreSql" />
-    <PackageReference Include="Testcontainers.Redis" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\..\Infrastructure\EndpointPlatform.Infrastructure.csproj" />
     <ProjectReference Include="..\..\Migrations\EndpointPlatform.Migrations.csproj" />
   </ItemGroup>

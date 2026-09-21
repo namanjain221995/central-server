@@ -680,6 +680,7 @@ public static class AgentEndpoints
         AgentAuthenticationService authenticationService,
         Infrastructure.Devices.DeviceInventoryService inventoryService,
         TimeProvider timeProvider,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (protocolVersion != AgentProtocol.Version)
@@ -699,6 +700,21 @@ public static class AgentEndpoints
         var validationError = ValidateInventoryReport(report);
         if (validationError is not null)
         {
+            // Logged, because the reason previously existed only in the response body.
+            // A device whose inventory is refused looks perfectly healthy in the
+            // console -- online, Active, heartbeating -- while silently carrying no
+            // inventory at all, and the agent retries on every cycle forever. That
+            // combination hid a real defect until someone read the agent's own log.
+            loggerFactory.CreateLogger("EndpointPlatform.AgentApi.Inventory").LogWarning(
+                "Inventory from {Hostname} ({DeviceId}) was refused: {Reason} "
+                + "Counts: nics={Nics} disks={Disks} software={Software} services={Services} "
+                + "processes={Processes} drivers={Drivers} users={Users} groups={Groups}.",
+                authentication.Device!.Hostname, authentication.Device!.Id, validationError,
+                report.NetworkInterfaces?.Count, report.Hardware?.Disks?.Count,
+                report.Software?.Count, report.Services?.Count, report.Processes?.Count,
+                report.Drivers?.Count, report.LocalAccounts?.Users?.Count,
+                report.LocalAccounts?.Groups?.Count);
+
             return Results.Problem(title: validationError, statusCode: StatusCodes.Status400BadRequest);
         }
 
@@ -761,6 +777,16 @@ public static class AgentEndpoints
         return Results.Ok(policy);
     }
 
+    /// <summary>
+    /// The count at which a section stops being "a large machine" and starts being
+    /// an implausible payload. See <see cref="Infrastructure.Devices.DeviceInventoryService.OversizeRefusalMultiplier"/>:
+    /// anything at or below this is accepted and truncated by the service, so a
+    /// normal report is never discarded over a section that is merely bigger than
+    /// expected.
+    /// </summary>
+    private static int RefusalCeiling(int truncationLimit) =>
+        truncationLimit * Infrastructure.Devices.DeviceInventoryService.OversizeRefusalMultiplier;
+
     private static string? ValidateInventoryReport(InventoryReport report)
     {
         if (report.Hardware is null)
@@ -768,12 +794,12 @@ public static class AgentEndpoints
             return "Hardware section is required.";
         }
 
-        if (report.NetworkInterfaces is { Count: > Infrastructure.Devices.DeviceInventoryService.MaxNetworkInterfaces })
+        if (report.NetworkInterfaces?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxNetworkInterfaces))
         {
             return "Too many network interfaces.";
         }
 
-        if (report.Hardware.Disks is { Count: > Infrastructure.Devices.DeviceInventoryService.MaxDisks })
+        if (report.Hardware.Disks?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxDisks))
         {
             return "Too many disks.";
         }
@@ -785,7 +811,7 @@ public static class AgentEndpoints
                 return "Every network interface requires a name of at most 256 characters.";
             }
 
-            if (nic.IpAddresses is { Count: > Infrastructure.Devices.DeviceInventoryService.MaxIpAddressesPerInterface })
+            if (nic.IpAddresses?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxIpAddressesPerInterface))
             {
                 return "Too many IP addresses on one interface.";
             }
@@ -815,7 +841,7 @@ public static class AgentEndpoints
             return "Logged-on user must be at most 256 characters.";
         }
 
-        if (report.Software is { Count: > Infrastructure.Devices.DeviceInventoryService.MaxSoftwareEntries })
+        if (report.Software?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxSoftwareEntries))
         {
             return "Too many software entries.";
         }
@@ -879,29 +905,29 @@ public static class AgentEndpoints
             }
         }
 
-        if (report.Services is { Count: > Infrastructure.Devices.DeviceInventoryService.MaxServices })
+        if (report.Services?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxServices))
         {
             return "Too many services.";
         }
 
-        if (report.Processes is { Count: > Infrastructure.Devices.DeviceInventoryService.MaxProcesses })
+        if (report.Processes?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxProcesses))
         {
             return "Too many processes.";
         }
 
-        if (report.WindowsUpdate?.History is { Count: > Infrastructure.Devices.DeviceInventoryService.MaxUpdateHistory })
+        if (report.WindowsUpdate?.History?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxUpdateHistory))
         {
             return "Too many update history entries.";
         }
 
         if (report.LocalAccounts is { } accounts)
         {
-            if (accounts.Users is { Count: > Infrastructure.Devices.DeviceInventoryService.MaxLocalUsers })
+            if (accounts.Users?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxLocalUsers))
             {
                 return "Too many local users.";
             }
 
-            if (accounts.Groups is { Count: > Infrastructure.Devices.DeviceInventoryService.MaxLocalGroups })
+            if (accounts.Groups?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxLocalGroups))
             {
                 return "Too many local groups.";
             }

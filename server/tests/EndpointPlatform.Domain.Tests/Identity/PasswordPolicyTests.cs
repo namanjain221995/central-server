@@ -15,14 +15,40 @@ namespace EndpointPlatform.Domain.Tests.Identity;
 public sealed class PasswordPolicyTests
 {
     [Theory]
-    [InlineData("correct horse battery staple")]
+    [InlineData("rivet manifold cobalt drizzle")]   // a passphrase nobody has published
     [InlineData("aaaaaaaaaaab")]                    // exactly 12, not all identical
-    [InlineData("Tr0ub4dor&3xyz")]
+    [InlineData("Kv7ndlp&3xqm")]
     [InlineData("            x")]                   // whitespace is a character like any other
     [InlineData("これは長いパスワードです")]
     public void An_acceptable_password_is_accepted(string password)
     {
         PasswordPolicy.Validate(password).ShouldBeNull();
+    }
+
+    /// <summary>
+    /// The famous example passwords are refused, precisely because they are famous.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// These two were the fixtures this file originally used to mean "obviously
+    /// fine". They are not, and the reason is worth stating: an example password
+    /// printed in a comic read by millions of engineers stops being an
+    /// illustration of a strong password and becomes a common password. Both
+    /// appear in published guessing lists for exactly that reason.
+    /// </para>
+    /// <para>
+    /// Pinned as a pair so that nobody restores them as "acceptable" fixtures
+    /// later without reading this.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("correct horse battery staple")]
+    [InlineData("Tr0ub4dor&3xyz")]
+    public void A_famous_example_password_is_refused(string password)
+    {
+        password.Length.ShouldBeGreaterThanOrEqualTo(PasswordPolicy.MinimumLength);
+
+        PasswordPolicy.Validate(password).ShouldNotBeNull();
     }
 
     [Theory]
@@ -58,10 +84,17 @@ public sealed class PasswordPolicyTests
     public void Length_is_counted_in_characters_not_bytes()
     {
         // 11 characters, but well over 12 bytes in UTF-8.
-        var elevenMultiByte = new string('é', 11);
+        //
+        // Deliberately varied rather than one character repeated: accents are
+        // folded away before the guessability rules run (WeakPassword.Normalise),
+        // so a run of the same letter under different accents reads as a single
+        // repeated character and is refused on that ground instead. That refusal
+        // is correct, but it would test something other than the length rule.
+        var elevenMultiByte = "éàüñörçkèdv";
+        elevenMultiByte.Length.ShouldBe(11);
 
         PasswordPolicy.Validate(elevenMultiByte).ShouldNotBeNull();
-        PasswordPolicy.Validate(elevenMultiByte + 'è').ShouldBeNull();
+        PasswordPolicy.Validate(elevenMultiByte + 'î').ShouldBeNull();
     }
 
     /// <summary>

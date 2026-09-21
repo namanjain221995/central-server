@@ -38,6 +38,12 @@ public sealed class AdminAuthenticationHandler(
     public const string UserIdClaimType = "epp:user_id";
     public const string OrganizationClaimType = "epp:organization_id";
 
+    /// <summary>
+    /// Present and "True" while the administrator must replace a server-generated
+    /// password. Read by <see cref="PasswordChangeRequiredMiddleware"/>.
+    /// </summary>
+    public const string PasswordChangeRequiredClaimType = "epp:password_change_required";
+
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         var token = ExtractToken();
@@ -66,6 +72,12 @@ public sealed class AdminAuthenticationHandler(
             new(UserIdClaimType, admin.UserId.ToString()),
             new(OrganizationClaimType, admin.OrganizationId.ToString()),
         };
+
+        // Added only when true, so the ordinary case carries no extra claim.
+        if (admin.MustChangePassword)
+        {
+            claims.Add(new Claim(PasswordChangeRequiredClaimType, bool.TrueString));
+        }
 
         claims.AddRange(admin.Permissions.Select(p => new Claim(PermissionClaimType, p)));
 

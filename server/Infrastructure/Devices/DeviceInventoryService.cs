@@ -34,6 +34,35 @@ public sealed class DeviceInventoryService(
     ILogger<DeviceInventoryService> logger)
 {
     /// <summary>Caps that no legitimate machine exceeds; anything above is a hostile payload.</summary>
+    /// <summary>
+    /// How far above a section's limit a report may go before it is refused
+    /// outright instead of truncated.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every <c>Max*</c> below is a TRUNCATION limit: this service takes that many
+    /// entries and ignores the rest, so a machine that legitimately reports more
+    /// than expected still gets a usable inventory. The Agent API additionally
+    /// refused any report that exceeded one of these counts, which defeated that
+    /// design completely -- a single oversized section discarded the WHOLE report,
+    /// including BitLocker state, local accounts and drivers, and the agent then
+    /// retried forever.
+    /// </para>
+    /// <para>
+    /// That is not theoretical: a developer laptop running VMware, VirtualBox,
+    /// Hyper-V and a VPN client enumerates 81 network interfaces against a limit
+    /// of 64, and reported no inventory at all until this was fixed.
+    /// </para>
+    /// <para>
+    /// The counts are still bounded, because an unbounded list from a compromised
+    /// agent is a denial-of-service vector. This multiplier is the line between
+    /// "a big machine" (truncate, keep the rest) and "not a plausible machine"
+    /// (refuse). It is deliberately generous: being wrong in the refusing
+    /// direction costs an entire estate's inventory.
+    /// </para>
+    /// </remarks>
+    public const int OversizeRefusalMultiplier = 16;
+
     public const int MaxDisks = 64;
     public const int MaxNetworkInterfaces = 64;
     public const int MaxIpAddressesPerInterface = 32;

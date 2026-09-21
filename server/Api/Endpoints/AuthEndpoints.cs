@@ -200,6 +200,11 @@ public static class AuthEndpoints
             actor.Email,
             DisplayName = httpContext.User.Identity?.Name ?? actor.Email,
             Permissions = permissions,
+            // The console gates itself on this. The server gates independently in
+            // PasswordChangeRequiredMiddleware, because a bearer token never loads
+            // the console at all; this field is for the experience, not the security.
+            MustChangePassword = httpContext.User.HasClaim(
+                AdminAuthenticationHandler.PasswordChangeRequiredClaimType, bool.TrueString),
         });
     }
 

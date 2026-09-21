@@ -62,10 +62,22 @@ public sealed class AdminAuthService(
     AuditWriter auditWriter,
     TimeProvider timeProvider,
     IOptions<AdminAuthOptions> options,
+    SignInAddressThrottle addressThrottle,
     ILogger<AdminAuthService> logger)
 {
     /// <summary>A real hash of an unguessable value, used to equalise timing for unknown accounts.</summary>
     private static readonly string DummyHash = PasswordHasher.Hash(Guid.NewGuid().ToString("N"));
+
+    /// <summary>
+    /// How long somebody has to produce a code after their password is accepted.
+    /// </summary>
+    /// <remarks>
+    /// Five minutes: long enough to find a phone, unlock it and read a code that
+    /// may roll once while they type, and short enough that an abandoned challenge
+    /// is not left lying around. The challenge is also bounded by an attempt
+    /// counter, so this is not the only limit on it.
+    /// </remarks>
+    public static readonly TimeSpan MfaChallengeLifetime = TimeSpan.FromMinutes(5);
 
     private readonly EndpointPlatformDbContext _dbContext = dbContext
         ?? throw new ArgumentNullException(nameof(dbContext));
@@ -78,6 +90,9 @@ public sealed class AdminAuthService(
 
     private readonly AdminAuthOptions _options = options?.Value
         ?? throw new ArgumentNullException(nameof(options));
+
+    private readonly SignInAddressThrottle _addressThrottle = addressThrottle
+        ?? throw new ArgumentNullException(nameof(addressThrottle));
 
     private readonly ILogger<AdminAuthService> _logger = logger
         ?? throw new ArgumentNullException(nameof(logger));
@@ -92,6 +107,23 @@ public sealed class AdminAuthService(
         var now = _timeProvider.GetUtcNow();
         var normalized = email.Trim().ToUpperInvariant();
 
+        // Checked BEFORE the account is loaded, and the refusal returns without
+        // ever calling RecordFailedSignIn. That ordering is the denial-of-service
+        // fix: an address that has spent its failure budget can no longer drive
+        // any account's lockout counter, so an attacker who knows an
+        // administrator's e-mail address cannot keep that person locked out.
+        // Without this, per-account lockout is a weapon pointed at the victim.
+        var address = await _addressThrottle.InspectAsync(sourceIp, cancellationToken);
+        if (address.Blocked)
+        {
+            // Same generic failure as every other refusal - telling a caller they
+            // are throttled tells them their guessing is having an effect. The
+            // distinction is in the audit trail, which is where it belongs.
+            PasswordHasher.Verify(password, DummyHash);
+            await AuditSignInFailureAsync(null, email, "Source address throttled.", cancellationToken);
+            return SignInOutcome.Failed();
+        }
+
         var user = await _dbContext.PlatformUsers
             .SingleOrDefaultAsync(u => u.NormalizedEmail == normalized, cancellationToken);
 
@@ -99,6 +131,7 @@ public sealed class AdminAuthService(
         {
             // Equalise timing with the real-verification path.
             PasswordHasher.Verify(password, DummyHash);
+            await _addressThrottle.RecordFailureAsync(sourceIp, cancellationToken);
             await AuditSignInFailureAsync(null, email, "Unknown account.", cancellationToken);
             return SignInOutcome.Failed();
         }
@@ -106,6 +139,7 @@ public sealed class AdminAuthService(
         if (user.Status == PlatformUserStatus.Disabled)
         {
             PasswordHasher.Verify(password, DummyHash);
+            await _addressThrottle.RecordFailureAsync(sourceIp, cancellationToken);
             await AuditSignInFailureAsync(user, email, "Account is disabled.", cancellationToken);
             return SignInOutcome.Failed();
         }
@@ -113,51 +147,61 @@ public sealed class AdminAuthService(
         if (user.IsLockedOut(now))
         {
             PasswordHasher.Verify(password, DummyHash);
+            await _addressThrottle.RecordFailureAsync(sourceIp, cancellationToken);
             await AuditSignInFailureAsync(user, email, "Account is locked out.", cancellationToken);
             return SignInOutcome.Failed();
         }
 
         if (user.PasswordHash is null || !PasswordHasher.Verify(password, user.PasswordHash))
         {
-            user.RecordFailedSignIn(now, _options.LockoutThreshold, TimeSpan.FromMinutes(_options.LockoutMinutes));
+            user.RecordFailedSignIn(
+                now,
+                _options.LockoutThreshold,
+                TimeSpan.FromMinutes(_options.LockoutMinutes),
+                TimeSpan.FromMinutes(_options.FailureDecayMinutes));
+            await _addressThrottle.RecordFailureAsync(sourceIp, cancellationToken);
             await AuditSignInFailureAsync(user, email, "Wrong password.", cancellationToken);
             return SignInOutcome.Failed();
         }
 
-        // Success. Opportunistically upgrade the stored hash if policy has moved on.
+        // The password is correct. Opportunistically upgrade the stored hash if
+        // policy has moved on - this is safe before the second factor, because it
+        // changes only how the same credential is stored.
         if (PasswordHasher.NeedsRehash(user.PasswordHash))
         {
             user.SetPasswordHash(PasswordHasher.Hash(password), now);
         }
 
-        user.RecordSuccessfulSignIn(now);
+        // A second factor is owed. Stop here, and in particular do NOT call
+        // RecordSuccessfulSignIn: it clears the failed-attempt counter and the
+        // lockout, so calling it on a correct password alone would let anyone
+        // holding a leaked password reset the lockout indefinitely while grinding
+        // the second factor. The counter is cleared when a session is actually
+        // issued, in CreateSessionAsync.
+        if (user.HasConfirmedMfa)
+        {
+            var challengeToken = SecretGenerator.GenerateSecret();
+            var challenge = new AdminMfaChallenge(
+                user.Id,
+                SecretGenerator.HashSecret(challengeToken),
+                user.SecurityStamp,
+                now,
+                now.Add(MfaChallengeLifetime),
+                sourceIp,
+                userAgent);
 
-        var token = SecretGenerator.GenerateSecret();
+            _dbContext.AdminMfaChallenges.Add(challenge);
+            await _dbContext.SaveChangesAsync(cancellationToken);
 
-        var session = new AdminSession(
-            user.Id,
-            SecretGenerator.HashSecret(token),
-            user.SecurityStamp,
-            now,
-            now.AddHours(_options.SessionLifetimeHours),
-            sourceIp,
-            userAgent);
+            return SignInOutcome.MfaChallenge(challengeToken, challenge.ExpiresAt);
+        }
 
-        _dbContext.AdminSessions.Add(session);
-
-        _auditWriter.Stage(
-            user.OrganizationId,
-            AuditActorType.PlatformUser,
-            user.Id,
-            user.Email,
-            action: "auth.sign_in",
-            AuditResult.Success);
-
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
-        var permissions = await ResolvePermissionsAsync(user.Id, cancellationToken);
-
-        return SignInOutcome.Succeeded(user, token, session.ExpiresAt, permissions);
+        // No confirmed second factor. A session is issued so the account can reach
+        // the enrolment screen and nothing else - PlatformUser.HasConfirmedMfa is
+        // false, so MfaEnrolmentRequiredMiddleware confines it. Enrolment is
+        // mandatory but has to be completed by a signed-in person; there is no
+        // earlier point at which it could be enforced.
+        return await CreateSessionAsync(user, sourceIp, userAgent, now, cancellationToken);
     }
 
     /// <summary>Validates a presented session token; null when it is not acceptable.</summary>
@@ -195,7 +239,8 @@ public sealed class AdminAuthService(
 
         var permissions = await ResolvePermissionsAsync(user.Id, cancellationToken);
 
-        return new AuthenticatedAdmin(user.Id, user.OrganizationId, user.Email, user.DisplayName, permissions);
+        return new AuthenticatedAdmin(
+            user.Id, user.OrganizationId, user.Email, user.DisplayName, permissions, user.MustChangePassword);
     }
 
     /// <summary>
@@ -254,7 +299,11 @@ public sealed class AdminAuthService(
 
         if (!PasswordHasher.Verify(currentPassword, user.PasswordHash))
         {
-            user.RecordFailedSignIn(now, _options.LockoutThreshold, TimeSpan.FromMinutes(_options.LockoutMinutes));
+            user.RecordFailedSignIn(
+                now,
+                _options.LockoutThreshold,
+                TimeSpan.FromMinutes(_options.LockoutMinutes),
+                TimeSpan.FromMinutes(_options.FailureDecayMinutes));
             await AuditPasswordChangeFailureAsync(user, "Current password incorrect.", cancellationToken);
             await _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -264,7 +313,13 @@ public sealed class AdminAuthService(
             return ChangePasswordOutcome.Failed(ChangePasswordError.CurrentPasswordIncorrect);
         }
 
-        if (PasswordPolicy.Validate(newPassword) is { } policyFailure)
+        // Passed WITH the account's identity, so the screening rule that refuses a
+        // password built from the person's own name or e-mail can fire. On an
+        // internet-facing console that is the rule worth most: the e-mail address
+        // is the username, so an attacker at the login form already has it.
+        var context = PasswordContext.For(user.Email, user.DisplayName);
+
+        if (PasswordPolicy.Validate(newPassword, context) is { } policyFailure)
         {
             // Not audited as a security failure and not counted towards lockout:
             // the caller has already proved who they are, and a weak-password
@@ -282,6 +337,14 @@ public sealed class AdminAuthService(
 
         // Rotates the security stamp, which is what invalidates every session.
         user.SetPasswordHash(PasswordHasher.Hash(newPassword), now);
+
+        // Cleared HERE rather than inside SetPasswordHash. That method also runs on a
+        // successful sign-in when the stored hash needs rehashing, so clearing it
+        // there would let a plain sign-in with the generated password satisfy the
+        // requirement - leaving a new administrator using a credential that was
+        // displayed on a screen. This is the one code path that proves the owner
+        // chose the password: it verified the current one above.
+        user.CompleteRequiredPasswordChange();
 
         // Revoked explicitly as well as invalidated by the stamp. The stamp check
         // already makes them unusable; marking them revoked makes the reason
@@ -380,7 +443,11 @@ public sealed class AdminAuthService(
             return true;
         }
 
-        user.RecordFailedSignIn(now, _options.LockoutThreshold, TimeSpan.FromMinutes(_options.LockoutMinutes));
+        user.RecordFailedSignIn(
+                now,
+                _options.LockoutThreshold,
+                TimeSpan.FromMinutes(_options.LockoutMinutes),
+                TimeSpan.FromMinutes(_options.FailureDecayMinutes));
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         _logger.LogWarning("Step-up password verification failed for {UserId}.", userId);
@@ -430,6 +497,109 @@ public sealed class AdminAuthService(
             .ToListAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Issues a session. The single place a session comes into existence.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Shared by the no-second-factor path and by
+    /// <see cref="CompleteMfaSignInAsync"/>, so the two cannot drift. In
+    /// particular <see cref="PlatformUser.RecordSuccessfulSignIn"/> is called
+    /// HERE and nowhere else: clearing the lockout counter is a consequence of
+    /// actually signing in, not of getting the password right, and moving it
+    /// earlier would hand a password-only attacker an unlimited supply of
+    /// attempts against the second factor.
+    /// </para>
+    /// <para>
+    /// The caller is responsible for having established that the account may sign
+    /// in at all. This method does not re-check status or lockout.
+    /// </para>
+    /// </remarks>
+    private async Task<SignInOutcome> CreateSessionAsync(
+        PlatformUser user,
+        string? sourceIp,
+        string? userAgent,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        user.RecordSuccessfulSignIn(now);
+
+        var token = SecretGenerator.GenerateSecret();
+
+        var session = new AdminSession(
+            user.Id,
+            SecretGenerator.HashSecret(token),
+            user.SecurityStamp,
+            now,
+            now.AddHours(_options.SessionLifetimeHours),
+            sourceIp,
+            userAgent);
+
+        _dbContext.AdminSessions.Add(session);
+
+        _auditWriter.Stage(
+            user.OrganizationId,
+            AuditActorType.PlatformUser,
+            user.Id,
+            user.Email,
+            action: "auth.sign_in",
+            AuditResult.Success);
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        var permissions = await ResolvePermissionsAsync(user.Id, cancellationToken);
+
+        return SignInOutcome.Succeeded(user, token, session.ExpiresAt, permissions);
+    }
+
+    /// <summary>
+    /// Finishes a sign-in that was waiting on a second factor.
+    /// </summary>
+    /// <remarks>
+    /// The account's status and lockout are re-checked here rather than trusted
+    /// from the password step. A challenge lasts five minutes, and an account can
+    /// be disabled or locked inside that window - by another administrator
+    /// responding to exactly the incident that makes it matter.
+    /// </remarks>
+    public async Task<SignInOutcome> CompleteMfaSignInAsync(
+        string? challengeToken,
+        string? code,
+        string? sourceIp,
+        string? userAgent,
+        MfaService mfaService,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(mfaService);
+
+        var now = _timeProvider.GetUtcNow();
+
+        var address = await _addressThrottle.InspectAsync(sourceIp, cancellationToken);
+        if (address.Blocked)
+        {
+            return SignInOutcome.Failed();
+        }
+
+        var verification = await mfaService.VerifyChallengeAsync(challengeToken, code, cancellationToken);
+
+        if (!verification.Success)
+        {
+            await _addressThrottle.RecordFailureAsync(sourceIp, cancellationToken);
+            return SignInOutcome.Failed();
+        }
+
+        var user = await _dbContext.PlatformUsers
+            .SingleOrDefaultAsync(u => u.Id == verification.UserId, cancellationToken);
+
+        if (user is null || user.Status == PlatformUserStatus.Disabled || user.IsLockedOut(now))
+        {
+            await AuditSignInFailureAsync(
+                user, user?.Email ?? "unknown", "Account not usable at second factor.", cancellationToken);
+            return SignInOutcome.Failed();
+        }
+
+        return await CreateSessionAsync(user, sourceIp, userAgent, now, cancellationToken);
+    }
+
     private async Task AuditSignInFailureAsync(
         PlatformUser? user,
         string attemptedEmail,
@@ -464,24 +634,55 @@ public sealed class AdminAuthService(
     }
 }
 
+/// <param name="MfaChallengeToken">
+/// Set when the password was correct but a second factor is still owed. It is NOT
+/// a session token: it authenticates nothing and may only be presented to the
+/// verify endpoint.
+/// </param>
 public sealed record SignInOutcome(
     bool Success,
     PlatformUser? User,
     string? Token,
     DateTimeOffset ExpiresAt,
-    IReadOnlyList<string> Permissions)
+    IReadOnlyList<string> Permissions,
+    string? MfaChallengeToken = null)
 {
+    /// <summary>The password was accepted and a second factor is required.</summary>
+    /// <remarks>
+    /// Distinguished from <see cref="Success"/> on purpose. A challenge is not a
+    /// partial success to be treated leniently - nothing is authenticated until
+    /// the code is verified, and the caller must not act on <see cref="User"/>.
+    /// </remarks>
+    public bool MfaRequired => MfaChallengeToken is not null;
+
     public static SignInOutcome Failed() => new(false, null, null, default, []);
 
     public static SignInOutcome Succeeded(
         PlatformUser user, string token, DateTimeOffset expiresAt, IReadOnlyList<string> permissions) =>
         new(true, user, token, expiresAt, permissions);
+
+    /// <summary>
+    /// The password was right; the second factor is owed.
+    /// </summary>
+    /// <remarks>
+    /// Carries no user and no permissions. Handing either back here would invite a
+    /// caller to render a signed-in console before the second factor had been
+    /// supplied.
+    /// </remarks>
+    public static SignInOutcome MfaChallenge(string challengeToken, DateTimeOffset expiresAt) =>
+        new(false, null, null, expiresAt, [], challengeToken);
 }
 
 /// <summary>The authenticated principal attached to a validated request.</summary>
+/// <param name="MustChangePassword">
+/// True while this administrator still holds a server-generated password. The
+/// API refuses everything except reading their own identity and changing that
+/// password until it is false.
+/// </param>
 public sealed record AuthenticatedAdmin(
     Guid UserId,
     Guid OrganizationId,
     string Email,
     string DisplayName,
-    IReadOnlyList<string> Permissions);
+    IReadOnlyList<string> Permissions,
+    bool MustChangePassword);

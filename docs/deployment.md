@@ -1,15 +1,16 @@
 # Deployment
 
-Status: **demo-deployable, not production-hardened.** Administrator
+Status: **deployable, not fully production-hardened.** Administrator
 authentication (ADR-0009) and agent authentication (ADR-0008) are implemented.
-What is still outstanding for production is hardening rather than function:
-managed secret storage, full CSP, backup automation and observability. The
-[AWS demo topology](#aws-demo-topology) below is a deliberately small
-single-host shape for demonstrating the platform, not a production design.
+What is still outstanding is hardening rather than function: managed secret
+storage (a KMS or HSM rather than a key in a root-owned file), full CSP,
+backup automation and observability. The [deployed topology](#deployed-topology-one-ubuntu-machine)
+below is a single-machine shape; it has no autoscaling, no managed database and
+no multi-AZ story, and acquiring them is a separate exercise.
 
 ## Topology
 
-- One host (or container pair) runs the two API processes:
+- One host runs the two API processes:
   - Admin API — reachable by administrators/dashboard only.
   - Agent API — reachable by endpoints; this is the only surface exposed to
     the endpoint network.
@@ -91,7 +92,9 @@ Requirements:
 - Supplied through the environment or a secrets manager — never committed,
   never logged, never placed in `appsettings.json`.
 - Held in `infra/.env` as `SECRET_PROTECTION_KEY` for local runs
-  (`scripts/run-local.ps1` maps it to the `ENDPOINTPLATFORM_` variable).
+  (`scripts/run-local.ps1` maps it to the `ENDPOINTPLATFORM_` variable), and in
+  `/etc/endpoint-platform/secrets.env` on a deployed host, from which
+  `gen-env.sh` renders it into **both** service environment files.
 
 Generate one with:
 
@@ -103,92 +106,98 @@ $b = New-Object byte[] 32; $rng.GetBytes($b); [Convert]::ToBase64String($b)
 Rotating the key invalidates only secrets that are in flight at that moment.
 They fail their task safely and can be re-issued; no stored data is affected.
 
-## AWS demo topology
+## Deployed topology: one Ubuntu machine
 
-**This is the DEMO shape, not a production architecture.** It is one EC2 host
-running Docker Compose, chosen because it is the smallest thing that
-demonstrates the whole platform end to end. It has no autoscaling, no managed
-database, no orchestrator and no multi-AZ story, and it is not intended to
-acquire them — production topology is a separate exercise.
+One machine, **no containers**. Three .NET processes under systemd, with
+PostgreSQL, Redis and nginx installed as ordinary packages.
 
 ```
-                        AWS EC2
-                  ┌─────────────────────────┐
-                  │ Docker Compose          │
-                  │                         │
-   public :443 ──▶│ nginx  (TLS, /api ──▶ Admin API)
-                  │   └── Dashboard (static dist)
-                  │ Admin API   :8080  internal
-                  │ Agent API   :8081  published
-                  │ PostgreSQL  :5432  internal only
-                  │ Redis       :6379  internal only
-                  └────────────┬────────────┘
-                               │  HTTPS (outbound from the endpoint)
-                               ▼
-                       Windows Endpoint
-                               │
-                        Windows Agent  (native Windows service, LocalSystem)
-                               │
-                               ▼
-                        Windows APIs  (netapi32 / SAM)
+                          Ubuntu machine
+   browser ─── 443 ──▶ nginx ──┬──▶ /           dashboard (static build)
+   agent   ─── 443 ──▶  (TLS)  ├──▶ /api/    ─▶ Admin API  127.0.0.1:5080
+                               └──▶ /agent/  ─▶ Agent API  127.0.0.1:5081
+                                                     │
+                                    PostgreSQL 17 ◀──┤   loopback only
+                                    Redis         ◀──┘   loopback only
+                                          ▲
+                                          │ HTTPS, outbound from the endpoint
+                                   Windows Endpoint
+                                          │
+                                   Windows Agent (service, LocalSystem)
+                                          │
+                                   Windows APIs (netapi32 / SAM)
 ```
 
-**Management plane on AWS.** Dashboard, Admin API, Agent API, PostgreSQL and
-Redis all run on the one EC2 host.
+Install it with [`infra/ubuntu/install.sh`](../infra/ubuntu/install.sh), or over
+SSH from Windows with `infra/ubuntu/Deploy-Ubuntu.ps1`. On Google Cloud,
+[`infra/gcp/provision-vm.sh`](../infra/gcp/provision-vm.sh) creates the VM,
+the static IP and the firewall rules first — a Compute Engine VM running Ubuntu
+is exactly the machine described here, so nothing else differs. Full operating
+instructions: [infra/ubuntu/README.md](../infra/ubuntu/README.md).
 
-**PostgreSQL and Redis are private.** They are on the compose-internal network
-with no published ports — reachable by the two APIs and by nothing else. They
-are never exposed to the internet, and the demo does not need them to be.
+**Both APIs bind to loopback only.** nginx is the single public entry point.
+Ports 5080 and 5081 are never published, and an endpoint reaches the Agent API
+over the same public HTTPS origin at `/agent/`.
 
-**nginx is the only public HTTPS entry point.** It terminates TLS, serves the
-dashboard's static build, and reverse-proxies `/api/*` to the Admin API.
+**The dashboard and the Admin API share one origin.** This is a requirement, not
+a preference. The dashboard calls `/api/...` as a relative path, and the session
+cookie is issued with the `__Host-` prefix, `Secure`, and `SameSite=Strict`.
+The `__Host-` prefix forbids a `Domain` attribute, so the cookie is pinned to
+exactly the host that set it. Serving the dashboard from a different hostname
+than the API breaks sign-in outright.
 
-**The dashboard and the Admin API share one origin.** This is a requirement,
-not a preference. The dashboard calls `/api/...` as a relative path, and the
-session cookie is issued with the `__Host-` prefix, `Secure`, and
-`SameSite=Strict`. The `__Host-` prefix forbids a `Domain` attribute, so the
-cookie is pinned to exactly the host that set it. Serving the dashboard from a
-different hostname than the API breaks sign-in outright. The nginx proxy is
-what keeps them on one origin.
+**HTTPS is mandatory.** `Secure` cookies are exempted only for `localhost`.
+Over plain HTTP on a real host name the browser discards the session cookie and
+nobody can sign in. A machine on a private LAN cannot use Let's Encrypt (the
+HTTP-01 challenge needs a public name and port 80); install a certificate from
+your own CA instead — infra/ubuntu/README.md has the steps.
 
-**HTTPS is mandatory.** `Secure` cookies are only exempted for `localhost`.
-Over plain HTTP on a public hostname the browser discards the session cookie
-and no one can sign in.
+**PostgreSQL and Redis are private.** Both listen on loopback only and are
+password-protected. Redis holds the in-flight sealed account secrets; it is never
+reachable from outside the machine.
+
+**One account per process.** `epp-admin-api`, `epp-agent-api` and
+`epp-migrations` are separate service accounts, because two processes under one
+UID can read each other's environment through `/proc`. The migration job is the
+only one given the owner database credential; the Admin API is the only one given
+the recovery-escrow keys. systemd reads each `EnvironmentFile=` as PID 1, before
+dropping privilege, so no application account can read any of those files.
 
 **The Windows agent is NOT containerized and must not be.** It manages local
 Windows accounts through `netapi32` and requires real Windows elevation
-(LocalSystem as a service). It stays installed natively on each managed
-Windows endpoint.
+(LocalSystem as a service). It stays installed natively on each managed endpoint.
 
-**The agent connects outbound.** It dials the AWS Agent API over HTTPS; AWS
-never initiates a connection to the endpoint. Only the Agent API port needs to
-be reachable from the endpoint network — no inbound firewall rule, VPN or
-public IP is required on the Windows machine.
+**The agent connects outbound.** It dials the Agent API over HTTPS; the server
+never initiates a connection to an endpoint. A managed PC therefore needs no
+inbound firewall rule, no VPN and no public IP.
 
-**Privileged Windows work stays local.** AWS only ever queues a typed task. The
-decision to act, the Windows API call, and the verification of the resulting
-state all happen on the endpoint itself. Nothing in this topology gives the
-cloud direct control of the machine.
+**Privileged Windows work stays local.** The server only ever queues a typed
+task. The decision to act, the Windows API call, and the verification of the
+resulting state all happen on the endpoint itself. Nothing in this topology gives
+the server direct control of the machine.
 
 Agent certificate validation is enforced: the "accept any certificate" escape
 hatch is gated on both an explicit option and a Debug build, so a Release agent
-requires a genuinely trusted certificate. Use a publicly trusted certificate
-(ACM behind the proxy, or Let's Encrypt) — a self-signed certificate will be
-rejected, and that check must not be weakened to make the demo easier.
+requires a genuinely trusted certificate. That check must not be weakened to make
+a deployment easier.
 
-### Demo configuration values
+### Where configuration comes from
 
-| Variable | Value for the demo |
+`infra/ubuntu/gen-env.sh` generates `/etc/endpoint-platform/secrets.env`
+**once** (`root:root 0600`) and renders one environment file per service from it
+on every run. Nothing in this repository holds a deployed credential, and there
+is nothing to rotate out of source control.
+
+| Variable | Value on the deployed host |
 |---|---|
-| `ENDPOINTPLATFORM_Cors__AllowedOrigins__0` | `https://<demo-host>` |
+| `ENDPOINTPLATFORM_Cors__AllowedOrigins__0` | `https://<host>` |
 | `ENDPOINTPLATFORM_SecretProtection__Key` | one generated key, **same in both APIs** |
-| `ENDPOINTPLATFORM_Database__ConnectionString` | `Host=postgres;...` (compose service name) |
-| `ENDPOINTPLATFORM_Redis__ConnectionString` | `redis:6379,password=...` |
+| `ENDPOINTPLATFORM_Database__ConnectionString` | `Host=127.0.0.1;...` — owner role for the migration job, restricted role for the APIs |
+| `ENDPOINTPLATFORM_Redis__ConnectionString` | `127.0.0.1:6379,password=...` |
+| `ENDPOINTPLATFORM_PackageStorage__Directory` | `/var/lib/endpoint-platform/packages` |
+| `ASPNETCORE_URLS` | `http://127.0.0.1:5080` / `:5081` |
 | `ASPNETCORE_ENVIRONMENT` | `Production` |
-| `ENDPOINTAGENT_Agent__ServerBaseUrl` | `https://<demo-host>:8081` (on the Windows endpoint) |
-
-Compose file: `infra/docker-compose.demo.yml`. It reads the same `infra/.env`
-contract as local development, plus the demo host name.
+| `ENDPOINTAGENT_Agent__ServerBaseUrl` | `https://<host>` (on each Windows endpoint) |
 
 ## Windows agent
 
@@ -207,6 +216,11 @@ contract as local development, plus the demo host name.
 - Agent releases and remote self-update are shipped, not future work: upload the
   built MSI on the dashboard's Agent page, publish it, and queue `UpdateAgent`
   per device. See [agent-updates.md](agent-updates.md).
+- Before piloting a new agent build on a machine, run
+  `infra/ubuntu/assert-pilot-machine-is-safe.sh` on the production host. A pilot
+  install on an already-enrolled machine overwrites its device credential and
+  silently takes that endpoint offline — see
+  [runbooks/agent-pilot-safety.md](runbooks/agent-pilot-safety.md).
 - **Release trust mode** — `ENDPOINTPLATFORM_AgentReleases__TrustMode`:
   `Internal` (the default, and what this deployment runs) or `Public`. Internal
   requires no Authenticode certificate and reads no signature; integrity is the
@@ -224,6 +238,18 @@ contract as local development, plus the demo host name.
 
 ## Backup / restore
 
-PostgreSQL is the only stateful store. `pg_dump` of the `endpoint_platform`
-schema captures everything including audit history. Redis is disposable by
-design. Full runbooks are Phase 15 deliverables.
+Three things, and any one alone is not a restore:
+
+1. **PostgreSQL** — `pg_dump` of the `endpoint_platform` database captures
+   everything, audit history included.
+2. **`/var/lib/endpoint-platform/packages`** — the uploaded installer bytes,
+   content-addressed by SHA-256.
+3. **`/etc/endpoint-platform/secrets.env`** — store it with the dump, encrypted.
+   It holds `RECOVERY_ESCROW_KEY`, and a dump restored without it cannot decrypt
+   a single escrowed BitLocker recovery password.
+
+Redis is disposable by design. Always run the migration job after a restore: it
+re-applies the runtime grants and the audit-immutability protections, which a
+plain `pg_restore` under a different role can leave in a weaker state. Commands
+are in [infra/ubuntu/README.md](../infra/ubuntu/README.md) and
+[operations.md](operations.md).

@@ -80,7 +80,7 @@ endpoint-platform/
 │   └── tests/                  Core (any OS) + Windows integration tests
 ├── shared/Contracts/     Wire contracts, dependency-free
 ├── dashboard/            React + TypeScript + Vite SPA
-├── infra/                docker-compose.yml (PostgreSQL + Redis), init scripts
+├── infra/                ubuntu/ deployment kit, postgres/ setup SQL, gcp/
 └── docs/                 This documentation + ADRs
 ```
 
@@ -131,8 +131,13 @@ are reverted automatically.
 - Committed configuration files contain **no secrets**; connection strings are
   empty in `appsettings.json` and supplied via `ENDPOINTPLATFORM_`-prefixed
   environment variables or user-secrets. Startup fails loudly if missing.
-- Local infrastructure credentials are generated per-machine into `infra/.env`
-  (git-ignored); `infra/.env.example` documents the shape with placeholders.
+- Local development credentials live in `infra/.env` (git-ignored);
+  `infra/.env.example` documents the shape with placeholders.
+- A deployed host generates its own secrets once into
+  `/etc/endpoint-platform/secrets.env` (`root:root 0600`) and renders one
+  environment file per service from them. systemd reads those as PID 1, before
+  dropping to the service account, so no application process can read them —
+  which is what keeps the Agent API structurally unable to hold the escrow keys.
 - EF sensitive-data logging is refused outside the Development environment even
   if configured.
 

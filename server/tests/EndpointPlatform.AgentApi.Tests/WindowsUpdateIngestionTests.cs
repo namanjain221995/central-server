@@ -104,10 +104,14 @@ public sealed class WindowsUpdateIngestionTests(AgentApiPostgresFixture fixture)
         (await db.DeviceUpdateStatus.SingleAsync(u => u.DeviceId == deviceId)).RebootRequired.ShouldBeTrue();
     }
 
+    /// <summary>
+    /// A longer update history than expected is truncated, not a reason to discard
+    /// the whole inventory. See <see cref="InventoryOversizeTests"/>.
+    /// </summary>
     [Fact]
-    public async Task Too_many_history_entries_are_rejected()
+    public async Task Too_many_history_entries_are_truncated_not_rejected()
     {
-        var (_, credential) = await EnrollAsync();
+        var (deviceId, credential) = await EnrollAsync();
         using var client = _fixture.Factory.CreateClient();
 
         var tooMany = Enumerable.Range(0, 201)
@@ -116,6 +120,10 @@ public sealed class WindowsUpdateIngestionTests(AgentApiPostgresFixture fixture)
 
         (await client.SendAsync(Req(AgentProtocol.Routes.Inventory,
             Report(new InventoryWindowsUpdate(false, tooMany)), credential)))
-            .StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+            .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        await using var db = _fixture.CreateDbContext();
+        (await db.DeviceUpdateHistory.CountAsync(h => h.DeviceId == deviceId))
+            .ShouldBe(EndpointPlatform.Infrastructure.Devices.DeviceInventoryService.MaxUpdateHistory);
     }
 }

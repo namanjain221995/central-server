@@ -37,6 +37,9 @@ public sealed class LoginRateLimitTests
             // ObjectDisposedException rather than anything informative. A
             // throwaway 32-byte key; it seals nothing real.
             builder.UseSetting("RecoveryEscrow:Key", "dGVzdC1lc2Nyb3cta2V5LTMyLWJ5dGVzLWxvbmchISE=");
+
+            // Same again for multi-factor: Mfa options are validated on start.
+            builder.UseSetting("Mfa:TotpKey", "dGVzdC1tZmEta2V5LTMyLWJ5dGVzLWxvbmchISEhISE=");
         }
     }
 

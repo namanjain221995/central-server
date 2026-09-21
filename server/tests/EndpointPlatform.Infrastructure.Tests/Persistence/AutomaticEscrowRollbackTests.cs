@@ -6,7 +6,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
-using Testcontainers.PostgreSql;
 
 namespace EndpointPlatform.Infrastructure.Tests.Persistence;
 
@@ -15,7 +14,7 @@ namespace EndpointPlatform.Infrastructure.Tests.Persistence;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Deliberately on its own container rather than the shared fixture, because the
+/// Deliberately on its own database rather than the shared fixture, because the
 /// test migrates the schema down and back: doing that to a database other tests are
 /// using would break them in ways that look like unrelated failures.
 /// </para>
@@ -33,27 +32,31 @@ public sealed class AutomaticEscrowRollbackTests : IAsyncLifetime
 
     private const string Volume = @"\\?\Volume{11111111-1111-1111-1111-111111111111}\";
 
-    private readonly PostgreSqlContainer _container =
-        new PostgreSqlBuilder(PostgresFixture.PostgresImage)
-            .WithDatabase("endpoint_platform_rollback_test")
-            .WithUsername("test_owner")
-            .WithPassword("test_owner_password_not_a_real_secret")
-            .Build();
+    private TestDatabase? _database;
+
+    private string DatabaseConnectionString =>
+        _database?.ConnectionString ?? throw new InvalidOperationException("Fixture not initialised.");
 
     public async Task InitializeAsync()
     {
-        await _container.StartAsync();
+        _database = await TestDatabase.CreateAsync("rollback");
 
         await using var db = CreateDbContext();
         await db.Database.MigrateAsync();
     }
 
-    public async Task DisposeAsync() => await _container.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        if (_database is not null)
+        {
+            await _database.DisposeAsync();
+        }
+    }
 
     private EndpointPlatformDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<EndpointPlatformDbContext>()
-            .UseNpgsql(_container.GetConnectionString(), npgsql =>
+            .UseNpgsql(DatabaseConnectionString, npgsql =>
             {
                 npgsql.MigrationsAssembly(EndpointPlatformDbContext.MigrationsAssemblyName);
                 npgsql.MigrationsHistoryTable("__ef_migrations_history", EndpointPlatformDbContext.Schema);

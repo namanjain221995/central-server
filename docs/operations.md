@@ -17,9 +17,11 @@ only cache/session data and is reconstructable.
 2. **Package content store** (`PackageStorage:Directory`) — the installer bytes,
    addressed by SHA-256. Content-addressed, so it is safe to back up
    incrementally and to deduplicate.
-3. **Configuration/secrets** — the environment values in `infra/.env` (DB and
-   Redis credentials). Store these in your secret manager, never in the backup
-   of the database itself.
+3. **Configuration/secrets** — `/etc/endpoint-platform/secrets.env` on the
+   deployed host (database and Redis credentials, `SECRET_PROTECTION_KEY`, and
+   `RECOVERY_ESCROW_KEY`). Store these in your secret manager, never in the
+   backup of the database itself. **A dump restored without this file cannot
+   decrypt a single escrowed BitLocker recovery password.**
 
 Redis is deliberately *not* on the backup list: losing it logs users out and
 cold-starts caches, nothing more.

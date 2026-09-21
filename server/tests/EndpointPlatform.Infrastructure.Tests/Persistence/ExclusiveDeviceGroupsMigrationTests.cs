@@ -4,7 +4,6 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
-using Testcontainers.PostgreSql;
 
 namespace EndpointPlatform.Infrastructure.Tests.Persistence;
 
@@ -34,30 +33,25 @@ public sealed class ExclusiveDeviceGroupsMigrationTests : IAsyncLifetime
 
     private const string Migration = "20260914182707_ExclusiveDeviceGroups";
 
-    private readonly PostgreSqlContainer _container =
-        new PostgreSqlBuilder(PostgresFixture.PostgresImage)
-            .WithDatabase("postgres")
-            .WithUsername("test_owner")
-            .WithPassword("test_owner_password_not_a_real_secret")
-            .Build();
+    private readonly List<TestDatabase> _databases = [];
 
-    public Task InitializeAsync() => _container.StartAsync();
+    public Task InitializeAsync() => Task.CompletedTask;
 
-    public async Task DisposeAsync() => await _container.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        foreach (var database in _databases)
+        {
+            await database.DisposeAsync();
+        }
+    }
 
     // ---------------------------------------------------------------- harness
 
     private async Task<string> NewDatabaseAsync()
     {
-        var name = "m_" + Guid.CreateVersion7().ToString("N")[..16];
-        await using (var admin = new NpgsqlConnection(_container.GetConnectionString()))
-        {
-            await admin.OpenAsync();
-            await using var create = new NpgsqlCommand($"CREATE DATABASE {name}", admin);
-            await create.ExecuteNonQueryAsync();
-        }
-
-        return new NpgsqlConnectionStringBuilder(_container.GetConnectionString()) { Database = name }.ConnectionString;
+        var database = await TestDatabase.CreateAsync("groups");
+        _databases.Add(database);
+        return database.ConnectionString;
     }
 
     private static EndpointPlatformDbContext Context(string connectionString) =>

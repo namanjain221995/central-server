@@ -7,7 +7,7 @@
     <AssemblyName>EndpointPlatform.Migrations</AssemblyName>
     <!--
       Holds the generated EF Core migration classes AND doubles as the migration
-      runner executed by docker compose / deployment before the APIs start.
+      runner systemd executes before the APIs start on every deployment.
       Keeping migrations out of Infrastructure means neither API host ships the
       migration history, and migrations can run under a higher-privileged DB
       role than the runtime application role. See ADR-0003.

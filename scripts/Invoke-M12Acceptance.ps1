@@ -55,7 +55,7 @@
 
 [CmdletBinding()]
 param(
-    [string] $ServerBaseUrl = 'https://65.2.37.254.nip.io',
+    [Parameter(Mandatory)] [string] $ServerBaseUrl,
 
     [Parameter(Mandatory)] [string] $AdminEmail,
     [Parameter(Mandatory)] [SecureString] $AdminPassword,

@@ -130,7 +130,11 @@ public sealed class PlatformUserTests
 
         for (var attempt = 0; attempt < 5; attempt++)
         {
-            user.RecordFailedSignIn(Now, lockoutThreshold: 5, lockoutDuration: TimeSpan.FromMinutes(15));
+            user.RecordFailedSignIn(
+                Now,
+                lockoutThreshold: 5,
+                lockoutDuration: TimeSpan.FromMinutes(15),
+                decayWindow: TimeSpan.FromHours(1));
         }
 
         user.Status.ShouldBe(PlatformUserStatus.Locked);
@@ -145,7 +149,11 @@ public sealed class PlatformUserTests
 
         for (var attempt = 0; attempt < 5; attempt++)
         {
-            user.RecordFailedSignIn(Now, lockoutThreshold: 5, lockoutDuration: TimeSpan.FromMinutes(15));
+            user.RecordFailedSignIn(
+                Now,
+                lockoutThreshold: 5,
+                lockoutDuration: TimeSpan.FromMinutes(15),
+                decayWindow: TimeSpan.FromHours(1));
         }
 
         user.IsLockedOut(Now.AddMinutes(14)).ShouldBeTrue();
@@ -157,8 +165,8 @@ public sealed class PlatformUserTests
     {
         var user = CreateUser();
         user.SetPasswordHash("hash", Now);
-        user.RecordFailedSignIn(Now, 5, TimeSpan.FromMinutes(15));
-        user.RecordFailedSignIn(Now, 5, TimeSpan.FromMinutes(15));
+        user.RecordFailedSignIn(Now, 5, TimeSpan.FromMinutes(15), TimeSpan.FromHours(1));
+        user.RecordFailedSignIn(Now, 5, TimeSpan.FromMinutes(15), TimeSpan.FromHours(1));
 
         user.RecordSuccessfulSignIn(Now);
 

@@ -71,13 +71,14 @@
     never counted as one; the summary reports the two totals separately.
 
 .EXAMPLE
-    .\Invoke-M13Acceptance.ps1 -AdminEmail admin@example.com `
+    .\Invoke-M13Acceptance.ps1 -ServerBaseUrl https://epp.example.com `
+        -AdminEmail admin@example.com `
         -AdminPassword (Read-Host -AsSecureString) -ExpectedHostname LAPTOP-LVCHEQ2H
 #>
 
 [CmdletBinding()]
 param(
-    [string] $ServerBaseUrl = 'https://65.2.37.254.nip.io',
+    [Parameter(Mandatory)] [string] $ServerBaseUrl,
 
     [Parameter(Mandatory)] [string] $AdminEmail,
     [Parameter(Mandatory)] [SecureString] $AdminPassword,

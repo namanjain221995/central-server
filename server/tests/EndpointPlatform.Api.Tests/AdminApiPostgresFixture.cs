@@ -6,6 +6,7 @@ using EndpointPlatform.Infrastructure.Persistence;
 using EndpointPlatform.Infrastructure.Persistence.Interceptors;
 using EndpointPlatform.Infrastructure.Persistence.Seeding;
 using EndpointPlatform.Infrastructure.Security;
+using EndpointPlatform.Infrastructure.Tests;
 using EndpointPlatform.Infrastructure.Tests.Agents;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -16,8 +17,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Testcontainers.PostgreSql;
-using Testcontainers.Redis;
 
 namespace EndpointPlatform.Api.Tests;
 
@@ -32,21 +31,24 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
     /// <summary>A throwaway 32-byte key for the test host. Seals nothing real.</summary>
     private const string TestEscrowKey = "dGVzdC1lc2Nyb3cta2V5LTMyLWJ5dGVzLWxvbmchISE=";
 
+    /// <summary>Fixed test key for sealing TOTP secrets. Seals nothing real.</summary>
+    private const string TestMfaKey = "dGVzdC1tZmEta2V5LTMyLWJ5dGVzLWxvbmchISEhISE=";
+
     public const string SuperAdminEmail = "superadmin@test.local";
     public const string ItAdminEmail = "itadmin@test.local";
     public const string HelpdeskEmail = "helpdesk@test.local";
     public const string AuditorEmail = "auditor@test.local";
     public const string DisabledEmail = "disabled@test.local";
 
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:17.6-alpine")
-        .WithDatabase("endpoint_platform_adminapi_test")
-        .WithUsername("test_owner")
-        .WithPassword("test_owner_password_not_a_real_secret")
-        .Build();
+    // A throwaway database on the local PostgreSQL server, dropped on dispose.
+    private TestDatabase? _database;
 
-    // A real Redis so the ephemeral-secret path (create user / reset password) is
-    // exercised end to end rather than short-circuited by an unreachable cache.
-    private readonly RedisContainer _redis = new RedisBuilder().Build();
+    private string DatabaseConnectionString =>
+        _database?.ConnectionString ?? throw new InvalidOperationException("Fixture not initialised.");
+
+    // Redis is the real, locally installed one (TestRedis.ConnectionString), so the
+    // ephemeral-secret path (create user / reset password) is exercised end to end
+    // rather than short-circuited by an unreachable cache.
 
     private WebApplicationFactory<Program>? _factory;
     private WebApplicationFactory<Program>? _kestrelFactory;
@@ -75,7 +77,7 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
             if (_kestrelFactory is null)
             {
                 var factory = new AdminApiTestFactory(
-                    _container.GetConnectionString(), _redis.GetConnectionString());
+                    DatabaseConnectionString, TestRedis.ConnectionString);
                 factory.UseKestrel();
                 // The server binds on first client creation.
                 _ = factory.CreateClient();
@@ -92,8 +94,11 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        await _container.StartAsync();
-        await _redis.StartAsync();
+        // Read before the database is created, so a missing Redis variable fails the
+        // fixture without leaving a throwaway database behind.
+        var redisConnectionString = TestRedis.ConnectionString;
+
+        _database = await TestDatabase.CreateAsync("adminapi");
 
         await using (var dbContext = CreateDbContext())
         {
@@ -117,8 +122,7 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
             await dbContext.SaveChangesAsync();
         }
 
-        var connectionString = _container.GetConnectionString();
-        _factory = new AdminApiTestFactory(connectionString, _redis.GetConnectionString());
+        _factory = new AdminApiTestFactory(DatabaseConnectionString, redisConnectionString);
     }
 
     private static PlatformUser AddUser(
@@ -148,14 +152,16 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
             await _factory.DisposeAsync();
         }
 
-        await _container.DisposeAsync();
-        await _redis.DisposeAsync();
+        if (_database is not null)
+        {
+            await _database.DisposeAsync();
+        }
     }
 
     public EndpointPlatformDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<EndpointPlatformDbContext>()
-            .UseNpgsql(_container.GetConnectionString(), npgsql =>
+            .UseNpgsql(DatabaseConnectionString, npgsql =>
             {
                 npgsql.MigrationsAssembly(EndpointPlatformDbContext.MigrationsAssemblyName);
                 npgsql.MigrationsHistoryTable("__ef_migrations_history", EndpointPlatformDbContext.Schema);
@@ -227,6 +233,10 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
         // key is fine here and is not a secret - it seals nothing real.
         builder.UseSetting("RecoveryEscrow:Key", TestEscrowKey);
         builder.UseSetting("RecoveryEscrow:KeyVersion", "1");
+
+        // Same reason: Mfa options are validated on start, so the Admin API
+        // refuses to build without a TOTP sealing key.
+        builder.UseSetting("Mfa:TotpKey", TestMfaKey);
             // Every test request arrives from the same loopback address, so the
             // per-address login limiter must be generous here. The limiter itself
             // has a dedicated test that lowers this again.

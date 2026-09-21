@@ -12,7 +12,9 @@ import { PoliciesPage } from './pages/PoliciesPage'
 import { SoftwarePage } from './pages/SoftwarePage'
 import { UpdatesPage } from './pages/UpdatesPage'
 import { LoginPage } from './pages/LoginPage'
+import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
+import { SettingsPage } from './pages/SettingsPage'
 import { TasksPage } from './pages/TasksPage'
 import { AgentReleasesPage } from './pages/AgentReleasesPage'
 
@@ -33,6 +35,18 @@ function AuthGate() {
 
   if (!user) {
     return <LoginPage />
+  }
+
+  // Before the router, deliberately. An administrator still holding a
+  // server-generated password gets 403 on every other endpoint, so rendering the
+  // shell would produce a console of failing panels. There is also no route to
+  // this screen, which is what stops it being navigated away from.
+  //
+  // This is the experience, not the security: the server enforces the same rule
+  // in PasswordChangeRequiredMiddleware, because a bearer token never loads this
+  // application at all.
+  if (user.mustChangePassword) {
+    return <ForcedPasswordChangePage />
   }
 
   return (
@@ -72,10 +86,7 @@ function AuthGate() {
             path="audit"
             element={<PlaceholderPage title="Audit Logs" phase="Phase 3 (authentication, RBAC and audit)" />}
           />
-          <Route
-            path="settings"
-            element={<PlaceholderPage title="Settings" phase="Phase 3 (authentication, RBAC and audit)" />}
-          />
+          <Route path="settings" element={<SettingsPage />} />
           <Route
             path="*"
             element={<PlaceholderPage title="This page" phase="a later phase (route not recognised)" />}

@@ -18,7 +18,7 @@ the host; nothing is pasted into source control, a ticket, or a chat window.
 | Fingerprint | SHA-256 over the SPKI DER, hex — public, not a secret |
 | Private key | **admin-api only**; the Agent API refuses to start if it sees one |
 | Public key | admin-api **and** agent-api |
-| `infra/.env` | mode **600**, owned by the deploying user |
+| `/etc/endpoint-platform/secrets.env` | mode **600**, `root:root` |
 | Secret values | **never** printed, echoed, logged, pasted or committed |
 
 ## Where each half goes
@@ -42,7 +42,7 @@ becomes eligible, and manual escrow is unaffected.
 
 ## Generating the pair
 
-Run on the host, as the user that owns `infra/.env`.
+Run on the host as root.
 
 **The PKCS#8 conversion in step 2 is required, not tidiness.** `openssl genpkey`
 with `-outform DER` does not reliably emit PKCS#8: on some builds it writes a
@@ -68,7 +68,7 @@ base64 -w0 "$D/private.der" > "$D/private.b64"
 base64 -w0 "$D/public.der"  > "$D/public.b64"
 ```
 
-## Writing the values into `.env`
+## Writing the values into `secrets.env`
 
 **Write from files by concatenation. Do not interpolate base64 into a format
 string.** An unquoted `printf` format loses its backslash, and the failure is
@@ -77,7 +77,11 @@ long, still looks like base64, still decodes far enough to parse — and is
 refused at startup as invalid base64. That also happened during a real run.
 
 ```sh
-F=infra/.env
+F=/etc/endpoint-platform/secrets.env
+
+# The file already carries empty placeholders for both, so remove those lines
+# first rather than appending a second definition of each.
+sed -i '/^RECOVERY_SEALING_PUBLIC_KEY=$/d;/^RECOVERY_SEALING_PRIVATE_KEY=$/d' "$F"
 
 {
   printf 'RECOVERY_SEALING_PUBLIC_KEY='
@@ -88,6 +92,7 @@ F=infra/.env
   echo
 } >> "$F"
 
+chown root:root "$F"
 chmod 600 "$F"
 shred -u "$D"/*.der "$D"/*.b64 && rmdir "$D"
 ```
@@ -106,7 +111,7 @@ Run them *before* restarting the Admin API, so a bad value is caught while the
 service is still up rather than as a crash loop.
 
 ```sh
-F=infra/.env
+F=/etc/endpoint-platform/secrets.env
 
 # Base64 length must be a multiple of 4. One that is not is corrupt, however
 # plausible it looks. This single check catches the trailing-character failure.
@@ -127,13 +132,17 @@ B=$(grep '^RECOVERY_SEALING_PUBLIC_KEY=' "$F" | cut -d= -f2- | base64 -d | opens
 [ "$A" = "$B" ] && echo "pair verified, SPKI SHA-256: $A" || echo "MISMATCH — do not restart"
 
 # Permissions.
-stat -c '%a %U:%G' "$F"   # must be: 600 ubuntu:ubuntu
+stat -c '%a %U:%G' "$F"   # must be: 600 root:root
 
-# Compose resolves. --quiet prints nothing on success, so no value can leak.
-docker compose -f infra/docker-compose.demo.yml --env-file "$F" config --quiet && echo "compose config OK"
+# Re-render the per-service environment files from the secrets. It refuses to
+# write a value it cannot carry, and prints names only.
+bash infra/ubuntu/gen-env.sh "$(grep '^PUBLIC_ORIGIN=' "$F" | cut -d= -f2-)"
 
 # Which service receives which half. Prints names and lengths, never values.
-docker compose -f infra/docker-compose.demo.yml --env-file "$F" config | awk '/^  [a-z-]+:/{svc=$1} /RecoveryEscrow__Sealing/{print svc, $1, "len=" length($2)}'
+for s in admin-api agent-api; do
+  awk -v svc="$s" -F= '/RecoveryEscrow__Sealing/{print svc, $1, "len=" length($2)}' \
+    "/etc/endpoint-platform/${s}.env"
+done
 ```
 
 Expected from the last command: `admin-api` has **both** halves, `agent-api` has
@@ -146,16 +155,22 @@ on it.
 ## Verifying after the restart
 
 ```sh
-# The Admin API accepted the pair if it is healthy with no restarts.
-docker inspect epp-demo-admin-api --format '{{.State.Health.Status}} restarts={{.RestartCount}}'
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/health/ready
+systemctl restart endpoint-platform-admin-api endpoint-platform-agent-api
 
-# The boundary, checked on the live containers. Counts only, never values.
-docker exec epp-demo-agent-api printenv | grep -c 'SealingPrivateKey\|RecoveryEscrow__Key'   # must be 0
-docker exec epp-demo-agent-api printenv | grep -c 'SealingPublicKey'                         # must be 1
+# The Admin API accepted the pair if it is active with no restarts.
+systemctl show endpoint-platform-admin-api -p ActiveState -p NRestarts
+curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:5080/health/ready
 
-# No key material reached the logs.
-docker logs epp-demo-admin-api --since 30m 2>&1 | grep -cE '[A-Za-z0-9+/]{100,}'             # must be 0
+# The boundary, checked on the LIVE process environment. Counts only, never
+# values. /proc/<pid>/environ is root-readable; this is the real check, not a
+# reading of the file that was supposed to produce it.
+PID=$(systemctl show endpoint-platform-agent-api -p MainPID --value)
+tr '\0' '\n' < "/proc/$PID/environ" | grep -c 'SealingPrivateKey\|RecoveryEscrow__Key'  # must be 0
+tr '\0' '\n' < "/proc/$PID/environ" | grep -c 'SealingPublicKey'                        # must be 1
+
+# No key material reached the journal.
+journalctl -u endpoint-platform-admin-api --since '30 min ago' | grep -cE '[A-Za-z0-9+/]{100,}'  # must be 0
 ```
 
 The agent-facing fingerprint can also be read back; it is public and safe to

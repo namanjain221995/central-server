@@ -12,10 +12,18 @@ that is not currently enrolled". Never enrolled.
 Run the gate before installing a pilot agent, and treat a non-zero exit as a
 stop:
 
+On the **production host**, with the candidate machine's identifier and name:
+
+```bash
+sudo bash infra/ubuntu/assert-pilot-machine-is-safe.sh \
+  --machine-id <UUID> --hostname <NAME>
+```
+
+Read those two values on the candidate machine first:
+
 ```powershell
-./scripts/Assert-PilotMachineIsSafe.ps1 `
-  -MachineIdentifier (Get-CimInstance Win32_ComputerSystemProduct).UUID `
-  -Hostname $env:COMPUTERNAME
+(Get-CimInstance Win32_ComputerSystemProduct).UUID
+$env:COMPUTERNAME
 ```
 
 It asks production, read-only, and refuses when:
@@ -23,7 +31,7 @@ It asks production, read-only, and refuses when:
 | Condition | Result |
 |---|---|
 | Machine identifier exists in production, any status | **FAIL**, unconditional |
-| Hostname is an Active production device, different machine identifier | **FAIL** unless `-ApproveHostnameCollision -Reason "<why>"` |
+| Hostname is an Active production device, different machine identifier | **FAIL** unless `--approve-hostname-collision --reason "<why>"` |
 | Production cannot be reached, or answers unexpectedly | **FAIL** — it never assumes a pass |
 
 A machine-identifier match is always fatal and has no override, because a shared
@@ -99,7 +107,8 @@ try to graft the old one back on.
 
 ## Keeping the safeguard out of production's way
 
-`Assert-PilotMachineIsSafe.ps1` runs three `SELECT` statements over SSM and has
-no code path that writes. It is a pilot-side gate that reads production, not a
+`assert-pilot-machine-is-safe.sh` runs four `SELECT` statements against the
+local production database, in a session PostgreSQL itself holds read-only
+(`default_transaction_read_only=on`), and has no code path that writes. It is a pilot-side gate that reads production, not a
 change to production behaviour: no server code, schema, container or
 configuration is involved, and nothing about it ships to an endpoint.

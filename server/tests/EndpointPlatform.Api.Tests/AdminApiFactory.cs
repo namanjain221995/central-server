@@ -18,7 +18,7 @@ namespace EndpointPlatform.Api.Tests;
 /// </para>
 /// <para>
 /// Behaviour that genuinely needs a database is tested against a real PostgreSQL
-/// container in EndpointPlatform.Infrastructure.Tests.
+/// server in EndpointPlatform.Infrastructure.Tests.
 /// </para>
 /// </remarks>
 public sealed class AdminApiFactory : WebApplicationFactory<Program>
@@ -26,6 +26,9 @@ public sealed class AdminApiFactory : WebApplicationFactory<Program>
     /// <summary>Port 1 is reserved and never listening, so a stray connection attempt fails fast.</summary>
     /// <summary>A throwaway 32-byte key. Seals nothing real.</summary>
     private const string TestEscrowKey = "dGVzdC1lc2Nyb3cta2V5LTMyLWJ5dGVzLWxvbmchISE=";
+
+    /// <summary>Fixed test key for sealing TOTP secrets. Seals nothing real.</summary>
+    private const string TestMfaKey = "dGVzdC1tZmEta2V5LTMyLWJ5dGVzLWxvbmchISEhISE=";
 
     private const string UnreachablePostgres =
         "Host=127.0.0.1;Port=1;Database=unreachable_by_design;Username=none;Password=none";
@@ -56,6 +59,10 @@ public sealed class AdminApiFactory : WebApplicationFactory<Program>
         // key is fine here and is not a secret - it seals nothing real.
         builder.UseSetting("RecoveryEscrow:Key", TestEscrowKey);
         builder.UseSetting("RecoveryEscrow:KeyVersion", "1");
+
+        // Same reason: Mfa options are validated on start, so the Admin API
+        // refuses to build without a TOTP sealing key.
+        builder.UseSetting("Mfa:TotpKey", TestMfaKey);
     }
 }
 

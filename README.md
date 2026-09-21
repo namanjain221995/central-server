@@ -17,12 +17,14 @@ device inventory; authentication + RBAC + audit). See
 | Migration + seed runner | .NET console | `server/Migrations` |
 | Windows agent | .NET 10 Windows Service | `agent/` |
 | Dashboard | React + TypeScript + Vite | `dashboard/` · http://localhost:5173 |
-| Dev infrastructure | Docker Compose (PostgreSQL 17, Redis 8) | `infra/` |
+| Deployment kit | Ubuntu: systemd + nginx, no containers | `infra/ubuntu/`, `infra/gcp/` |
 
 ## Quick start
 
-Prerequisites: .NET SDK 10.0.4xx, Node.js 24 LTS, Docker Desktop (Linux
-containers), Git. All commands from the repository root on Windows PowerShell.
+Prerequisites: .NET SDK 10.0.4xx, Node.js 24 LTS, PostgreSQL 17, Redis 6.2+, Git.
+PostgreSQL and Redis are installed **natively** and must already be running;
+nothing here uses containers. See [docs/development.md](docs/development.md) for
+installing them on Windows.
 
 **Day to day, this is the whole thing:**
 
@@ -31,7 +33,8 @@ containers), Git. All commands from the repository root on Windows PowerShell.
 .\scripts\stop-local.ps1                # stop everything
 ```
 
-`run-local.ps1` starts PostgreSQL + Redis, applies migrations, and opens a
+`run-local.ps1` checks that PostgreSQL and Redis are listening, creates the
+database and its two roles if they do not exist, applies migrations, and opens a
 window each for the Admin API (5080), the Agent API (5081) and the dashboard
 (5173), then waits until all three report ready. Every credential is read from
 `infra/.env`, so nothing is ever typed on a command line.
@@ -45,57 +48,35 @@ Useful switches once things are already up:
 
 | Switch | Use it when |
 | --- | --- |
-| `-SkipInfra` | The containers are already healthy (fastest restart) |
+| `-SkipDatabaseSetup` | The database and roles already exist |
 | `-SkipMigrations` | The schema is current |
 | `-WithAgent` | You are testing local user / group management |
-| `-Infra` (on `stop-local.ps1`) | You also want the containers stopped |
 
-Then sign in at **http://localhost:5173**. `stop-local.ps1` never deletes a
-Docker volume — the PostgreSQL volume holds the audit trail, the enrolled
-devices and your admin account.
+Then sign in at **http://localhost:5173**. `stop-local.ps1` stops the
+applications only: PostgreSQL and Redis are ordinary local services it never
+started, and it never drops a database — the database holds the audit trail, the
+enrolled devices and your admin account.
 
-<details>
-<summary>Manual setup, and the one-time first run</summary>
+First-time setup, the full instructions and troubleshooting:
+[docs/development.md](docs/development.md).
 
-Step 1 is required once before `run-local.ps1` will work; the rest is what the
-script automates, useful when something breaks and you want to run a piece of it
-by hand.
+## Deploying
 
-```powershell
-# 1. Local infrastructure credentials (one-time; file is git-ignored)
-Copy-Item infra\.env.example infra\.env
-#    -> edit infra\.env, replace every CHANGE_ME with a generated secret
-#       (generation snippet is inside the file)
+One Ubuntu machine, three .NET processes under systemd behind nginx. From the
+repository root:
 
-# 2. Start PostgreSQL (55432) + Redis (56379)
-docker compose -f infra\docker-compose.yml up -d
-
-# 3. Build and test
-dotnet restore EndpointPlatform.slnx
-dotnet build EndpointPlatform.slnx
-dotnet test EndpointPlatform.slnx          # Docker must be running
-
-# 4. Migrate + seed (uses the OWNER db role)
-$cfg = @{}; Get-Content infra\.env | ? { $_ -match '=' } | % { $p = $_ -split '=',2; $cfg[$p[0]] = $p[1] }
-$env:ENDPOINTPLATFORM_Database__ConnectionString = "Host=localhost;Port=$($cfg['POSTGRES_PORT']);Database=$($cfg['POSTGRES_DB']);Username=$($cfg['POSTGRES_SUPERUSER']);Password=$($cfg['POSTGRES_SUPERUSER_PASSWORD'])"
-$env:ENDPOINTPLATFORM_Database__RuntimeRoleName = $cfg['POSTGRES_APP_USER']
-dotnet run --project server\Migrations\EndpointPlatform.Migrations.csproj
-
-# 5. Run the APIs (uses the RESTRICTED db role) - one terminal each
-$env:ENDPOINTPLATFORM_Database__ConnectionString = "Host=localhost;Port=$($cfg['POSTGRES_PORT']);Database=$($cfg['POSTGRES_DB']);Username=$($cfg['POSTGRES_APP_USER']);Password=$($cfg['POSTGRES_APP_PASSWORD'])"
-$env:ENDPOINTPLATFORM_Redis__ConnectionString = "localhost:$($cfg['REDIS_PORT']),password=$($cfg['REDIS_PASSWORD'])"
-dotnet run --project server\Api\EndpointPlatform.Api.csproj        # terminal 1
-dotnet run --project server\AgentApi\EndpointPlatform.AgentApi.csproj  # terminal 2
-
-# 6. Dashboard
-cd dashboard; npm install; npm run dev     # http://localhost:5173
+```bash
+bash infra/ubuntu/install.sh --host epp.example.com --email ops@example.com \
+     --admin-email admin@example.com --generate-admin-password
 ```
 
-</details>
+Or drive it over SSH from Windows with `infra\ubuntu\Deploy-Ubuntu.ps1`. On
+Google Cloud, `infra/gcp/provision-vm.sh` creates the VM first. See
+[infra/ubuntu/README.md](infra/ubuntu/README.md) and
+[docs/deployment.md](docs/deployment.md).
 
 Health checks: `GET /health/live`, `GET /health/ready` on both APIs. Swagger
-UI at `/swagger` (Development only). Full instructions and troubleshooting:
-[docs/development.md](docs/development.md).
+UI at `/swagger` (Development only).
 
 ## Security posture (Phase 0)
 

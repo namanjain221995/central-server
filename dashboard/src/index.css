@@ -374,6 +374,14 @@ h1, h2, h3 { color: var(--color-text); }
 
 .topbar h1 { font-size: 16px; font-weight: 650; margin: 0; letter-spacing: -0.1px; }
 
+/* Sits between the page title and the user block, pushed to the right.
+   margin-left:auto is what separates it from the title without a spacer. */
+.topbar-agent { margin-left: auto; display: flex; align-items: center; }
+.topbar-agent .agent-version {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
 .topbar-user {
   display: flex;
   align-items: center;
@@ -1646,6 +1654,9 @@ code, .mono {
 @media (max-width: 720px) {
   .topbar { padding: 0 14px; }
   .topbar-user .who { display: none; }
+  /* The version number is the part that stops fitting first; the icon and
+     the word "Agent" still say what the button does. */
+  .topbar-agent .agent-version { display: none; }
   .stat-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 }
 

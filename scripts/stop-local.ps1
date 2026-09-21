@@ -1,31 +1,24 @@
 <#
 .SYNOPSIS
-    Stops everything run-local.ps1 started.
+    Stops the applications run-local.ps1 started.
 
 .DESCRIPTION
-    Stops the two APIs, the dashboard dev server and the Windows agent, and
-    optionally the containers.
+    Stops the two APIs, the dashboard dev server and the Windows agent.
 
-    The containers are LEFT RUNNING by default, and this script never removes
-    their volumes: the PostgreSQL volume holds the audit trail, the enrolled
-    devices and your admin account. Losing it means re-enrolling the machine and
-    re-bootstrapping an administrator, which is a bad outcome for something as
-    routine as "stop the app".
+    PostgreSQL and Redis are ordinary local services with their own lifecycle and
+    are deliberately left alone: this script did not start them, and stopping
+    them would take out anything else on the machine that uses them. Stop them
+    the usual way if you want to (Services, or `net stop`).
+
+    Nothing here ever drops a database. The PostgreSQL database holds the audit
+    trail, the enrolled devices and your admin account.
 
 .EXAMPLE
     .\scripts\stop-local.ps1
-    Stops the applications; PostgreSQL and Redis keep running.
-
-.EXAMPLE
-    .\scripts\stop-local.ps1 -Infra
-    Also stops the containers (`docker compose stop`). Data is preserved.
 #>
 
 [CmdletBinding()]
-param(
-    # Also stop the PostgreSQL and Redis containers. Never deletes their volumes.
-    [switch]$Infra
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -72,20 +65,7 @@ else {
     Write-Host ("  {0,-26} not running" -f 'Dashboard :5173') -ForegroundColor DarkGray
 }
 
-# --- infrastructure --------------------------------------------------------
-if ($Infra) {
-    Write-Host ''
-    Write-Host 'Stopping containers (volumes preserved)...' -ForegroundColor Cyan
-
-    # `stop`, never `down -v`: the -v flag would delete the PostgreSQL volume and
-    # with it the audit trail, the enrolled devices and the admin account.
-    docker compose -f infra\docker-compose.yml stop | Out-Null
-    Write-Host '  postgres + redis stopped. Data volumes are intact.' -ForegroundColor Green
-}
-else {
-    Write-Host ''
-    Write-Host 'PostgreSQL and Redis are still running (use -Infra to stop them too).' -ForegroundColor DarkGray
-}
-
+Write-Host ''
+Write-Host 'PostgreSQL and Redis are untouched (this script never started them).' -ForegroundColor DarkGray
 Write-Host ''
 Write-Host 'Start again with: .\scripts\run-local.ps1 -WithAgent' -ForegroundColor DarkGray

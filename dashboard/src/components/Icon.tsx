@@ -42,6 +42,7 @@ export type IconName =
   | 'trash'
   | 'key'
   | 'usb'
+  | 'download'
 
 const PATHS: Record<IconName, ReactNode> = {
   dashboard: (
@@ -133,6 +134,12 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
       <path d="M1 14h6M9 8h6M17 16h6" />
+    </>
+  ),
+  download: (
+    <>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 10l5 5 5-5M12 15V3" />
     </>
   ),
   'shield-check': (

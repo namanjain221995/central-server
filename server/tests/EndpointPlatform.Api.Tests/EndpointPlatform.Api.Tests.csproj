@@ -9,8 +9,6 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
-    <PackageReference Include="Testcontainers.PostgreSql" />
-    <PackageReference Include="Testcontainers.Redis" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,6 +22,9 @@
          assembly; one file, one definition of what a signed test artifact is. -->
     <Compile Include="..\EndpointPlatform.Infrastructure.Tests\Agents\TestArtifacts.cs" Link="Agents\TestArtifacts.cs" />
     <Compile Include="..\EndpointPlatform.Infrastructure.Tests\Agents\RealAgentMsiFactAttribute.cs" Link="Agents\RealAgentMsiFactAttribute.cs" />
+    <!-- How a test reaches the locally installed PostgreSQL and Redis. Linked for the
+         same reason: one definition, and no dependency on another test assembly. -->
+    <Compile Include="..\EndpointPlatform.Infrastructure.Tests\TestInfrastructure.cs" Link="TestInfrastructure.cs" />
   </ItemGroup>
 
 </Project>

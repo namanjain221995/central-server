@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using EndpointPlatform.Contracts;
 using EndpointPlatform.Contracts.Agent;
 using EndpointPlatform.Domain.Enrollment;
+using EndpointPlatform.Infrastructure.Devices;
 using EndpointPlatform.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 
@@ -303,10 +304,25 @@ public sealed class InventoryEndpointTests(AgentApiPostgresFixture fixture)
         response.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
     }
 
+    /// <summary>
+    /// More interfaces than the limit is accepted and truncated, not refused.
+    /// </summary>
+    /// <remarks>
+    /// This test previously asserted the opposite. Refusing cost the entire report
+    /// — BitLocker state, local accounts, drivers, software — over one oversized
+    /// section, while <see cref="DeviceInventoryService"/> was already written to
+    /// truncate that same section and carry on. A real laptop running VMware,
+    /// VirtualBox, Hyper-V and a VPN client enumerates 81 interfaces against a
+    /// limit of 64, and reported nothing at all, forever, in silence.
+    /// <para>
+    /// The bound still exists; see <see cref="InventoryOversizeTests"/> for the
+    /// ceiling above which a payload is refused as implausible.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task An_oversized_interface_list_is_rejected()
+    public async Task An_oversized_interface_list_is_truncated_not_rejected()
     {
-        var (_, credential) = await EnrollAsync();
+        var (deviceId, credential) = await EnrollAsync();
         using var client = _fixture.Factory.CreateClient();
 
         var report = MakeReport() with
@@ -318,7 +334,11 @@ public sealed class InventoryEndpointTests(AgentApiPostgresFixture fixture)
 
         var response = await client.SendAsync(NewRequest(AgentProtocol.Routes.Inventory, report, credential));
 
-        response.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        await using var db = _fixture.CreateDbContext();
+        (await db.DeviceNetworkInterfaces.CountAsync(n => n.DeviceId == deviceId))
+            .ShouldBe(DeviceInventoryService.MaxNetworkInterfaces);
     }
 
     [Fact]

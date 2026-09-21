@@ -44,11 +44,26 @@ public sealed class AdminBootstrapper(EndpointPlatformDbContext dbContext, ILogg
             return 1;
         }
 
-        if (string.IsNullOrEmpty(password) || password.Length < 12)
+        // Kept as its own check rather than folded into PasswordPolicy below.
+        // PasswordPolicy does reject a null, but the compiler cannot infer that
+        // from a string? return value, and the operator needs "you did not set
+        // the variable" phrased differently from "what you set is too weak".
+        if (string.IsNullOrWhiteSpace(password))
         {
             _logger.LogError(
-                "Set ENDPOINTPLATFORM_Bootstrap__AdminPassword to a password of at least 12 characters. "
+                "Set ENDPOINTPLATFORM_Bootstrap__AdminPassword to the administrator's password. "
                 + "(The value is read from the environment only; never pass it as a command-line argument.)");
+            return 1;
+        }
+
+        // Delegated to PasswordPolicy rather than repeating a length check here.
+        // The two had drifted apart in kind if not in number: this path enforced
+        // only a floor, so the very first account on the platform - a Super
+        // Administrator - was the one account allowed a guessable password.
+        if (PasswordPolicy.Validate(password, PasswordContext.For(email, null)) is { } policyFailure)
+        {
+            _logger.LogError(
+                "ENDPOINTPLATFORM_Bootstrap__AdminPassword is not acceptable: {Reason}", policyFailure);
             return 1;
         }
 

@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# Migration job: applies pending migrations, re-applies the runtime role's
+# grants and reseeds reference data (all idempotent), then exits.
+#
+# Both API units Require= this one and order themselves After= it, so every
+# start of either API runs it first and a failed migration stops the APIs from
+# starting on a schema they do not match. That includes every boot.
+#
+# The ONLY unit given the owner database credential. It runs under an account
+# of its own so neither API process can read that credential back out of
+# /proc/<pid>/environ.
+#
+# Installed by infra/ubuntu/install-release.sh. Paths and account names mirror
+# infra/ubuntu/common.sh; change both together.
+# ---------------------------------------------------------------------------
+[Unit]
+Description=Endpoint Platform - database migration job
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=epp-migrations
+EnvironmentFile=/etc/endpoint-platform/migrations.env
+Environment=DOTNET_ROOT=/opt/dotnet
+Environment=DOTNET_NOLOGO=1
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=DOTNET_EnableDiagnostics=0
+WorkingDirectory=/opt/endpoint-platform/current/migrations
+ExecStart=/usr/local/bin/dotnet /opt/endpoint-platform/current/migrations/EndpointPlatform.Migrations.dll
+TimeoutStartSec=900
+SyslogIdentifier=epp-migrations
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# MemoryDenyWriteExecute is deliberately absent: the .NET JIT needs W+X pages.
