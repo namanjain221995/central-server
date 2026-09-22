@@ -69,7 +69,11 @@ else
     git -C "$repo_dir" remote set-url origin "$repo_url"
 fi
 
-# Git refuses to operate on a tree owned by another user when invoked as root.
+# Git refuses to operate on a repository whose files belong to another user.
+# The deployer runs as root while the tree is owned by the operator account, so
+# BOTH need the exception - --system covers every account on the host, which is
+# what lets a human run `git log` here without being told off.
+git config --system --add safe.directory "$repo_dir" 2>/dev/null || true
 git config --global --add safe.directory "$repo_dir" 2>/dev/null || true
 
 echo "==> fetching ${branch}"
