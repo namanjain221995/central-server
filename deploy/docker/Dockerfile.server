@@ -1,0 +1,100 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# The three server-side .NET processes, from one shared build.
+#
+# Three images, not one: the same split the systemd deployment makes (ADR-0001).
+# The migration job is the only component that ever holds the OWNER database
+# credential, and the Agent API is the only one exposed to the endpoint network,
+# so they must be separate processes with separate environments. Building them
+# from one `build` stage keeps them byte-identical in everything but entrypoint.
+#
+#   docker build -f deploy/docker/Dockerfile.server --target admin-api  .
+#   docker build -f deploy/docker/Dockerfile.server --target agent-api  .
+#   docker build -f deploy/docker/Dockerfile.server --target migrations .
+#
+# Build context is the REPOSITORY ROOT: the projects reference ../../shared and
+# the root Directory.*.props.
+# ---------------------------------------------------------------------------
+ARG DOTNET_VERSION=10.0
+
+# --- restore -----------------------------------------------------------------
+# Project files only, so a source-only change does not re-download NuGet.
+FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS restore
+WORKDIR /src
+
+COPY global.json Directory.Build.props Directory.Packages.props ./
+COPY shared/Contracts/EndpointPlatform.Contracts.csproj        shared/Contracts/
+COPY server/Domain/EndpointPlatform.Domain.csproj              server/Domain/
+COPY server/Infrastructure/EndpointPlatform.Infrastructure.csproj server/Infrastructure/
+COPY server/Api/EndpointPlatform.Api.csproj                    server/Api/
+COPY server/AgentApi/EndpointPlatform.AgentApi.csproj          server/AgentApi/
+COPY server/Migrations/EndpointPlatform.Migrations.csproj      server/Migrations/
+
+# Only the three deployable projects. The agent targets Windows and the test
+# projects are not part of a release, so neither is restored here.
+RUN dotnet restore server/Api/EndpointPlatform.Api.csproj \
+ && dotnet restore server/AgentApi/EndpointPlatform.AgentApi.csproj \
+ && dotnet restore server/Migrations/EndpointPlatform.Migrations.csproj
+
+# --- build -------------------------------------------------------------------
+FROM restore AS build
+ARG VERSION=0.1.0
+ARG SOURCE_REVISION=unknown
+COPY shared/ shared/
+COPY server/ server/
+
+RUN dotnet publish server/Api/EndpointPlatform.Api.csproj \
+        -c Release --no-restore -o /out/admin-api \
+        -p:Version=${VERSION} -p:SourceRevisionId=${SOURCE_REVISION} \
+ && dotnet publish server/AgentApi/EndpointPlatform.AgentApi.csproj \
+        -c Release --no-restore -o /out/agent-api \
+        -p:Version=${VERSION} -p:SourceRevisionId=${SOURCE_REVISION} \
+ && dotnet publish server/Migrations/EndpointPlatform.Migrations.csproj \
+        -c Release --no-restore -o /out/migrations \
+        -p:Version=${VERSION} -p:SourceRevisionId=${SOURCE_REVISION}
+
+# --- runtime base ------------------------------------------------------------
+# curl is here for the container healthchecks only; the runtime image carries no
+# shell tooling otherwise. `app` (uid 1654) ships with the .NET images.
+FROM mcr.microsoft.com/dotnet/aspnet:${DOTNET_VERSION} AS runtime-base
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+ENV DOTNET_NOLOGO=1 \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_EnableDiagnostics=0 \
+    ASPNETCORE_ENVIRONMENT=Production
+WORKDIR /app
+USER app
+
+# --- Admin API ---------------------------------------------------------------
+# The only process holding the escrow and MFA keys. Writes exactly one place:
+# the uploaded package content, which the Agent API reads back.
+FROM runtime-base AS admin-api
+USER root
+RUN mkdir -p /var/lib/endpoint-platform/packages \
+ && chown -R app:app /var/lib/endpoint-platform
+USER app
+COPY --from=build --chown=app:app /out/admin-api ./
+ENV ASPNETCORE_URLS=http://0.0.0.0:5080
+EXPOSE 5080
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=10 \
+    CMD curl -fsS http://127.0.0.1:5080/health/ready || exit 1
+ENTRYPOINT ["dotnet", "EndpointPlatform.Api.dll"]
+
+# --- Agent API ---------------------------------------------------------------
+# Never given RECOVERY_ESCROW_KEY or MFA_TOTP_KEY: AgentApiKeyBoundaryGuard
+# fails this process at startup if either appears in its environment.
+FROM runtime-base AS agent-api
+COPY --from=build --chown=app:app /out/agent-api ./
+ENV ASPNETCORE_URLS=http://0.0.0.0:5081
+EXPOSE 5081
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=10 \
+    CMD curl -fsS http://127.0.0.1:5081/health/ready || exit 1
+ENTRYPOINT ["dotnet", "EndpointPlatform.AgentApi.dll"]
+
+# --- migration job -----------------------------------------------------------
+# Runs to completion and exits; compose gates both APIs on its success.
+FROM runtime-base AS migrations
+COPY --from=build --chown=app:app /out/migrations ./
+ENTRYPOINT ["dotnet", "EndpointPlatform.Migrations.dll"]

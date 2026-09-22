@@ -1,0 +1,145 @@
+# ---------------------------------------------------------------------------
+# Public entry point for the containerised deployment.
+#
+#   /            the dashboard's static build
+#   /api/<path>  Admin API on admin-api:5080 as /<path> (the trailing slash on
+#                proxy_pass is what strips the prefix, mirroring the Vite dev
+#                proxy, which is why one frontend build works in both places)
+#   /agent/...   Agent API on agent-api:5081, unchanged: it already serves
+#                /agent/v1 (AgentProtocol.RoutePrefix)
+#   /pgadmin/    pgAdmin, for looking at the database
+#
+# TLS is not optional here. The session cookie is __Host-/Secure, so a browser
+# discards it over plain HTTP and nobody can sign in. Certificates are mounted
+# at /etc/nginx/tls by the compose file.
+# ---------------------------------------------------------------------------
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${SERVER_NAME};
+    server_tokens off;
+
+    # Served over plain HTTP deliberately: a machine that does not trust the
+    # local CA yet has to be able to fetch it.
+    location = /endpoint-platform-ca.crt {
+        root /etc/nginx/tls;
+        default_type application/x-x509-ca-cert;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${SERVER_NAME};
+    server_tokens off;
+
+    ssl_certificate     /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    client_max_body_size 512m;
+
+    # Docker's embedded DNS, and every upstream named through a VARIABLE.
+    # A literal host name in proxy_pass is resolved once, while nginx parses its
+    # configuration: one upstream container that is not up yet then takes the
+    # whole entry point down with "host not found in upstream", and a container
+    # that is later recreated on a new address is never re-resolved. Through a
+    # variable, resolution happens per request, so a restarting service costs a
+    # 502 on its own path and nothing else.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    # Container-local, for the healthcheck only.
+    location = /healthz {
+        access_log off;
+        return 200 "ok\n";
+    }
+
+    location /api/ {
+        # The dashboard calls /api/<path>; the API serves /<path>. The rewrite
+        # is what strips the prefix (proxy_pass cannot do it for a variable
+        # upstream), mirroring the Vite dev proxy - which is why one frontend
+        # build works in both places.
+        set $admin_api http://admin-api:5080;
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass $admin_api;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        proxy_request_buffering off;
+        proxy_buffering         off;
+        proxy_connect_timeout   10s;
+        proxy_send_timeout      300s;
+        proxy_read_timeout      300s;
+    }
+
+    location /agent/ {
+        # No prefix rewrite: the Agent API already serves these paths at
+        # /agent/v1 (AgentProtocol.RoutePrefix).
+        set $agent_api http://agent-api:5081;
+        proxy_pass $agent_api;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        proxy_request_buffering off;
+        proxy_buffering         off;
+        proxy_connect_timeout   10s;
+        proxy_send_timeout      300s;
+        proxy_read_timeout      300s;
+    }
+
+    # pgAdmin. X-Script-Name is how it learns it is mounted under a sub-path;
+    # without it every link it renders would point at the dashboard's routes.
+    location /pgadmin/ {
+        set $pgadmin http://pgadmin:5050;
+        rewrite ^/pgadmin/(.*)$ /$1 break;
+        proxy_pass $pgadmin;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Script-Name     /pgadmin;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_buffering       off;
+        proxy_read_timeout    300s;
+    }
+
+    location /assets/ {
+        try_files $uri =404;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options DENY always;
+        add_header Referrer-Policy same-origin always;
+    }
+
+    # Single-page app: unknown paths are client-side routes, not 404s.
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-store, must-revalidate";
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options DENY always;
+        add_header Referrer-Policy same-origin always;
+    }
+}

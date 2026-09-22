@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# The dashboard, and the single public entry point in front of it.
+#
+# One container serves the static build AND proxies /api/ and /agent/, because
+# the session cookie is __Host- prefixed with Secure and SameSite=Strict: the
+# browser pins it to exactly one origin, so the dashboard and the Admin API
+# cannot live on different host names or ports. This mirrors what
+# infra/ubuntu/setup-nginx.sh does on the native host.
+#
+# Build context is the REPOSITORY ROOT (the nginx config lives under deploy/).
+# ---------------------------------------------------------------------------
+FROM node:24-alpine AS build
+WORKDIR /src
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci
+COPY dashboard/ ./
+RUN npm run build
+
+FROM nginx:1.29-alpine AS runtime
+# envsubst renders the one variable in the template at container start, so the
+# same image serves any host name.
+COPY deploy/docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /src/dist /usr/share/nginx/html
+ENV SERVER_NAME=_
+EXPOSE 80 443
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
+    CMD wget -qO- --no-check-certificate https://127.0.0.1/healthz >/dev/null || exit 1

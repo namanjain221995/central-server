@@ -97,3 +97,15 @@ ehthumbs.db
 Desktop.ini
 .DS_Store
 .package-content/
+
+# ---------------------------------------------------------------------------
+# Container deployment (deploy/docker)
+#
+# .env is the complete secret set for a deployment; tls/ holds the private key
+# of the local CA and of the server certificate; pgpass holds the owner
+# database password in clear text. None of the three belongs in the repository.
+# ---------------------------------------------------------------------------
+deploy/docker/.env*
+deploy/docker/tls/
+deploy/docker/pgadmin/pgpass
+deploy/docker/pgadmin/servers.json

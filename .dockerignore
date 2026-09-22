@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Build context for deploy/docker/*. The context is the repository root, so
+# everything not needed to compile the three server processes and the dashboard
+# is excluded here - both to keep the upload small and to make sure no local
+# secret or build output can be baked into an image.
+# ---------------------------------------------------------------------------
+
+# Secrets and local state. .env holds this deployment's complete secret set.
+.env
+**/.env
+deploy/docker/.env
+deploy/docker/tls/
+deploy/docker/pgadmin/pgpass
+infra/.env
+
+# Version control and CI metadata.
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# Build output.
+**/bin/
+**/obj/
+**/node_modules/
+dashboard/dist/
+artifacts/
+
+# Not part of a server or dashboard build: the agent targets Windows, and the
+# test projects are never published.
+agent/
+server/tests/
+
+# Documentation and editor noise.
+docs/
+*.md
+.vscode/
+.idea/
+.editorconfig
+Thumbs.db
+.DS_Store

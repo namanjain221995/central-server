@@ -75,6 +75,18 @@ Google Cloud, `infra/gcp/provision-vm.sh` creates the VM first. See
 [infra/ubuntu/README.md](infra/ubuntu/README.md) and
 [docs/deployment.md](docs/deployment.md).
 
+**Or in containers.** [`deploy/docker/`](deploy/docker/README.md) runs the same
+three processes plus PostgreSQL, Redis and pgAdmin under Docker Compose, on one
+machine, with a self-signed certificate when there is no public DNS name:
+
+```bash
+cd deploy/docker && sudo ./deploy.sh https://<host-or-ip>
+```
+
+One host, one choice: both kits want ports 80 and 443 and both want to own the
+database. CI and the deployment pipeline for the container path are
+`.github/workflows/ci.yml` and `.github/workflows/deploy.yml`.
+
 Health checks: `GET /health/live`, `GET /health/ready` on both APIs. Swagger
 UI at `/swagger` (Development only).
 

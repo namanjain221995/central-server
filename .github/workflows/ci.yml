@@ -1,0 +1,221 @@
+name: CI
+
+# ---------------------------------------------------------------------------
+# Every change to the server, the dashboard or the deployment kit, checked the
+# same way a release would be: the .NET suites against a REAL PostgreSQL and a
+# REAL Redis (the infrastructure tests create throwaway databases and exercise
+# the audit triggers, so a fake would prove nothing), the dashboard's own lint
+# and tests, and a build of all four container images.
+#
+# The Windows agent is not built here - .github/workflows/build-agent-msi.yml
+# owns that, on a Windows runner.
+#
+# Nothing is deployed from this workflow and nothing is pushed to a registry -
+# but this workflow is still the gate that decides what gets deployed. The
+# Ubuntu host polls the tracked branch once a minute and refuses to deploy a
+# commit whose run of THIS workflow is not green. A GitHub-hosted runner cannot
+# reach that host (it is on a private network), so deployment is a pull, not a
+# push: see deploy/docker/autodeploy.sh.
+#
+# Consequence worth knowing: renaming this workflow, or narrowing the `paths`
+# filters below, changes what the host will deploy. CI_WORKFLOW_NAME in
+# /etc/endpoint-platform/autodeploy.conf must match the `name:` above.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'shared/**'
+      - 'dashboard/**'
+      - 'deploy/**'
+      - 'infra/postgres/**'
+      - 'Directory.Build.props'
+      - 'Directory.Packages.props'
+      - 'global.json'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'shared/**'
+      - 'dashboard/**'
+      - 'deploy/**'
+      - 'infra/postgres/**'
+      - 'Directory.Build.props'
+      - 'Directory.Packages.props'
+      - 'global.json'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+
+  server:
+    name: Server (.NET)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      # The test fixtures create and drop a throwaway database per suite, so
+      # this role needs CREATEDB - which the cluster superuser has.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci-postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # A service container cannot be given a command, and Redis needs
+      # --requirepass: running it unauthenticated here would be a local habit
+      # that eventually reaches a server. So it is started as a plain container.
+      - name: Start Redis with a password
+        run: |
+          docker run -d --name ci-redis -p 6379:6379 redis:7-alpine \
+            redis-server --requirepass ci-redis
+          for i in $(seq 1 30); do
+            if docker exec ci-redis redis-cli --no-auth-warning -a ci-redis ping 2>/dev/null | grep -q PONG; then
+              echo "redis is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "redis did not become ready" >&2
+          docker logs ci-redis >&2
+          exit 1
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: |
+          for project in \
+            server/tests/EndpointPlatform.Domain.Tests \
+            server/tests/EndpointPlatform.Infrastructure.Tests \
+            server/tests/EndpointPlatform.Api.Tests \
+            server/tests/EndpointPlatform.AgentApi.Tests \
+            server/tests/EndpointPlatform.Architecture.Tests
+          do
+            dotnet restore "$project"
+          done
+
+      # Each suite is named explicitly rather than testing the solution: the
+      # solution also contains the Windows agent, which does not build here.
+      - name: Test
+        env:
+          CI: 'true'
+          ENDPOINTPLATFORM_TEST_POSTGRES: 'Host=127.0.0.1;Port=5432;Username=postgres;Password=ci-postgres'
+          ENDPOINTPLATFORM_TEST_REDIS: '127.0.0.1:6379,password=ci-redis'
+        run: |
+          failed=0
+          for project in \
+            server/tests/EndpointPlatform.Domain.Tests \
+            server/tests/EndpointPlatform.Infrastructure.Tests \
+            server/tests/EndpointPlatform.Api.Tests \
+            server/tests/EndpointPlatform.AgentApi.Tests \
+            server/tests/EndpointPlatform.Architecture.Tests
+          do
+            echo "::group::${project}"
+            dotnet test "$project" --no-restore --configuration Release \
+              --logger 'trx;LogFileName=results.trx' \
+              --results-directory "artifacts/test-results/$(basename "$project")" || failed=1
+            echo "::endgroup::"
+          done
+          exit $failed
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-test-results
+          path: artifacts/test-results/
+          if-no-files-found: ignore
+
+  dashboard:
+    name: Dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: dashboard
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test
+      # `build` is `tsc -b && vite build`, so this is the type check as well.
+      - run: npm run build
+
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A Dockerfile that no longer builds is a broken deployment, whatever the
+    # unit tests say - so this gate runs even when only deploy/ changed.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Target by target with plain `docker build` rather than through compose:
+      # compose would demand the deployment's .env, and no secret of any kind
+      # belongs in a build that only has to prove the images compile. The three
+      # .NET targets share one build stage, which the builder caches between
+      # these steps, so this is one compile and three copies of the output.
+      - name: Build images
+        run: |
+          for target in migrations admin-api agent-api; do
+            echo "::group::${target}"
+            docker build -f deploy/docker/Dockerfile.server \
+              --target "$target" \
+              --build-arg "SOURCE_REVISION=${GITHUB_SHA::7}" \
+              -t "endpoint-platform/${target}:ci" .
+            echo "::endgroup::"
+          done
+          echo "::group::web"
+          docker build -f deploy/docker/Dockerfile.dashboard -t endpoint-platform/web:ci .
+          echo "::endgroup::"
+
+      # The compose file is the deployment's contract; a typo in it is only
+      # found at deploy time otherwise. Dummy values because `config` resolves
+      # every ${VAR:?} - they are never used to run anything.
+      - name: Validate the compose file
+        working-directory: deploy/docker
+        run: |
+          docker compose --env-file /dev/null config --quiet
+        env:
+          POSTGRES_DB: validate
+          POSTGRES_ADMIN_PASSWORD: validate
+          POSTGRES_SUPERUSER: validate
+          POSTGRES_SUPERUSER_PASSWORD: validate
+          POSTGRES_APP_USER: validate
+          POSTGRES_APP_PASSWORD: validate
+          REDIS_PASSWORD: validate
+          SECRET_PROTECTION_KEY: validate
+          RECOVERY_ESCROW_KEY: validate
+          MFA_TOTP_KEY: validate
+          PUBLIC_ORIGIN: https://validate.example.com
+          PGADMIN_EMAIL: validate@example.com
+          PGADMIN_PASSWORD: validate

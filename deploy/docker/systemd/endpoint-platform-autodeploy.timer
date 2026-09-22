@@ -1,0 +1,24 @@
+# ---------------------------------------------------------------------------
+# Checks for a new commit every minute.
+#
+# A minute is cheap: when there is nothing new the run is one `git fetch` and an
+# exit, with no output at all. The GitHub API is only called when the commit
+# actually changes, which keeps this far below the unauthenticated rate limit.
+#
+#   sudo systemctl enable --now endpoint-platform-autodeploy.timer
+#   systemctl list-timers endpoint-platform-autodeploy.timer
+# ---------------------------------------------------------------------------
+[Unit]
+Description=Endpoint Platform - check for a new commit to deploy
+Requires=docker.service
+
+[Timer]
+# Not at boot exactly: let Docker bring the existing stack up first, so the
+# first check does not race the containers it is about to inspect.
+OnBootSec=3min
+OnUnitActiveSec=1min
+AccuracySec=15s
+Unit=endpoint-platform-autodeploy.service
+
+[Install]
+WantedBy=timers.target

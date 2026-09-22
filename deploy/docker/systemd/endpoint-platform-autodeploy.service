@@ -1,0 +1,32 @@
+# ---------------------------------------------------------------------------
+# One pass of the pull-based deployer: look for a new commit on the tracked
+# branch, and if CI passed for it, back up, rebuild, deploy and verify.
+#
+# Started by endpoint-platform-autodeploy.timer, not enabled on its own. Safe to
+# run by hand at any time - it takes the same lock:
+#
+#   sudo systemctl start endpoint-platform-autodeploy
+#   journalctl -u endpoint-platform-autodeploy -f
+#
+# Runs as root because it drives the Docker daemon and hands pgadmin/pgpass to
+# uid 5050. It is not sandboxed the way the API units are: its whole job is to
+# write to the deployment directory and talk to the daemon socket, so the
+# hardening that suits those units would only be theatre here.
+# ---------------------------------------------------------------------------
+[Unit]
+Description=Endpoint Platform - pull the tracked branch and deploy it
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/endpoint-platform/src/deploy/docker/autodeploy.sh
+# A build from cold is several minutes; this is generous enough not to kill a
+# legitimate one, and short enough that a wedged run does not block the timer
+# for ever.
+TimeoutStartSec=3600
+SyslogIdentifier=epp-autodeploy
+# A failed deployment already rolled itself back and said so in the journal.
+# Restarting it would just retry a commit it has deliberately marked bad.
+Restart=no

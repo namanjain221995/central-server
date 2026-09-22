@@ -1,0 +1,241 @@
+# ---------------------------------------------------------------------------
+# Endpoint Management Platform - containerised deployment.
+#
+#   cd deploy/docker
+#   ./generate-env.sh https://<host-or-ip>     # once: secrets + TLS
+#   docker compose up -d --build
+#
+# The trust boundaries of the native deployment are kept intact here:
+#
+#   * the migration job is the ONLY container given the OWNER database
+#     credential, and both APIs wait for it to exit successfully;
+#   * the Agent API never receives RECOVERY_ESCROW_KEY or MFA_TOTP_KEY
+#     (AgentApiKeyBoundaryGuard fails its startup if either appears);
+#   * PostgreSQL and Redis publish no host port at all - they are reachable
+#     only on the internal compose network;
+#   * `web` is the single published origin, because the session cookie is
+#     __Host-/Secure and the browser pins it to exactly one host.
+#
+# Every secret comes from .env, which generate-env.sh writes and which is
+# git-ignored. There are no defaults: a stack that starts with no .env is a
+# stack with known passwords.
+# ---------------------------------------------------------------------------
+name: endpoint-platform
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+
+  # --- data -----------------------------------------------------------------
+
+  postgres:
+    image: postgres:17
+    <<: *restart
+    environment:
+      # Cluster superuser. Used by the init script below to create the two
+      # platform roles, and by nothing else afterwards.
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      # Consumed by postgres/init/10-setup-database.sh on first initialisation.
+      EPP_DB: ${POSTGRES_DB:?}
+      EPP_OWNER: ${POSTGRES_SUPERUSER:?}
+      EPP_OWNER_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?}
+      EPP_APP: ${POSTGRES_APP_USER:?}
+      EPP_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      # The repository's own role/grant SQL, used verbatim so the container and
+      # the native host cannot drift apart.
+      - ../../infra/postgres/setup-database.sql:/opt/endpoint-platform/setup-database.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [backend]
+
+  redis:
+    # 6.2 or later is required: redeeming a one-time secret uses GETDEL.
+    image: redis:7-alpine
+    <<: *restart
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}", "--appendonly", "yes"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks: [backend]
+
+  # --- schema ---------------------------------------------------------------
+
+  # One-shot. Applies migrations, re-applies the runtime role's grants and
+  # reseeds reference data, then exits 0. Both APIs gate on that exit code, so a
+  # failed migration stops them starting on a schema they do not match.
+  migrations:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+      target: migrations
+      args:
+        VERSION: ${IMAGE_VERSION:-0.1.0}
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    image: endpoint-platform/migrations:${IMAGE_TAG:-local}
+    restart: "no"
+    environment:
+      ENDPOINTPLATFORM_Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_SUPERUSER};Password=${POSTGRES_SUPERUSER_PASSWORD}"
+      ENDPOINTPLATFORM_Database__RuntimeRoleName: ${POSTGRES_APP_USER}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  # --- applications ---------------------------------------------------------
+
+  admin-api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+      target: admin-api
+      args:
+        VERSION: ${IMAGE_VERSION:-0.1.0}
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    image: endpoint-platform/admin-api:${IMAGE_TAG:-local}
+    <<: *restart
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:5080
+      # TLS terminates in `web`. Without this the app would see plain http and
+      # UseHttpsRedirection would bounce every proxied request. Setting the
+      # variable also clears the loopback-only proxy restriction, which is what
+      # makes it work across the container network.
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+      ENDPOINTPLATFORM_Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_APP_USER};Password=${POSTGRES_APP_PASSWORD}"
+      ENDPOINTPLATFORM_Redis__ConnectionString: "redis:6379,password=${REDIS_PASSWORD}"
+      ENDPOINTPLATFORM_SecretProtection__Key: ${SECRET_PROTECTION_KEY:?}
+      ENDPOINTPLATFORM_Cors__AllowedOrigins__0: ${PUBLIC_ORIGIN:?}
+      ENDPOINTPLATFORM_PackageStorage__Directory: /var/lib/endpoint-platform/packages
+      ENDPOINTPLATFORM_AgentReleases__TrustMode: ${AGENT_RELEASE_TRUST_MODE:-Internal}
+      ENDPOINTPLATFORM_RecoveryEscrow__Key: ${RECOVERY_ESCROW_KEY:?}
+      ENDPOINTPLATFORM_RecoveryEscrow__KeyVersion: ${RECOVERY_ESCROW_KEY_VERSION:-1}
+      ENDPOINTPLATFORM_Mfa__TotpKey: ${MFA_TOTP_KEY:?}
+    volumes:
+      - packages:/var/lib/endpoint-platform/packages
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    networks: [backend]
+
+  agent-api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.server
+      target: agent-api
+      args:
+        VERSION: ${IMAGE_VERSION:-0.1.0}
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    image: endpoint-platform/agent-api:${IMAGE_TAG:-local}
+    <<: *restart
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:5081
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+      ENDPOINTPLATFORM_Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_APP_USER};Password=${POSTGRES_APP_PASSWORD}"
+      ENDPOINTPLATFORM_Redis__ConnectionString: "redis:6379,password=${REDIS_PASSWORD}"
+      # The SAME sealing key as the Admin API: that one seals ephemeral account
+      # secrets into Redis, this one redeems them.
+      ENDPOINTPLATFORM_SecretProtection__Key: ${SECRET_PROTECTION_KEY:?}
+      ENDPOINTPLATFORM_PackageStorage__Directory: /var/lib/endpoint-platform/packages
+      # Deliberately absent: RecoveryEscrow__Key and Mfa__TotpKey.
+    volumes:
+      # Read-only: agents download package content, they never write it.
+      - packages:/var/lib/endpoint-platform/packages:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    networks: [backend]
+
+  # --- public entry point ---------------------------------------------------
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.dashboard
+    image: endpoint-platform/web:${IMAGE_TAG:-local}
+    <<: *restart
+    environment:
+      SERVER_NAME: ${SERVER_NAME:-_}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./tls:/etc/nginx/tls:ro
+    depends_on:
+      admin-api:
+        condition: service_healthy
+      agent-api:
+        condition: service_healthy
+    networks: [backend]
+
+  # --- database console -----------------------------------------------------
+
+  pgadmin:
+    image: ${PGADMIN_IMAGE:-dpage/pgadmin4:latest}
+    <<: *restart
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:?set PGADMIN_EMAIL in .env}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?set PGADMIN_PASSWORD in .env}
+      PGADMIN_LISTEN_PORT: 5050
+      PGADMIN_DISABLE_POSTFIX: "True"
+      # Pre-registers the platform database, so the console opens on something
+      # useful instead of an empty tree.
+      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      # pgAdmin validates the login address with email_validator, which rejects
+      # every special-use domain - .local, .internal, .test - unless it is told
+      # the address does not have to be deliverable on the public internet.
+      # This account is a local console login, not a mailbox.
+      PGADMIN_CONFIG_GLOBALLY_DELIVERABLE: "False"
+      PGADMIN_CONFIG_CHECK_EMAIL_DELIVERABILITY: "False"
+      # GLOBALLY_DELIVERABLE alone is not enough: .local, .internal and .lan are
+      # on email_validator's special-use list and stay rejected until they are
+      # named here. The value is read as a Python literal.
+      PGADMIN_CONFIG_ALLOW_SPECIAL_EMAIL_DOMAINS: "['local','internal','lan']"
+    volumes:
+      - pgadmin:/var/lib/pgadmin
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+      # 0600, owned by uid 5050: pgAdmin ignores a pass file with looser modes.
+      - ./pgadmin/pgpass:/pgpass:ro
+    ports:
+      # Also reachable through the HTTPS origin at /pgadmin/ ; this direct port
+      # is the fallback for a browser on the server's own LAN.
+      - "${PGADMIN_PORT:-5050}:5050"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  packages:
+  pgadmin:
