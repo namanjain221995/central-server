@@ -79,10 +79,10 @@ cd "$REPO_DIR"
 
 # --- 1. is there anything new? -----------------------------------------------
 
-git fetch --quiet --prune origin "$BRANCH" || die "could not fetch origin/${BRANCH}"
+git_r fetch --quiet --prune origin "$BRANCH" || die "could not fetch origin/${BRANCH}"
 
-current="$(git rev-parse HEAD)"
-target="$(git rev-parse "origin/${BRANCH}")"
+current="$(git_r rev-parse HEAD)"
+target="$(git_r rev-parse "origin/${BRANCH}")"
 
 if [ "$current" = "$target" ]; then
     exit 0
@@ -96,7 +96,7 @@ if [ -f "${STATE_DIR}/failed_sha" ] && [ "$(cat "${STATE_DIR}/failed_sha")" = "$
 fi
 
 log "new commit on ${BRANCH}: ${current:0:7} -> ${target:0:7}"
-git log --no-decorate --oneline "${current}..${target}" 2>/dev/null | head -10 | sed 's/^/         /' || true
+git_r log --no-decorate --oneline "${current}..${target}" 2>/dev/null | head -10 | sed 's/^/         /' || true
 
 # --- 2. did CI pass for it? --------------------------------------------------
 #
@@ -107,7 +107,7 @@ git log --no-decorate --oneline "${current}..${target}" 2>/dev/null | head -10 |
 
 ci_verdict() { # -> success | pending | failure | none
     local sha="$1" url owner_repo
-    url="$(git remote get-url origin)"
+    url="$(git_r remote get-url origin)"
     owner_repo="$(printf '%s' "$url" | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
 
     local json
@@ -134,7 +134,7 @@ PY
 
 if [ "$REQUIRE_CI" = "1" ]; then
     verdict="$(ci_verdict "$target")"
-    commit_age=$(( $(date +%s) - $(git log -1 --format=%ct "$target") ))
+    commit_age=$(( $(date +%s) - $(git_r log -1 --format=%ct "$target") ))
 
     case "$verdict" in
         success)
@@ -196,7 +196,7 @@ done
 # room for a local edit to survive and make the host disagree with the
 # repository. Ignored files - .env, tls/, pgadmin/pgpass - are untouched by it.
 
-git reset --quiet --hard "$target"
+git_r reset --quiet --hard "$target"
 chmod +x "${COMPOSE_DIR}"/*.sh "${COMPOSE_DIR}"/postgres/init/*.sh 2>/dev/null || true
 
 log "deploying ${target:0:7}"
@@ -218,7 +218,7 @@ fi
 log "deployment FAILED; rolling back to ${current:0:7}"
 printf '%s' "$target" > "${STATE_DIR}/failed_sha"
 
-git reset --quiet --hard "$current"
+git_r reset --quiet --hard "$current"
 
 rolled_back=0
 for image in admin-api agent-api migrations web; do
