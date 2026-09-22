@@ -151,6 +151,9 @@ AGENT_RELEASE_TRUST_MODE=Internal
 PGADMIN_EMAIL=admin@endpoint.local
 PGADMIN_PASSWORD=$(gen_password)
 PGADMIN_PORT=5050
+# pgAdmin's per-user storage directory: the login address with '@' as '_'. The
+# pass file has to live in there, because that is the only place pgAdmin looks.
+PGADMIN_STORAGE_DIR=admin_endpoint.local
 
 # --- Published ports ---------------------------------------------------------
 HTTP_PORT=80
@@ -177,6 +180,19 @@ EOF
 fi
 
 chmod 600 "$env_file"
+
+# Upgrade path, for an .env written before the pass file was put in pgAdmin's
+# storage directory. Deriving it is safe and destroys nothing; an existing value
+# is never touched.
+if ! grep -qE '^PGADMIN_STORAGE_DIR=' "$env_file"; then
+    pgadmin_email="$(grep -E '^PGADMIN_EMAIL=' "$env_file" | tail -n 1 | cut -d= -f2-)"
+    {
+        echo ""
+        echo "# pgAdmin's per-user storage directory: the login address with '@' as '_'."
+        echo "PGADMIN_STORAGE_DIR=${pgadmin_email//@/_}"
+    } >> "$env_file"
+    echo "==> added PGADMIN_STORAGE_DIR to ${env_file}"
+fi
 
 # --- 2. TLS ------------------------------------------------------------------
 #

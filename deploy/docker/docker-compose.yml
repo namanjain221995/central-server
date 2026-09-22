@@ -219,8 +219,12 @@ services:
     volumes:
       - pgadmin:/var/lib/pgadmin
       - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
-      # 0600, owned by uid 5050: pgAdmin ignores a pass file with looser modes.
-      - ./pgadmin/pgpass:/pgpass:ro
+      # PassFile in servers.json is resolved RELATIVE TO pgAdmin's per-user
+      # storage directory, not to the container root - so "/pgpass" means
+      # /var/lib/pgadmin/storage/<email with @ as _>/pgpass and a file mounted
+      # anywhere else is silently never read. 0600 and uid 5050, because
+      # libpq ignores a pass file with looser modes or another owner.
+      - ./pgadmin/pgpass:/var/lib/pgadmin/storage/${PGADMIN_STORAGE_DIR:-admin_endpoint.local}/pgpass:ro
     ports:
       # Also reachable through the HTTPS origin at /pgadmin/ ; this direct port
       # is the fallback for a browser on the server's own LAN.

@@ -61,6 +61,14 @@ chmod 750 "$BACKUP_DIR"
 log() { printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*"; exit 1; }
 
+# Every git call in this script goes through here. The clone belongs to the
+# operator account while this runs as root, which trips git's dubious-ownership
+# check; passing safe.directory per invocation settles it without depending on
+# which .gitconfig root happens to read - a distinction that matters, because
+# `sudo` on Ubuntu leaves HOME pointing at the INVOKING user, so an installer's
+# `git config --global` writes somewhere this service will never look.
+git_r() { git -C "$REPO_DIR" -c "safe.directory=${REPO_DIR}" "$@"; }
+
 # --- 0. one at a time --------------------------------------------------------
 #
 # A build takes minutes and the timer fires every minute. Without this, a slow
