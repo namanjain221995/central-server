@@ -1,333 +1,235 @@
 # Production deployment runbook
 
-Start-to-finish instructions for putting the Endpoint Management Platform onto
-the Ubuntu machine and making it reachable from outside the office.
+Putting the Endpoint Management Platform onto an Ubuntu machine and making it
+usable by the people who need it.
 
-This is the runbook for a production deployment. For how the kit works in
-general see [`infra/ubuntu/README.md`](../../infra/ubuntu/README.md); for the
-architecture see [`docs/architecture.md`](../architecture.md).
+The platform deploys as **Docker Compose**. The mechanics live in
+[`deploy/docker/README.md`](../../deploy/docker/README.md) — this runbook covers
+the decisions and checks around them that a README cannot: which certificate to
+use and why it decides whether agents work at all, who creates the first
+administrator, and what must be backed up.
 
-You do not need to know C# or React. You do need `sudo` on the Ubuntu machine
-and access to the Cloudflare dashboard and the office router.
+You need `sudo` on the Ubuntu machine, access to the DNS provider, and (for
+access from outside the office) the router.
+
+---
+
+## Fill these in before you start
+
+This repository is **public**, so the values for a specific deployment are not
+written down here. Get them from whoever owns the deployment.
+
+| Thing | Value | Used as |
+|---|---|---|
+| Public hostname | `________________` | the URL, and `SERVERBASEURL` on every agent |
+| Machine address | `________________` | where you SSH to |
+| Login user | `________________` | must be able to `sudo` |
+| DNS zone | `________________` | the zone the API token is scoped to |
+
+Below, `<hostname>` and `<machine>` mean those values.
 
 ---
 
 ## 1. What you are building
 
 ```
-                                 Ubuntu machine (<machine>)
+                              Ubuntu machine — Docker Compose
   browser  ──┐
-             ├── 443 ──▶ router ──▶ nginx ──┬──▶ /          dashboard (static files)
-  agent    ──┘          port-forward        ├──▶ /api/   ──▶ Admin API  127.0.0.1:5080
-  (home laptop)                             └──▶ /agent/ ──▶ Agent API  127.0.0.1:5081
-                                                                 │
-                                                PostgreSQL 17 ◀──┤  loopback only
-                                                Redis         ◀──┘  loopback only
+             ├── 443 ──▶ web (nginx) ──┬──▶ /          dashboard
+  agent    ──┘                         ├──▶ /api/   ──▶ admin-api
+  (laptop, anywhere)                   └──▶ /agent/ ──▶ agent-api
+                                                │
+                                   postgres ◀───┤   named volume
+                                   redis    ◀───┘
 ```
 
-Three .NET processes under systemd, behind nginx. **No containers anywhere.**
+Everything on **one hostname**. That is a hard requirement: the session cookie
+uses the `__Host-` prefix, so a browser discards it if the dashboard and the API
+are on different hosts and nobody can sign in.
 
-Everything is served from **one hostname**. That is a hard requirement, not a
-preference: the session cookie uses the `__Host-` prefix, so a browser will
-discard it if the dashboard and the API are on different hosts, and nobody will
-be able to sign in.
-
-### Fill these in before you start
-
-This repository is public, so the values for a specific deployment are **not**
-written down here — a public runbook naming the hostname of an internet-facing
-console that can reveal BitLocker recovery keys would be doing an attacker's
-reconnaissance for them. Get them from whoever owns the deployment.
-
-| Thing | Value | Used as |
-|---|---|---|
-| Public hostname | `________________` | `--host`, and `SERVERBASEURL` on every agent |
-| Machine address | `________________` | where you SSH to |
-| Login user | `________________` | must be able to `sudo` |
-| Cloudflare zone | `________________` | the zone the API token is scoped to |
-
-Fixed for every deployment:
-
-| Thing | Value |
-|---|---|
-| TLS | Let's Encrypt via Cloudflare DNS-01 |
-| Ports published | **443 only** |
-
-Below, `<hostname>` and `<machine>` mean the values from the table above.
+Publish **443 only**. Never expose the API containers directly — they trust
+`X-Forwarded-For` from the proxy in front of them.
 
 ---
 
-## 2. Before you start
+## 2. Choose the certificate — this decides whether agents work
 
-You need all four of these. The install will fail without them.
+**This is the most consequential choice in the whole deployment.**
 
-### 2.1 A Cloudflare API token
+A Release build of the Windows agent validates the server certificate against the
+machine's trusted root store and has **no override**. So:
 
-In the Cloudflare dashboard: profile menu → **API Tokens** → **Create Token** →
-**Edit zone DNS** template.
+| Certificate | Browser | Agents |
+|---|---|---|
+| **Let's Encrypt via DNS-01** | works silently | **work immediately, nothing to install** |
+| Self-signed / local CA | warning you can click through | **cannot enrol at all** until the CA root is deployed to every managed PC |
 
-- **Permissions:** `Zone` → `DNS` → **Edit**, plus a second row
-  `Zone` → `Zone` → **Read**. Both are needed — Read is how the script finds the
-  zone ID.
-- **Zone Resources:** `Include` → `Specific zone` → the zone from the table above
-- Copy the token when it is shown. Cloudflare will not show it again.
+Use DNS-01 unless there is no usable domain. It proves control of the **name**
+over DNS, so it needs **no inbound internet** — a machine on a private LAN can
+hold a publicly trusted certificate.
 
-**Do not use the Global API Key.** It can do anything to the whole account; this
-token can only edit one zone's DNS.
+### Cloudflare DNS-01
 
-Put it on the Ubuntu machine:
+Create an API token: dash.cloudflare.com → API Tokens → **Edit zone DNS**
+template. It needs `Zone:DNS:Edit` **and** `Zone:Zone:Read`, scoped to the one
+zone. **Never a Global API Key** — that can do anything to the whole account.
+
+Put it on the machine:
 
 ```bash
 sudo install -d -m 0750 /etc/endpoint-platform
 sudo tee /etc/endpoint-platform/cloudflare.ini >/dev/null <<'INI'
-dns_cloudflare_api_token = PASTE_THE_TOKEN_HERE
+dns_cloudflare_api_token = PASTE_THE_TOKEN
 INI
 sudo chmod 600 /etc/endpoint-platform/cloudflare.ini
-sudo chown root:root /etc/endpoint-platform/cloudflare.ini
+
+sudo apt-get install -y certbot python3-certbot-dns-cloudflare
+sudo certbot certonly --dns-cloudflare \
+    --dns-cloudflare-credentials /etc/endpoint-platform/cloudflare.ini \
+    --dns-cloudflare-propagation-seconds 30 \
+    -d <hostname> --non-interactive --agree-tos --register-unsafely-without-email
 ```
 
-### 2.2 A router port-forward
+Then hand the certificate to the stack and restart the proxy:
 
-Forward **TCP 443 → <machine>:443**.
+```bash
+cd deploy/docker
+sudo cp /etc/letsencrypt/live/<hostname>/fullchain.pem tls/server.crt
+sudo cp /etc/letsencrypt/live/<hostname>/privkey.pem   tls/server.key
+docker compose restart web
+```
 
-**Forward nothing else.** In particular do not forward 5080 or 5081. Both APIs
-bind to loopback and trust `X-Forwarded-For` from nginx; exposing them directly
-would let anyone on the internet forge their own client IP and assert that their
-request arrived over HTTPS.
+**The DNS record must be DNS-only (grey cloud).** A proxied record routes traffic
+through Cloudflare's edge, which terminates TLS — revealed BitLocker recovery
+keys, admin session tokens and agent credentials would all cross in cleartext at
+a third party. It also cannot reach a private origin.
 
-### 2.3 The A record
-
-You do not create this by hand — `setup-tls-cloudflare.sh` creates and updates
-it. Two things to know:
-
-- It is created **DNS-only (grey cloud)**, deliberately. An orange-cloud
-  (proxied) record routes traffic through Cloudflare's edge, which both cannot
-  reach a private `192.168.x.x` origin and would decrypt every request —
-  including BitLocker recovery keys. If anyone turns the cloud orange later, the
-  site stops working and its confidentiality is broken. Leave it grey.
-- The office IP is **dynamic**. If it changes, re-run
-  `sudo bash infra/ubuntu/setup-tls-cloudflare.sh <hostname>` to
-  re-point the record.
-
-### 2.4 A machine that meets the requirements
-
-Ubuntu 24.04 or 26.04, x86-64, 8 GB RAM or more, 40 GB free disk. The install
-script adds swap if there is none.
+Renewal is certbot's own systemd timer. The copy above is not automatic; add a
+`--deploy-hook` that repeats it, or repeat it at renewal time.
 
 ---
 
-## 3. Get the code onto the machine
+## 3. Deploy
 
 ```bash
-ssh <user>@<machine>
-git clone git@github.com:namanjain221995/central-server.git
-cd central-server
+cd deploy/docker
+sudo ./deploy.sh https://<hostname>
 ```
 
-If the clone is refused, your SSH key is not on the GitHub account. Over HTTPS
-no key is needed:
-
-```bash
-git clone https://github.com/namanjain221995/central-server.git
-```
+First run generates the secrets, builds the images and starts everything in
+dependency order. It **proves it worked** — non-zero exit unless the dashboard,
+both APIs and pgAdmin all answer on the real URL. Re-running it is the normal way
+to deploy a change; it keeps the secrets, the certificate and the database.
 
 ---
 
-## 4. Install
+## 4. The first administrator — keep this one for yourself
 
-One command, from the repository root, as your normal login (**not** as root —
-the script calls `sudo` itself where it needs to):
+If the person doing the deployment runs this, the first Super Administrator
+account is **theirs**, and with mandatory MFA they will enrol their own
+authenticator on it. Run it yourself:
 
 ```bash
-bash infra/ubuntu/install.sh \
-    --host <hostname> \
-    --cloudflare \
-    --admin-email <your-address> \
-    --generate-admin-password
+sudo ./bootstrap-admin.sh you@example.com --generate
 ```
 
-Expect 15–30 minutes, mostly package installation and the first .NET build.
+The password prints **once**. Sign in, change it, then enrol an authenticator and
+**save the ten recovery codes** — they are shown once and the server keeps only
+hashes.
 
-It runs these in order, and each is safe to re-run on its own:
-
-| Step | What it does |
-|---|---|
-| `host-prep.sh` | PostgreSQL 17, Redis, .NET 10 SDK, Node 24, nginx, certbot, service accounts |
-| `gen-env.sh` | Generates the secrets **once**, renders one environment file per service |
-| `setup-postgres.sh` | Creates the database and its two roles |
-| `setup-redis.sh` | Loopback-only, password-protected Redis |
-| `setup-nginx.sh` | The reverse proxy and the Let's Encrypt certificate |
-| `deploy.sh` | Builds, installs, migrates, starts, health-checks |
-| `bootstrap-admin.sh` | Creates the first Super Administrator |
-
-**Write down the generated admin password.** It is printed exactly once, and the
-account is required to change it at first sign-in.
-
-### Why Redis needs to be 6.2 or later
-
-`host-prep.sh` installs Redis from `packages.redis.io`, not from Ubuntu's own
-repository. Ubuntu ships 6.0, and the platform uses `GETDEL`, which arrived in
-6.2. If you substitute the distribution package, secret redemption fails at
-runtime with a confusing error rather than at startup.
+Whoever deployed can still verify the platform without an account, in §5.
 
 ---
 
 ## 5. Verify
 
 ```bash
-# All three services running
-systemctl status 'endpoint-platform-*' --no-pager
+docker compose ps                                  # all healthy
+curl -fsS https://<hostname>/api/health/ready       # postgres + redis Healthy
 
-# Health, from the machine
-curl -fsS https://<hostname>/api/health/ready && echo OK
-
-# The certificate is genuinely trusted (no -k anywhere)
-echo | openssl s_client -connect <hostname>:443 \
-    -servername <hostname> 2>/dev/null \
-    | openssl x509 -noout -issuer -enddate
+echo | openssl s_client -connect <hostname>:443 -servername <hostname> 2>/dev/null \
+  | openssl x509 -noout -issuer -enddate
 ```
 
-The issuer must say **Let's Encrypt**. If it says anything about a local CA, the
-self-signed fallback ran instead of the Cloudflare path and agents will refuse
-to connect — see §7.
+The issuer must say **Let's Encrypt**. If it names a local CA, §2 did not take
+effect and **no agent will connect**.
 
-Then, from a machine **outside** the office network, open
-`https://<hostname>` and sign in. Testing from inside the office
-can succeed even when the port-forward is wrong, so this check has to be done
-from outside.
+Then open `https://<hostname>` from a machine **outside** the office — mobile data,
+not office Wi-Fi. Testing from inside succeeds even when the port-forward is
+wrong, so this check has to be done from outside.
 
 ---
 
-## 6. Install an agent
+## 6. One agent first, then the fleet
 
-On each managed Windows PC, in an **elevated** prompt:
+On a **single** Windows PC, elevated:
 
 ```
 msiexec /i EndpointPlatformAgent-<version>-x64.msi SERVERBASEURL=https://<hostname>
 ```
 
-Then approve the device in the dashboard under **Enrollments**. Until it is
-approved it receives nothing — that is deliberate, not a fault.
+Approve it in the dashboard under **Enrollments** — until approved it receives
+nothing, which is deliberate. Wait until it reports inventory, then roll out.
 
-Agents are outbound-only. They poll every 60 seconds with jittered backoff and
-tolerate being offline for days, so a laptop that goes home and comes back needs
-no intervention.
+Do not install on the fleet before §5 passes. With the wrong certificate every
+agent fails identically and you will debug enrolment instead of TLS.
 
----
-
-## 7. Troubleshooting
-
-**Nobody can sign in, but the site loads.**
-Almost always TLS. The session cookie is `__Host-` + `Secure`, so browsers
-discard it over plain HTTP on any origin except `localhost`. Confirm §5 shows a
-Let's Encrypt issuer.
-
-**Agents will not connect, browsers are fine.**
-A Release build of the agent validates the server certificate against the
-machine's trusted roots and has **no override**. A self-signed certificate will
-work in a browser once you click through, and will never work for an agent. Fix
-the certificate rather than the agents.
-
-**`setup-tls-cloudflare.sh` says no zone was found.**
-The token is missing `Zone:Zone:Read`, or it is scoped to the wrong zone. The
-script never prints the token; re-create it per §2.1.
-
-**The site was working and stopped.**
-Check whether the office public IP changed — re-run
-`setup-tls-cloudflare.sh` (§2.3). Also check nobody switched the DNS record to
-proxied.
-
-**Logs.**
-
-```bash
-journalctl -u 'endpoint-platform-*' -f
-sudo nginx -t && sudo tail -n 100 /var/log/nginx/error.log
-```
+Agents are outbound-only: 60-second poll, jittered backoff, and they tolerate
+being offline for days.
 
 ---
 
-## 8. Back this up
+## 7. Back this up
 
 | What | Where |
 |---|---|
-| Every secret for the deployment | `/etc/endpoint-platform/secrets.env` |
-| The database | `pg_dump` of `endpoint_platform` |
-| Uploaded packages and agent MSIs | `/opt/endpoint-platform/packages` |
+| Every secret | `deploy/docker/.env` |
+| The database | `pg_dump` of the `postgres` container |
+| Uploaded packages and agent MSIs | the package volume |
 
-`secrets.env` is `root:root 0600` and is **never regenerated** once it exists.
-Two keys in it are unrecoverable if lost:
+Two keys in `.env` are **unrecoverable**:
 
-- `RECOVERY_ESCROW_KEY` — losing it makes **every escrowed BitLocker recovery
-  password permanently undecryptable**. You will not discover the loss until a
-  machine will not boot.
-- `MFA_TOTP_KEY` — losing it makes every authenticator enrolment unreadable at
-  once, and nobody can complete a sign-in.
+- `RECOVERY_ESCROW_KEY` — losing it makes every escrowed BitLocker recovery
+  password permanently undecryptable. You discover it when a machine will not boot.
+- `MFA_TOTP_KEY` — losing it makes every authenticator enrolment unreadable and
+  nobody can sign in.
 
-Back this file up alongside every database dump, and store it somewhere the
-platform itself does not depend on.
+Back these up wherever the database dumps go, and somewhere the platform itself
+does not depend on.
 
 ---
 
-## 9. Redeploying after a code change
+## 8. Deployment is manual, on purpose
 
-```bash
-cd ~/central-server && git pull
-bash infra/ubuntu/deploy.sh
-```
+There is no deploy-on-push. An autodeploy timer that polled every 60 seconds was
+installed once and **disabled deliberately**: an unreviewed commit must not reach
+a machine that can reveal BitLocker keys and run commands as SYSTEM on every
+managed PC. Re-enable it only as a considered decision.
 
-`deploy.sh` builds, installs to a new release directory, swaps a symlink
-atomically, waits for health, and rolls back if the new release does not come
-up. It does not touch secrets, the database roles or the certificate.
+To deploy a change: pull, then re-run `deploy.sh`.
 
 ---
 
-## 10. What the first administrator will see
+## 9. What the first administrator will see
 
-Two things happen on the very first sign-in, in this order. Neither is a fault.
+Two interstitials on first sign-in, in this order. Neither is a fault.
 
-**1. A forced password change.** The bootstrap password was generated by the
-server and printed once, so the account is required to replace it before doing
-anything else. Changing it signs every session out, including that one — sign in
-again with the new password.
+1. **Forced password change** — the bootstrap password was server-generated and
+   shown once. Changing it signs every session out; sign in again.
+2. **Two-factor enrolment** — mandatory for every administrator, cannot be
+   skipped. Scan the QR with any authenticator app, then **save the recovery
+   codes**.
 
-**2. Two-factor enrolment.** It is **mandatory for every administrator** and
-cannot be skipped or switched off. The screen shows a QR code; scan it with any
-authenticator app (Google Authenticator, Microsoft Authenticator, 1Password) and
-enter the six-digit code. If the camera will not read it, "Enter the setup key by
-hand" shows the same secret as text.
+If someone loses both phone and codes, another administrator with
+`platform.user.manage` resets their second factor from Settings → Administrators.
+Nobody can reset their own — that would reduce two factors to one.
 
-Then **ten single-use recovery codes are shown exactly once.** Save them before
-clicking past — they are the only way back in if the phone is lost, and the
-server stores only hashes, so nobody can recover them afterwards. They can be
-replaced later from **Settings → My security**.
+### Before the support calls start
 
-If someone loses both phone and recovery codes, another administrator holding
-`platform.user.manage` resets their second factor from **Settings →
-Administrators**. Nobody can reset their own — that would reduce two factors back
-to one.
-
-### Things worth knowing before the support calls start
-
-- **Passwords are screened.** Anything built from the person's own name or email
-  address, a keyboard walk (`qwertyuiop…`), a short repeated unit (`abcabcabc…`)
-  or a common word with digits appended (`Password2026`) is refused. A rejected
-  password is the policy working, not a bug.
-- **Account lockout is five failures**, and it expires after fifteen minutes and
-  clears the count. An address that keeps failing is separately refused for
-  fifteen minutes, which is what stops somebody locking a named administrator out
-  on purpose.
-- **A code works only once**, even within the ~90 seconds it stays arithmetically
-  valid. Signing in twice in quick succession needs the next code.
-- **A dashboard UI polish pass is outstanding.** Cosmetic only.
-- **The `infra/gcp/` kit exists** and provisions an equivalent Compute Engine VM
-  if this ever needs to move off the office LAN. It reuses `install.sh`
-  unchanged.
-
-### One key you must not lose
-
-`MFA_TOTP_KEY` in `/etc/endpoint-platform/secrets.env` seals every authenticator
-secret. Losing it makes **every enrolment unreadable at once** and nobody can
-complete a sign-in — recovering means restoring the file from backup, or clearing
-every account's second factor directly in the database. It is generated
-automatically and is covered by the backup advice in §8; this is just to say
-plainly what it costs.
+- **Passwords are screened.** Anything built from the person's own name or email,
+  a keyboard walk, a short repeated unit, or a common word with digits appended is
+  refused. That is the policy working.
+- **Lockout is five failures for fifteen minutes**, and the count decays. An
+  address that keeps failing is refused separately, which is what stops somebody
+  locking a named administrator out on purpose.
+- **A code works only once**, even inside the ~90 seconds it stays valid.

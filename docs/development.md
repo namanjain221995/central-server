@@ -159,7 +159,7 @@ variable — they touch no I/O and run anywhere.
   `EndpointAgent.Core/Configuration` (agent).
 - No secrets in committed files. Local secrets: `infra/.env` (git-ignored) or
   `dotnet user-secrets` (per-API). Deployment: environment files rendered by
-  `infra/ubuntu/gen-env.sh`, readable only by root.
+  `deploy/docker/generate-env.sh`, readable only by root.
 - Database identifiers are snake_case (automatic; see
   `SnakeCaseNamingConvention`).
 - New permissions go in `Permissions.cs` **and** `Permissions.All` — a test

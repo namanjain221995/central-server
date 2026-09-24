@@ -4,7 +4,7 @@ The whole platform on one machine with Docker Compose: PostgreSQL, Redis, the
 migration job, the Admin API, the Agent API, the dashboard behind nginx, and
 pgAdmin for looking at the database.
 
-This sits **alongside** [`infra/ubuntu/`](../../infra/ubuntu/), it does not
+This is the only deployment path. A native systemd kit once sat alongside it and was removed; this does not
 replace it. That kit installs the same three .NET processes natively under
 systemd; this one runs them in containers. Pick one per host — they both want
 ports 80 and 443, and they both want to own the database.

@@ -17,7 +17,7 @@ device inventory; authentication + RBAC + audit). See
 | Migration + seed runner | .NET console | `server/Migrations` |
 | Windows agent | .NET 10 Windows Service | `agent/` |
 | Dashboard | React + TypeScript + Vite | `dashboard/` · http://localhost:5173 |
-| Deployment kit | Ubuntu: systemd + nginx, no containers | `infra/ubuntu/`, `infra/gcp/` |
+| Deployment | Docker Compose on one Ubuntu machine | `deploy/docker/` |
 
 ## Quick start
 
@@ -62,30 +62,16 @@ First-time setup, the full instructions and troubleshooting:
 
 ## Deploying
 
-One Ubuntu machine, three .NET processes under systemd behind nginx. From the
-repository root:
-
-```bash
-bash infra/ubuntu/install.sh --host epp.example.com --email ops@example.com \
-     --admin-email admin@example.com --generate-admin-password
-```
-
-Or drive it over SSH from Windows with `infra\ubuntu\Deploy-Ubuntu.ps1`. On
-Google Cloud, `infra/gcp/provision-vm.sh` creates the VM first. See
-[infra/ubuntu/README.md](infra/ubuntu/README.md) and
-[docs/deployment.md](docs/deployment.md).
-
-**Or in containers.** [`deploy/docker/`](deploy/docker/README.md) runs the same
-three processes plus PostgreSQL, Redis and pgAdmin under Docker Compose, on one
-machine, with a self-signed certificate when there is no public DNS name:
+**Docker Compose on one Ubuntu machine.** [`deploy/docker/`](deploy/docker/README.md)
+runs the three .NET processes plus PostgreSQL, Redis and pgAdmin, behind nginx:
 
 ```bash
 cd deploy/docker && sudo ./deploy.sh https://<host-or-ip>
 ```
 
-One host, one choice: both kits want ports 80 and 443 and both want to own the
-database. CI and the deployment pipeline for the container path are
-`.github/workflows/ci.yml` and `.github/workflows/deploy.yml`.
+Deployment is manual and deliberate: there is no deploy-on-push. CI is
+`.github/workflows/ci.yml`; the agent MSI is built by
+`.github/workflows/build-agent-msi.yml`.
 
 Health checks: `GET /health/live`, `GET /health/ready` on both APIs. Swagger
 UI at `/swagger` (Development only).

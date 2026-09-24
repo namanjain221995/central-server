@@ -1,5 +1,11 @@
 # Agent pilot safety: never pilot on a production-enrolled machine
 
+> **The gate script this runbook calls (`infra/ubuntu/assert-pilot-machine-is-safe.sh`)
+> was removed with the native deployment kit on 2026-09-24 and has no container
+> equivalent yet.** The *rule* it enforced still stands and is the point of this
+> document: never install a pilot agent on the machine that runs the platform.
+> Check that by hand until the gate is reinstated — it is in git history.
+
 An agent pilot repoints a machine's agent at an isolated pilot server. This
 document exists because that is more dangerous than it looks, and because the
 danger is invisible to every check made on the pilot side.

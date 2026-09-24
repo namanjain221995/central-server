@@ -14,10 +14,11 @@ accident. **If you are about to reverse one, ask first.**
 
 **Docker Compose, from `deploy/docker/`, on an Ubuntu PC on the office LAN.**
 
-There is also `infra/ubuntu/` — a native systemd + nginx kit. It was the original
-design and it is **not what runs**. The native install never completed on the real
-machine (`/etc/endpoint-platform` was empty, no releases were ever built). Do not
-assume the native path is live; check before acting.
+A native systemd + nginx kit (`infra/ubuntu/`) was the original design. It never
+completed on the real machine and was **removed** on 2026-09-24 so only one
+deployment path exists. It is recoverable from git history if ever needed — do not
+reintroduce it alongside Docker, because two live paths is how the wrong one gets
+deployed.
 
 ```bash
 ssh <user>@<box>
@@ -62,8 +63,9 @@ to. `AgentApiKeyBoundaryGuard` refuses to start that process if either is presen
 
 **A Release build of the Windows agent validates the server certificate against
 the machine trust store and has no override.** A self-signed certificate means
-**no PC can enrol**, however well the dashboard works in a browser. Use
-`--cloudflare` (DNS-01, needs no inbound internet) rather than `--self-signed`.
+**no PC can enrol**, however well the dashboard works in a browser. Use a
+Let's Encrypt certificate obtained by DNS-01 (needs no inbound internet, so it
+works on a private LAN) rather than the self-signed fallback.
 
 **Mandatory MFA breaks test fixtures that create their own administrator.** An
 un-enrolled account is confined to the enrolment screens and every other endpoint

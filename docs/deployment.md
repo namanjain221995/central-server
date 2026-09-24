@@ -1,5 +1,15 @@
 # Deployment
 
+> **This document describes the original native systemd + nginx deployment, which
+> is no longer how the platform is deployed.** It is kept for the reasoning it
+> records — the trust boundaries, the privilege split, the secret handling — all
+> of which still apply. For how to actually deploy, see
+> [`deploy/docker/README.md`](../deploy/docker/README.md) and
+> [`docs/runbooks/production-deploy.md`](runbooks/production-deploy.md).
+> The `infra/ubuntu/` and `infra/gcp/` kits it refers to were removed on
+> 2026-09-24; they remain in git history.
+
+
 Status: **deployable, not fully production-hardened.** Administrator
 authentication (ADR-0009) and agent authentication (ADR-0008) are implemented.
 What is still outstanding is hardening rather than function: managed secret

@@ -1,5 +1,18 @@
 # Provisioning the escrow sealing keypair
 
+> **Paths in this runbook are from the native deployment, which was removed on
+> 2026-09-24.** The procedure and its reasoning are unchanged; only the file
+> locations differ under Docker:
+>
+> | Native | Docker |
+> |---|---|
+> | `/etc/endpoint-platform/secrets.env` | `deploy/docker/.env` |
+> | `bash infra/ubuntu/gen-env.sh <origin>` | `cd deploy/docker && sudo ./deploy.sh <origin>` |
+> | `/etc/endpoint-platform/{admin,agent}-api.env` | environment blocks in `docker-compose.yml` |
+>
+> The key split is identical and just as load-bearing: the Agent API must never
+> receive the private half.
+
 Automatic BitLocker recovery-password escrow seals on the endpoint. Endpoints
 encrypt to a **public** key; only the **private** half can read the result back.
 Splitting that pair across the two APIs is the control that keeps the
