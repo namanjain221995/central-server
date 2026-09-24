@@ -125,6 +125,13 @@ services:
       ENDPOINTPLATFORM_AgentReleases__TrustMode: ${AGENT_RELEASE_TRUST_MODE:-Internal}
       ENDPOINTPLATFORM_RecoveryEscrow__Key: ${RECOVERY_ESCROW_KEY:?}
       ENDPOINTPLATFORM_RecoveryEscrow__KeyVersion: ${RECOVERY_ESCROW_KEY_VERSION:-1}
+      # Automatic BitLocker escrow sealing pair. Both empty = automatic escrow
+      # off (manual key entry still works). The agent seals each recovery
+      # password under the PUBLIC half on the endpoint itself; only this process
+      # holds the PRIVATE half, so the Agent API stores what it cannot open.
+      # Optional on purpose (:-). See docs/runbooks/escrow-sealing-key.md.
+      ENDPOINTPLATFORM_RecoveryEscrow__SealingPublicKey: ${RECOVERY_SEALING_PUBLIC_KEY:-}
+      ENDPOINTPLATFORM_RecoveryEscrow__SealingPrivateKey: ${RECOVERY_SEALING_PRIVATE_KEY:-}
       ENDPOINTPLATFORM_Mfa__TotpKey: ${MFA_TOTP_KEY:?}
     volumes:
       - packages:/var/lib/endpoint-platform/packages
@@ -157,7 +164,13 @@ services:
       # secrets into Redis, this one redeems them.
       ENDPOINTPLATFORM_SecretProtection__Key: ${SECRET_PROTECTION_KEY:?}
       ENDPOINTPLATFORM_PackageStorage__Directory: /var/lib/endpoint-platform/packages
-      # Deliberately absent: RecoveryEscrow__Key and Mfa__TotpKey.
+      # PUBLIC half of the sealing pair only. Without it a device enrolled from
+      # now on gets no pinned fingerprint and never collects recovery keys
+      # automatically - the console then says "re-enrollment required".
+      ENDPOINTPLATFORM_RecoveryEscrow__SealingPublicKey: ${RECOVERY_SEALING_PUBLIC_KEY:-}
+      # Deliberately absent: RecoveryEscrow__Key, RecoveryEscrow__SealingPrivateKey
+      # and Mfa__TotpKey. AgentApiKeyBoundaryGuard fails this host at startup if
+      # any of them ever appears here.
     volumes:
       # Read-only: agents download package content, they never write it.
       - packages:/var/lib/endpoint-platform/packages:ro

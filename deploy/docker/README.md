@@ -4,18 +4,18 @@ The whole platform on one machine with Docker Compose: PostgreSQL, Redis, the
 migration job, the Admin API, the Agent API, the dashboard behind nginx, and
 pgAdmin for looking at the database.
 
-This is the only deployment path. A native systemd kit once sat alongside it and was removed; this does not
-replace it. That kit installs the same three .NET processes natively under
-systemd; this one runs them in containers. Pick one per host — they both want
-ports 80 and 443, and they both want to own the database.
+This is the only deployment path. A native systemd kit (`infra/ubuntu/`) once
+sat alongside it and was removed on 2026-09-24 so that exactly one path exists.
+It is in git history if ever wanted, but must not be reintroduced next to this
+one — two live paths is how the wrong one gets deployed.
 
-| | `infra/ubuntu/` | `deploy/docker/` |
-|---|---|---|
-| Processes | systemd units | containers |
-| PostgreSQL / Redis | installed on the host | containers, no published port |
-| TLS | Let's Encrypt, or a local CA | a local CA (self-signed) |
-| Upgrade | publish, swap symlink, restart | rebuild images, `compose up -d` |
-| Rollback | previous release directory | previous image tag |
+| | |
+|---|---|
+| Processes | containers, one per .NET process, plus nginx |
+| PostgreSQL / Redis | containers, no published port |
+| TLS | a local CA (self-signed) by default; a Let's Encrypt certificate is dropped into `tls/` (see the production runbook) |
+| Upgrade | rebuild images, `compose up -d` |
+| Rollback | previous image tag |
 
 ## Quick start
 
@@ -90,9 +90,13 @@ them starting against a schema they do not match. The APIs connect as
 table — that is what makes "the application cannot rewrite history" a property
 of the database rather than a promise in application code (ADR-0003, ADR-0004).
 
-**The Agent API is never given `RECOVERY_ESCROW_KEY` or `MFA_TOTP_KEY`.**
-`AgentApiKeyBoundaryGuard` fails that process at startup if either appears, and
-the compose file is written so it cannot.
+**The Agent API is never given `RECOVERY_ESCROW_KEY`, `RECOVERY_SEALING_PRIVATE_KEY`
+or `MFA_TOTP_KEY`.** `AgentApiKeyBoundaryGuard` fails that process at startup if
+any of them appears, and the compose file is written so it cannot. It *is* given
+`RECOVERY_SEALING_PUBLIC_KEY`, which only encrypts: endpoints seal BitLocker
+recovery passwords to it, and only the Admin API, holding the private half, can
+open them. `generate-env.sh` creates that pair once; a device enrolled before
+the pair existed has to re-enrol to take part.
 
 ## pgAdmin
 
@@ -196,7 +200,7 @@ only acceptable if the answer here is *nothing*.
 | The database | lives in the `pgdata` volume; `compose down -v` is never issued, and the stack is only ever `up -d` |
 | Uploaded packages | the `packages` volume, same reason |
 | pgAdmin's saved state | the `pgadmin` volume, same reason |
-| `.env` — escrow key, MFA key, passwords | git-ignored, so `git reset --hard` leaves it; `generate-env.sh` refuses to regenerate an `.env` that exists |
+| `.env` — escrow keys, MFA key, passwords | git-ignored, so `git reset --hard` leaves it; `generate-env.sh` refuses to regenerate an `.env` that exists |
 | `tls/` — the CA and certificate | git-ignored, same |
 | `pgadmin/pgpass` | git-ignored, same |
 

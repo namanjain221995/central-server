@@ -49,15 +49,23 @@ keys. Do not re-enable it without asking.
 
 ## Things that will bite you
 
-**Two keys are unrecoverable if lost.** Both live in the deployment's env file and
-nowhere else:
+**Three keys are unrecoverable if lost.** All live in the deployment's env file
+(`deploy/docker/.env`) and nowhere else:
 - `RECOVERY_ESCROW_KEY` — losing it makes **every escrowed BitLocker password
   permanently undecryptable**, discovered only when a machine will not boot.
+- `RECOVERY_SEALING_PRIVATE_KEY` — the private half of the automatic-escrow
+  pair; losing it makes every **automatically** escrowed password unreadable.
+  `generate-env.sh` creates the pair once and never replaces it. A device
+  enrolled *before* the pair existed carries no pinned fingerprint and reads
+  "automatic escrow unavailable — re-enrollment required" until it re-enrols;
+  that is how the missing pair was noticed in production.
 - `MFA_TOTP_KEY` — losing it makes every authenticator enrolment unreadable and
   **nobody can sign in**.
 
-Neither may ever reach the **Agent API**, which every managed endpoint can talk
-to. `AgentApiKeyBoundaryGuard` refuses to start that process if either is present.
+None of them may ever reach the **Agent API**, which every managed endpoint can
+talk to. `AgentApiKeyBoundaryGuard` refuses to start that process if any is
+present. The Agent API *does* get `RECOVERY_SEALING_PUBLIC_KEY`: it only
+encrypts, and the process must know which key endpoints seal to.
 `SECRET_PROTECTION_KEY` *is* given to both, so never seal anything durable with
 `ISecretProtector` — it also silently falls back to a random process-local key.
 

@@ -1,14 +1,26 @@
 # Provisioning the escrow sealing keypair
 
-> **Paths in this runbook are from the native deployment, which was removed on
-> 2026-09-24.** The procedure and its reasoning are unchanged; only the file
-> locations differ under Docker:
+> **Under Docker this is automated.** `deploy/docker/generate-env.sh` (run by
+> `deploy.sh`) generates the pair on first run, **adds** it to an `.env` that
+> lacks it, and never replaces one that has it — using exactly the procedure
+> below, including the PKCS#8 step, the write-by-concatenation rule and the
+> pre-write verification. `docker-compose.yml` hands the public half to both
+> APIs and the private half to the Admin API only.
+>
+> The manual procedure stays here as the reference for what the script does and
+> for the cases it does not cover: restoring a backed-up private half, or a
+> rotation.
+>
+> **Paths below are from the native deployment, removed on 2026-09-24.** Under
+> Docker:
 >
 > | Native | Docker |
 > |---|---|
 > | `/etc/endpoint-platform/secrets.env` | `deploy/docker/.env` |
-> | `bash infra/ubuntu/gen-env.sh <origin>` | `cd deploy/docker && sudo ./deploy.sh <origin>` |
+> | `bash infra/ubuntu/gen-env.sh <origin>` | `cd deploy/docker && sudo ./deploy.sh '' --no-build` |
 > | `/etc/endpoint-platform/{admin,agent}-api.env` | environment blocks in `docker-compose.yml` |
+> | `systemctl restart ...` | `deploy.sh` recreates the two API containers whose environment changed |
+> | `/proc/<pid>/environ` boundary check | `docker compose exec agent-api env \| grep -c 'SealingPrivateKey\\|RecoveryEscrow__Key'` must print `0`; `... admin-api env \| grep -c SealingPrivateKey` must print `1` |
 >
 > The key split is identical and just as load-bearing: the Agent API must never
 > receive the private half.
@@ -226,6 +238,14 @@ Deliberately several deliberate steps, in this order:
    the keypair existed carries no pinned fingerprint, and an unpinned device
    never reads a recovery password. There is no trust-on-first-use path, by
    design.
+
+   Nobody has to touch the endpoint for this. Revoking a device's active
+   credential on the server makes its next heartbeat fail with 401; the agent
+   discards the credential, submits a fresh **Enrollments → pending** request on
+   its own, and once an administrator approves it the device is re-enrolled *in
+   place* (same device id, same history) with the fingerprint pinned. The device
+   page then reads *automatic escrow active*. Retiring (offboarding) the device
+   is **not** the way to do this: a retired machine comes back as a new device.
 
 Devices that are not re-enrolled keep working: full BitLocker inventory, manual
 escrow, and a console status reading *automatic escrow unavailable —

@@ -171,6 +171,11 @@ msiexec /i EndpointPlatformAgent-<version>-x64.msi SERVERBASEURL=https://<hostna
 Approve it in the dashboard under **Enrollments** — until approved it receives
 nothing, which is deliberate. Wait until it reports inventory, then roll out.
 
+On the device page, **BitLocker** should read *automatic escrow active*. If it
+says *re-enrollment required*, the server was started without the sealing pair
+(§7) when this device enrolled; re-running `deploy.sh` adds the pair, and the
+device must then re-enrol — see `docs/runbooks/escrow-sealing-key.md`.
+
 Do not install on the fleet before §5 passes. With the wrong certificate every
 agent fails identically and you will debug enrolment instead of TLS.
 
@@ -187,10 +192,13 @@ being offline for days.
 | The database | `pg_dump` of the `postgres` container |
 | Uploaded packages and agent MSIs | the package volume |
 
-Two keys in `.env` are **unrecoverable**:
+Three keys in `.env` are **unrecoverable**:
 
 - `RECOVERY_ESCROW_KEY` — losing it makes every escrowed BitLocker recovery
   password permanently undecryptable. You discover it when a machine will not boot.
+- `RECOVERY_SEALING_PRIVATE_KEY` — the private half of the pair endpoints seal
+  recovery passwords to. Losing it makes every *automatically* escrowed password
+  unreadable in the same way.
 - `MFA_TOTP_KEY` — losing it makes every authenticator enrolment unreadable and
   nobody can sign in.
 
