@@ -55,14 +55,17 @@
     PUBLIC_ORIGIN (https://<name>) on the host and the subject of the TLS
     certificate.
 
-    For Let's Encrypt it must be a public DNS name resolving to this machine from
-    the internet, with port 80 reachable. A machine on a private LAN cannot
-    satisfy that: use -SkipCert and install a certificate from your own CA (see
-    infra/ubuntu/README.md), because plain HTTP is not a working option - the
-    session cookie is __Host-/Secure and browsers discard it.
+    Plain Let's Encrypt (HTTP-01, the default) needs a public DNS name resolving
+    to this machine from the internet with port 80 reachable. A machine on a
+    private LAN cannot satisfy that - use -Cloudflare instead, which proves
+    control of the NAME over DNS and needs no inbound connectivity at all.
+
+    Plain HTTP is never a working option: the session cookie is __Host-/Secure
+    and browsers discard it, so nobody can sign in.
 
 .PARAMETER CertbotEmail
-    Let's Encrypt account e-mail (expiry notices). Mandatory unless -SkipCert.
+    Let's Encrypt account e-mail (expiry notices). Required only for the default
+    HTTP-01 path - -Cloudflare, -SelfSigned and -SkipCert all do without it.
 
 .PARAMETER AdminEmail
     When given, bootstrap the first Super Administrator with this e-mail.
@@ -74,8 +77,29 @@
     Skip host-prep.sh. Safe on a machine that has already been prepared; running
     it again is also safe and is how a .NET patch release gets picked up.
 
+.PARAMETER Cloudflare
+    Get a real Let's Encrypt certificate by DNS-01 through Cloudflare, instead of
+    HTTP-01. Works with NO inbound internet, so it is the right choice for a
+    machine on a private LAN whose domain is hosted at Cloudflare.
+
+    Needs an API token ON THE UBUNTU MACHINE at
+    /etc/endpoint-platform/cloudflare.ini (Zone:DNS:Edit + Zone:Zone:Read, scoped
+    to the one zone). The token is never uploaded from this machine; this script
+    only checks that the file exists before starting a long install.
+
+    Strongly preferred over -SelfSigned: a Release build of the Windows agent
+    validates the server certificate against the machine's trusted roots and has
+    no override, so a publicly trusted certificate means nothing has to be
+    installed on any managed endpoint.
+
+.PARAMETER SelfSigned
+    Issue TLS from a local CA. The fallback for a private network with no
+    suitable domain, and it costs a CA root deployed to EVERY managed PC before
+    any agent can connect. Prefer -Cloudflare.
+
 .PARAMETER SkipCert
-    Skip setup-nginx.sh entirely.
+    Skip setup-nginx.sh entirely. Leaves whatever certificate is already there
+    untouched - the right choice for a routine redeploy.
 
 .PARAMETER SkipBootstrap
     Do not run bootstrap-admin.sh even if -AdminEmail is given.
@@ -89,6 +113,13 @@
         -KeyPath C:\keys\epp.pem -PublicHostName epp.example.com `
         -CertbotEmail ops@example.com -AdminEmail admin@example.com `
         -GenerateAdminPassword
+
+.EXAMPLE
+    # A machine on a private LAN, domain hosted at Cloudflare. No inbound
+    # internet, no port forwarding, and a certificate every endpoint trusts.
+    .\infra\ubuntu\Deploy-Ubuntu.ps1 -SshHost 192.168.1.50 -SshUser ops `
+        -KeyPath C:\keys\epp.pem -PublicHostName epp.example.com -Cloudflare `
+        -AdminEmail admin@example.com -GenerateAdminPassword
 
 .EXAMPLE
     # Redeploy after a code change (machine already prepared, certificate in place):
@@ -116,6 +147,8 @@ param(
 
     [switch]$SkipHostPrep,
     [switch]$SkipCert,
+    [switch]$Cloudflare,
+    [switch]$SelfSigned,
     [switch]$SkipBootstrap,
     [switch]$GenerateAdminPassword
 )
@@ -239,15 +272,32 @@ if ($PublicHostName -notmatch '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z
 if ($RemoteDir -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$') {
     Fail ('-RemoteDir "{0}" must be a relative path under the SSH home, e.g. "app" or "srv/epp".' -f $RemoteDir)
 }
+# Exactly one TLS mode, mirroring install.sh. -SkipCert wins over nothing: it
+# means "do not touch nginx at all", so pairing it with a mode is a contradiction
+# rather than a harmless redundancy.
+$certModes = @()
+if ($Cloudflare) { $certModes += '-Cloudflare' }
+if ($SelfSigned) { $certModes += '-SelfSigned' }
+if ($SkipCert)   { $certModes += '-SkipCert' }
+if ($certModes.Count -gt 1) {
+    Fail ('Choose one of {0}; they are mutually exclusive.' -f ($certModes -join ', '))
+}
+
 $emailPattern = '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
-if (-not $SkipCert) {
+
+# Only HTTP-01 needs a contact address. DNS-01 registers without one and a local
+# CA has nobody to notify, which is why install.sh asks for it on the same
+# condition (install.sh: --email is required unless --skip-cert, --cloudflare or
+# --self-signed).
+if (-not $SkipCert -and -not $Cloudflare -and -not $SelfSigned) {
     if ([string]::IsNullOrWhiteSpace($CertbotEmail)) {
-        Fail '-CertbotEmail is required unless -SkipCert is given (Let''s Encrypt needs a contact address).'
+        Fail '-CertbotEmail is required unless -SkipCert, -Cloudflare or -SelfSigned is given (HTTP-01 needs a contact address; DNS-01 and a local CA do not).'
     }
     if ($CertbotEmail -notmatch $emailPattern) {
         Fail ('-CertbotEmail "{0}" does not look like an e-mail address.' -f $CertbotEmail)
     }
 }
+
 $doBootstrap = $false
 if (-not [string]::IsNullOrWhiteSpace($AdminEmail) -and -not $SkipBootstrap) {
     if ($AdminEmail -notmatch $emailPattern) {
@@ -330,6 +380,33 @@ if ($LASTEXITCODE -ne 0) {
     Fail ('{0} cannot sudo without a password. On the Ubuntu machine run "sudo visudo" and add:  {1} ALL=(ALL) NOPASSWD:ALL' -f $target, $SshUser)
 }
 Write-Host '  sudo  passwordless: ok'
+
+# -Cloudflare reads an API token that lives ONLY on the Ubuntu machine; nothing
+# is ever sent from here. Checked at this point rather than in the preflight
+# because it is the first thing needing a proven SSH session, and checked at all
+# so a missing token fails in seconds instead of after a full build.
+if ($Cloudflare) {
+    & ssh @sshOpts $target 'sudo test -s /etc/endpoint-platform/cloudflare.ini' | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Fail (@'
+-Cloudflare needs an API token on the Ubuntu machine at
+/etc/endpoint-platform/cloudflare.ini
+
+Create it THERE (it is never uploaded from this machine):
+
+    sudo install -d -m 0750 /etc/endpoint-platform
+    sudo tee /etc/endpoint-platform/cloudflare.ini >/dev/null <<INI
+dns_cloudflare_api_token = YOUR_TOKEN_HERE
+INI
+    sudo chmod 600 /etc/endpoint-platform/cloudflare.ini
+
+Make the token at https://dash.cloudflare.com/profile/api-tokens with the
+"Edit zone DNS" template, scoped to that one zone, granting Zone:DNS:Edit AND
+Zone:Zone:Read. Do not use a Global API Key.
+'@)
+    }
+    Write-Host '  cloudflare.ini: present'
+}
 
 # --- 3. package and upload ---------------------------------------------------
 
@@ -416,7 +493,17 @@ Write-Host '  The first run takes 10-25 minutes (apt, the .NET SDK, then the bui
 Write-Host ''
 
 $installArgs = '--host {0}' -f $PublicHostName
-if (-not $SkipCert) { $installArgs = $installArgs + (' --email {0}' -f $CertbotEmail) }
+
+# One TLS mode, already proven mutually exclusive in the preflight. --email goes
+# only to the HTTP-01 path: install.sh rejects the combination otherwise.
+if ($Cloudflare) {
+    $installArgs = $installArgs + ' --cloudflare'
+} elseif ($SelfSigned) {
+    $installArgs = $installArgs + ' --self-signed'
+} elseif (-not $SkipCert) {
+    $installArgs = $installArgs + (' --email {0}' -f $CertbotEmail)
+}
+
 if ($SkipHostPrep) { $installArgs = $installArgs + ' --skip-host-prep' }
 if ($SkipCert) { $installArgs = $installArgs + ' --skip-cert' }
 
