@@ -87,6 +87,24 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
     void load()
   }, [deviceId, load])
 
+  // While a refresh is pending the agent uploads within a heartbeat or two, so
+  // the workspace re-reads every 10 seconds until the new snapshot lands and
+  // then stops. Without this the operator who clicked Refresh sat looking at
+  // the old snapshot behind a "Refresh pending" badge until they reopened it.
+  const refreshPending = detail?.inventoryRefreshPending ?? false
+  useEffect(() => {
+    if (!refreshPending) return
+    const timer = setInterval(() => void load(), 10_000)
+    return () => clearInterval(timer)
+  }, [refreshPending, load])
+
+  // A new snapshot replaces every profile and extension row, so the cached
+  // extension lists belong to profiles that no longer exist and are dropped.
+  const snapshotAt = detail?.installation?.collectedAt ?? null
+  useEffect(() => {
+    setExtensions({})
+  }, [snapshotAt])
+
   // Keep a profile selected while there is one to select, so the Profiles and
   // Extensions tabs never open on an empty right-hand side.
   useEffect(() => {
