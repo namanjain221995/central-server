@@ -1,4 +1,5 @@
 ﻿using EndpointAgent.Windows;
+using EndpointPlatform.Contracts.Agent;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EndpointAgent.Windows.Tests;
@@ -31,6 +32,7 @@ public sealed class WindowsInventoryCollectorTests
             new WindowsUpdateCollector(NullLogger<WindowsUpdateCollector>.Instance),
             new WindowsDriverCollector(NullLogger<WindowsDriverCollector>.Instance),
             posture,
+            new WindowsChromeCollector(NullLogger<WindowsChromeCollector>.Instance),
             TimeProvider.System,
             NullLogger<WindowsInventoryCollector>.Instance);
     }
@@ -98,5 +100,19 @@ public sealed class WindowsInventoryCollectorTests
         report.Processes.ShouldNotBeNull();
         report.Processes!.Count.ShouldBeLessThanOrEqualTo(60);
         report.Processes.ShouldNotBeEmpty();
+    }
+
+    /// <summary>
+    /// The Chrome section is always present -- "not installed" is an answer, not
+    /// an omission -- and its status is one the server knows how to parse.
+    /// </summary>
+    [Fact]
+    public async Task Carries_a_chrome_section_with_a_status_the_server_understands()
+    {
+        var report = await CreateCollector().CollectAsync(CancellationToken.None);
+
+        var chrome = report.Chrome.ShouldNotBeNull();
+        InventoryChrome.Statuses.ShouldContain(chrome.Status);
+        chrome.Profiles.ShouldNotBeNull();
     }
 }

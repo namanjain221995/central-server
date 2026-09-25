@@ -35,6 +35,7 @@ public sealed class WindowsInventoryCollector(
     IWindowsUpdateCollector windowsUpdateCollector,
     IDriverCollector driverCollector,
     IBitLockerCollector bitLockerCollector,
+    IChromeCollector chromeCollector,
     TimeProvider timeProvider,
     ILogger<WindowsInventoryCollector> logger) : IInventoryCollector
 {
@@ -61,6 +62,9 @@ public sealed class WindowsInventoryCollector(
 
     private readonly IBitLockerCollector _bitLockerCollector = bitLockerCollector
         ?? throw new ArgumentNullException(nameof(bitLockerCollector));
+
+    private readonly IChromeCollector _chromeCollector = chromeCollector
+        ?? throw new ArgumentNullException(nameof(chromeCollector));
 
     /// <summary>Cap on the process snapshot carried with inventory.</summary>
     private const int MaxProcessesInInventory = 60;
@@ -153,6 +157,16 @@ public sealed class WindowsInventoryCollector(
             _logger.LogWarning(ex, "BitLocker collection failed; omitting the section this snapshot.");
         }
 
+        InventoryChrome? chrome = null;
+        try
+        {
+            chrome = await _chromeCollector.CollectAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Chrome collection failed; omitting the section this snapshot.");
+        }
+
         return new InventoryReport(
             hardware,
             interfaces,
@@ -165,7 +179,8 @@ public sealed class WindowsInventoryCollector(
             processes,
             windowsUpdate,
             drivers,
-            bitLocker);
+            bitLocker,
+            chrome);
     }
 
     private InventoryHardware CollectHardware()

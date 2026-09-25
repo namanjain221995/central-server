@@ -10,6 +10,10 @@
 /// Windows local users/groups/membership. Nullable: agents predating this
 /// section omit it, and the server keeps whatever it last knew.
 /// </param>
+/// <param name="Chrome">
+/// Google Chrome: the installation, its profiles and their extensions. Nullable
+/// for the same reason; agents built before the section existed omit it.
+/// </param>
 public sealed record InventoryReport(
     InventoryHardware Hardware,
     IReadOnlyList<InventoryNetworkInterface> NetworkInterfaces,
@@ -22,7 +26,207 @@ public sealed record InventoryReport(
     IReadOnlyList<InventoryProcess>? Processes = null,
     InventoryWindowsUpdate? WindowsUpdate = null,
     IReadOnlyList<InventoryDriver>? Drivers = null,
-    InventoryBitLocker? BitLocker = null);
+    InventoryBitLocker? BitLocker = null,
+    InventoryChrome? Chrome = null);
+
+/// <summary>
+/// Google Chrome on the endpoint: the installation, every user's profiles, and
+/// the extensions each profile has.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <paramref name="Status"/> is carried separately from the lists for the reason
+/// <see cref="InventoryBitLocker"/> carries its own: an empty profile list could
+/// mean Chrome is not installed, or that the agent could read no profile
+/// directory, and the server must not confuse the two. The status is about the
+/// installation alone: "NotInstalled" may still carry profiles, because Chrome's
+/// uninstaller leaves <c>User Data</c> behind by default and what it recorded
+/// there is still fact. A server must never read a non-empty profile list as
+/// "Chrome is present".
+/// </para>
+/// <para>
+/// Facts only. The agent reports what it read; whether an extension is wanted,
+/// blocked, or out of date is decided on the server, so a change of judgement is a
+/// server change rather than a fleet-wide agent rollout.
+/// </para>
+/// <para>
+/// Everything here is read from files Chrome owns. No profile file is ever
+/// written -- Chrome authenticates its own preference files and treats an outside
+/// edit as corruption -- and nothing is read from the extensions' own code
+/// directories: the name, version and origin are taken from Chrome's own record of
+/// the extension, which is already localised.
+/// </para>
+/// </remarks>
+/// <param name="Status">
+/// "Available", "NotInstalled" or "Error". Anything unrecognised is treated by the
+/// server as unknown.
+/// </param>
+/// <param name="Installation">The installed browser, or null when none was found.</param>
+/// <param name="Profiles">
+/// Every Chrome profile of every local user whose directory the service could
+/// read, bounded to <see cref="MaxProfiles"/>.
+/// </param>
+public sealed record InventoryChrome(
+    string Status,
+    InventoryChromeInstallation? Installation,
+    IReadOnlyList<InventoryChromeProfile> Profiles)
+{
+    public const int MaxStatus = 16;
+
+    /// <summary>The most profiles one report carries, across all users.</summary>
+    public const int MaxProfiles = 64;
+
+    /// <summary>The values <see cref="Status"/> may take.</summary>
+    public static readonly IReadOnlySet<string> Statuses =
+        new HashSet<string>(StringComparer.Ordinal) { "Available", "NotInstalled", "Error" };
+}
+
+/// <summary>The installed Chrome browser.</summary>
+/// <param name="Version">The installed version as Windows records it, e.g. <c>131.0.6778.86</c>.</param>
+/// <param name="ExecutablePath">Path to <c>chrome.exe</c>, when known and local.</param>
+/// <param name="Architecture">
+/// <c>x64</c>, <c>x86</c> or <c>arm64</c> as the updater records it, or null when
+/// unknown. Deliberately not inferred from which registry view the product
+/// registered in: Chrome is 64-bit yet registers under WOW6432Node.
+/// </param>
+/// <param name="Channel"><c>stable</c>, <c>beta</c>, <c>dev</c> or <c>canary</c> as the updater records it, or null.</param>
+/// <param name="InstallationScope"><c>Machine</c> for an all-users install, <c>User</c> for a per-user one.</param>
+/// <param name="InstalledForUser">For a per-user install, the account it belongs to; null for machine-wide.</param>
+/// <param name="UpdaterVersion">The Google Update client's own version, when present.</param>
+/// <param name="LastUpdateCheck">When Google Update last checked for an update, when it records one.</param>
+public sealed record InventoryChromeInstallation(
+    string Version,
+    string? ExecutablePath,
+    string? Architecture,
+    string? Channel,
+    string InstallationScope,
+    string? InstalledForUser,
+    string? UpdaterVersion,
+    DateTimeOffset? LastUpdateCheck)
+{
+    public const int MaxVersion = 64;
+    public const int MaxExecutablePath = 512;
+    public const int MaxArchitecture = 16;
+    public const int MaxChannel = 16;
+    public const int MaxInstallationScope = 16;
+    public const int MaxInstalledForUser = 256;
+    public const int MaxUpdaterVersion = 64;
+
+    /// <summary>The values <see cref="InstallationScope"/> may take.</summary>
+    public static readonly IReadOnlySet<string> InstallationScopes =
+        new HashSet<string>(StringComparer.Ordinal) { "Machine", "User" };
+}
+
+/// <summary>
+/// One Chrome profile: a browsing identity inside one Windows user's Chrome.
+/// </summary>
+/// <remarks>
+/// A Windows user commonly has several ("Default", "Profile 1", ...), and each
+/// has its own extensions. The Windows user is identified by SID because names
+/// are renameable; the profile by its directory name because the display name
+/// is whatever the person typed. No Google account e-mail address is carried.
+/// </remarks>
+/// <param name="UserSid">The Windows account the profile belongs to.</param>
+/// <param name="UserAccount">That account's name (<c>DOMAIN\name</c>), or the SID when it cannot be resolved.</param>
+/// <param name="ProfileKey">The profile directory name under <c>User Data</c>: Chrome's stable identity for it.</param>
+/// <param name="ProfileName">The display name Chrome shows for the profile, when recorded.</param>
+/// <param name="ProfilePath">The profile directory, absolute and local.</param>
+/// <param name="IsManaged">Whether Chrome marks the profile as enterprise-managed. Null when unrecorded.</param>
+/// <param name="LastActiveAt">When the profile was last used, as Chrome records it. Null when unrecorded.</param>
+/// <param name="Extensions">Every extension Chrome records for the profile, bounded to <see cref="MaxExtensions"/>.</param>
+public sealed record InventoryChromeProfile(
+    string UserSid,
+    string? UserAccount,
+    string ProfileKey,
+    string? ProfileName,
+    string ProfilePath,
+    bool? IsManaged,
+    DateTimeOffset? LastActiveAt,
+    IReadOnlyList<InventoryChromeExtension> Extensions)
+{
+    public const int MaxUserSid = 184;
+    public const int MaxUserAccount = 256;
+    public const int MaxProfileKey = 64;
+    public const int MaxProfileName = 256;
+    public const int MaxProfilePath = 512;
+
+    /// <summary>The most extensions one profile carries.</summary>
+    public const int MaxExtensions = 256;
+}
+
+/// <summary>One extension as Chrome records it for a profile.</summary>
+/// <remarks>
+/// <paramref name="InstallType"/> is Chrome's own notion of where an extension
+/// came from, reported by name rather than by Chrome's internal number so a
+/// renumbering in Chrome cannot silently change what the server reads. The
+/// mapping is fixed in the agent and pinned by tests.
+/// </remarks>
+/// <param name="ExtensionId">Chrome's 32-character identifier (letters a-p), derived from the extension's key.</param>
+/// <param name="Name">The localised display name Chrome recorded, when present.</param>
+/// <param name="Version">The installed version, when present.</param>
+/// <param name="ManifestVersion">The manifest format version (2 or 3), when present.</param>
+/// <param name="Enabled">Whether Chrome has the extension enabled. Null when the record does not say.</param>
+/// <param name="InstallType">
+/// <c>Internal</c> (user-installed, typically from the Web Store), <c>ExternalPref</c>,
+/// <c>ExternalRegistry</c>, <c>Unpacked</c>, <c>Component</c> (part of Chrome itself),
+/// <c>ExternalPrefDownload</c>, <c>ExternalPolicyDownload</c>, <c>CommandLine</c>,
+/// <c>ExternalPolicy</c>, <c>ExternalComponent</c>, or <c>Unknown</c>.
+/// </param>
+/// <param name="IsManaged">Whether enterprise policy installed it: true for the two policy install types.</param>
+/// <param name="FromWebStore">Whether Chrome records the Web Store as its origin. Null when unrecorded.</param>
+/// <param name="UpdateUrl">Where Chrome checks for updates to it, when the manifest names one.</param>
+/// <param name="InstalledAt">When it was first installed, as Chrome records it.</param>
+/// <param name="UpdatedAt">When it was last updated, as Chrome records it.</param>
+public sealed record InventoryChromeExtension(
+    string ExtensionId,
+    string? Name,
+    string? Version,
+    int? ManifestVersion,
+    bool? Enabled,
+    string InstallType,
+    bool IsManaged,
+    bool? FromWebStore,
+    string? UpdateUrl,
+    DateTimeOffset? InstalledAt,
+    DateTimeOffset? UpdatedAt)
+{
+    public const int MaxExtensionId = 32;
+    public const int MaxName = 256;
+    public const int MaxVersion = 64;
+    public const int MaxInstallType = 32;
+    public const int MaxUpdateUrl = 512;
+
+    /// <summary>The values <see cref="InstallType"/> may take.</summary>
+    public static readonly IReadOnlySet<string> InstallTypes = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "Internal", "ExternalPref", "ExternalRegistry", "Unpacked", "Component", "ExternalPrefDownload",
+        "ExternalPolicyDownload", "CommandLine", "ExternalPolicy", "ExternalComponent", "Unknown",
+    };
+
+    /// <summary>
+    /// Whether a string is shaped like a Chrome extension id: exactly 32 characters,
+    /// each in a-p. Kept on the contract so the agent's check and the one the
+    /// Agent API applies when it ingests the section are one method and cannot
+    /// drift.
+    /// </summary>
+    public static bool IsValidExtensionId(string? value)
+    {
+        if (value is null || value.Length != MaxExtensionId)
+        {
+            return false;
+        }
+
+        foreach (var c in value)
+        {
+            if (c is < 'a' or > 'p')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+}
 
 /// <summary>
 /// BitLocker volume encryption, as reported by the endpoint.

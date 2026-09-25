@@ -165,6 +165,8 @@ public static class Program
                 sp => sp.GetRequiredService<WindowsSecurityPostureCollector>());
             builder.Services.AddSingleton<IWindowsUpdateCollector, WindowsUpdateCollector>();
             builder.Services.AddSingleton<IDriverCollector, WindowsDriverCollector>();
+            // Read-only by construction: IChromeCollector has no mutating counterpart, so inventory can never grow into enforcement.
+            builder.Services.AddSingleton<IChromeCollector, WindowsChromeCollector>();
 
             // Recovery-password retrieval, registered SEPARATELY from the BitLocker
             // collector above and deliberately so. The collector reads protector
