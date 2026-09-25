@@ -71,6 +71,16 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
 
     public DbSet<DeviceDriver> DeviceDrivers => Set<DeviceDriver>();
 
+    /// <remarks>
+    /// One row per device, upserted. A device without a row has never reported
+    /// the Chrome section; one with a NotInstalled row has, and said no.
+    /// </remarks>
+    public DbSet<Domain.Chrome.ChromeInstallation> ChromeInstallations => Set<Domain.Chrome.ChromeInstallation>();
+
+    public DbSet<Domain.Chrome.ChromeProfile> ChromeProfiles => Set<Domain.Chrome.ChromeProfile>();
+
+    public DbSet<Domain.Chrome.ChromeExtension> ChromeExtensions => Set<Domain.Chrome.ChromeExtension>();
+
     public DbSet<DeviceBitLockerStatus> DeviceBitLockerStatus => Set<DeviceBitLockerStatus>();
 
     public DbSet<DeviceBitLockerVolume> DeviceBitLockerVolumes => Set<DeviceBitLockerVolume>();

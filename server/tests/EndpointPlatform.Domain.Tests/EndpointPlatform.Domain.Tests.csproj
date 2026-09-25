@@ -17,6 +17,14 @@
       assemblies only.
     -->
     <ProjectReference Include="..\..\..\agent\EndpointAgent.Core\EndpointAgent.Core.csproj" />
+    <!--
+      Test-only, for the Chrome contract-alignment tests. The domain's
+      ChromeReportStatus and ChromeExtensionInstallType enums are mapped from the
+      wire contract's status and install-type strings by name, and the domain
+      cannot reference Contracts to share the sets; this reference is what lets a
+      test prove the two still agree. Same reasoning as the agent reference above.
+    -->
+    <ProjectReference Include="..\..\..\shared\Contracts\EndpointPlatform.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

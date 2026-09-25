@@ -89,6 +89,7 @@ public static class AccessLevelEndpoints
         "Local accounts",
         "Groups",
         "Software",
+        "Chrome",
         "Policies",
         "Peripherals",
         "Drivers",

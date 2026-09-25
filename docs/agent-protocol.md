@@ -73,10 +73,37 @@ the previous snapshot wholesale; collection sizes are capped server-side
 (64 disks, 64 interfaces, 32 IPs each) and every field is length-validated
 before persistence.
 
+The optional `Chrome` section (trailing and nullable — an agent built before it
+existed omits it, and the server keeps what it last knew) carries the installed
+Google Chrome, every local user's Chrome profiles and each profile's extensions.
+The installation is read from the Chrome uninstall entry and the Google Update
+client keys in HKLM (the WOW6432Node view first, because Google Update is a
+32-bit product; the architecture comes from the updater's own record, not from
+which view the key was found in). Profiles come from each user's
+`User Data\Local State`, reached through the machine's profile list rather than
+the service's own LocalSystem profile, so signed-out users are covered;
+extensions come from each profile's `Secure Preferences` and `Preferences`, as
+Chrome itself records them. No Google account field is carried — the parser has
+no path to `user_name` or `gaia_*` — and nothing is read from an extension's own
+directory or its `manifest.json`. Nothing under a profile is ever written and
+nothing is launched. `Status` is `Available` (an installation was found),
+`NotInstalled` (none was — leftover `User Data` may still yield profiles, so a
+non-empty profile list never means Chrome is present) or `Error` (enumeration
+was incomplete and the section carries whatever was read). The section is capped
+server-side at 64 profiles and 256 extensions per profile and length-validated
+like the rest. On `Available` and `NotInstalled` the stored profiles and
+extensions are replaced wholesale; on `Error` the server keeps the last known
+set, so a partial snapshot never overwrites a complete one. Chrome uploads are
+not audited per event, for the same reason heartbeats are not. See
+[chrome-management.md](chrome-management.md).
+
 The refresh handshake is pull-based: the heartbeat response's
 `InventoryRequested` is true when an administrator asked for a refresh (or no
 inventory was ever received), and the agent responds by uploading. A failed
-upload leaves the request pending, so the next heartbeat retries naturally.
+upload leaves the request pending, so the next heartbeat retries naturally. A
+server sweep (every 15 minutes) raises the same flag for any active device whose
+snapshot is older than `Inventory:RefreshAfterHours` (24 by default), so
+inventory ages out without an administrator having to ask.
 
 ## Error handling
 

@@ -708,12 +708,15 @@ public static class AgentEndpoints
             loggerFactory.CreateLogger("EndpointPlatform.AgentApi.Inventory").LogWarning(
                 "Inventory from {Hostname} ({DeviceId}) was refused: {Reason} "
                 + "Counts: nics={Nics} disks={Disks} software={Software} services={Services} "
-                + "processes={Processes} drivers={Drivers} users={Users} groups={Groups}.",
+                + "processes={Processes} drivers={Drivers} users={Users} groups={Groups} "
+                + "chromeProfiles={ChromeProfiles} chromeExtensions={ChromeExtensions}.",
                 authentication.Device!.Hostname, authentication.Device!.Id, validationError,
                 report.NetworkInterfaces?.Count, report.Hardware?.Disks?.Count,
                 report.Software?.Count, report.Services?.Count, report.Processes?.Count,
                 report.Drivers?.Count, report.LocalAccounts?.Users?.Count,
-                report.LocalAccounts?.Groups?.Count);
+                report.LocalAccounts?.Groups?.Count,
+                report.Chrome?.Profiles?.Count,
+                report.Chrome?.Profiles?.Sum(p => p?.Extensions?.Count ?? 0));
 
             return Results.Problem(title: validationError, statusCode: StatusCodes.Status400BadRequest);
         }
@@ -960,6 +963,85 @@ public static class AgentEndpoints
                         || (member.Sid is { } sid && !IsValidSid(sid)))
                     {
                         return "A group member entry is malformed.";
+                    }
+                }
+            }
+        }
+
+        if (report.Chrome is { } chrome)
+        {
+            // The status decides whether the profile list replaces the stored one,
+            // so an unrecognised value is refused outright rather than guessed at:
+            // reading it as "complete" would let a malformed report empty a
+            // device's record.
+            if (chrome.Status is null || !InventoryChrome.Statuses.Contains(chrome.Status))
+            {
+                return "Chrome status is not recognised.";
+            }
+
+            if (chrome.Profiles?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxChromeProfiles))
+            {
+                return "Too many Chrome profiles.";
+            }
+
+            // The version is the one field the contract requires of an installation
+            // entry, and the agent honours that: an installation it could not read
+            // a version for is reported as "Available" with no entry at all (which
+            // is accepted and stored as not installed). An entry that is present
+            // but names no version is therefore malformed, not incomplete, and is
+            // refused as a software entry without a name is.
+            if (chrome.Installation is { } installation
+                && (string.IsNullOrWhiteSpace(installation.Version)
+                    || installation.Version.Length > InventoryChromeInstallation.MaxVersion
+                    || installation.ExecutablePath is { Length: > InventoryChromeInstallation.MaxExecutablePath }
+                    || installation.Architecture is { Length: > InventoryChromeInstallation.MaxArchitecture }
+                    || installation.Channel is { Length: > InventoryChromeInstallation.MaxChannel }
+                    || installation.InstallationScope is null
+                    || !InventoryChromeInstallation.InstallationScopes.Contains(installation.InstallationScope)
+                    || installation.InstalledForUser is { Length: > InventoryChromeInstallation.MaxInstalledForUser }
+                    || installation.UpdaterVersion is { Length: > InventoryChromeInstallation.MaxUpdaterVersion }))
+            {
+                return "The Chrome installation entry is malformed.";
+            }
+
+            foreach (var profile in chrome.Profiles ?? [])
+            {
+                // The SID and directory name are the profile's identity, so both
+                // must be present and well-formed; the rest is bounded only.
+                if (profile is null
+                    || !IsValidSid(profile.UserSid)
+                    || string.IsNullOrWhiteSpace(profile.ProfileKey)
+                    || profile.ProfileKey.Length > InventoryChromeProfile.MaxProfileKey
+                    || string.IsNullOrWhiteSpace(profile.ProfilePath)
+                    || profile.ProfilePath.Length > InventoryChromeProfile.MaxProfilePath
+                    || profile.UserAccount is { Length: > InventoryChromeProfile.MaxUserAccount }
+                    || profile.ProfileName is { Length: > InventoryChromeProfile.MaxProfileName })
+                {
+                    return "A Chrome profile entry is malformed.";
+                }
+
+                if (profile.Extensions?.Count > RefusalCeiling(Infrastructure.Devices.DeviceInventoryService.MaxChromeExtensionsPerProfile))
+                {
+                    return "A Chrome profile reports too many extensions.";
+                }
+
+                foreach (var extension in profile.Extensions ?? [])
+                {
+                    // The id keys the fleet-wide "which devices have extension X"
+                    // index, so one that is not shaped like Chrome's is refused
+                    // rather than stored unfindable. The install type must be a
+                    // name the contract lists: it is what decides whether the
+                    // console counts the extension at all.
+                    if (extension is null
+                        || !InventoryChromeExtension.IsValidExtensionId(extension.ExtensionId)
+                        || extension.InstallType is null
+                        || !InventoryChromeExtension.InstallTypes.Contains(extension.InstallType)
+                        || extension.Name is { Length: > InventoryChromeExtension.MaxName }
+                        || extension.Version is { Length: > InventoryChromeExtension.MaxVersion }
+                        || extension.UpdateUrl is { Length: > InventoryChromeExtension.MaxUpdateUrl }
+                        || extension.ManifestVersion is < 1 or > 99)
+                    {
+                        return "A Chrome extension entry is malformed.";
                     }
                 }
             }

@@ -63,6 +63,12 @@ public sealed class Program
 
             // Management-plane background jobs run in the Admin host only.
             builder.Services.AddHostedService<EndpointPlatform.Infrastructure.Tasks.TaskExpirySweeper>();
+
+            // Asks devices whose inventory has aged past the configured threshold
+            // for a fresh one, so the Chrome (and every other) section stays a
+            // daily picture without an administrator pressing refresh per device.
+            // Pull-based like every other request: the next heartbeat carries it.
+            builder.Services.AddHostedService<EndpointPlatform.Infrastructure.Devices.InventoryRefreshSweeper>();
             builder.Services
                 .AddHostedService<EndpointPlatform.Infrastructure.Peripherals.UsbGrantExpirySweeper>()
                 .AddHostedService<EndpointPlatform.Infrastructure.Identity.LocalAdminElevationExpirySweeper>();
@@ -255,6 +261,7 @@ public sealed class Program
             app.MapDeploymentEndpoints();
             app.MapSecurityEndpoints();
             app.MapUpdateEndpoints();
+            app.MapChromeEndpoints();
             app.MapReportEndpoints();
             app.MapPolicyEndpoints();
             app.MapGroupEndpoints();

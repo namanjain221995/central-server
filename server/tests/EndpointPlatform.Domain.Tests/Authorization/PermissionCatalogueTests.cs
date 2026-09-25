@@ -82,6 +82,7 @@ public sealed class PermissionCatalogueTests
             Permissions.LocalUser.ChangeType,
             Permissions.Group.Manage,
             Permissions.Software.Deploy,
+            Permissions.Chrome.Manage,
             Permissions.Task.Execute,
             Permissions.Platform.UserManage,
             Permissions.Platform.RoleManage,

@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using EndpointPlatform.Contracts.Agent;
 using EndpointPlatform.Domain.Auditing;
+using EndpointPlatform.Domain.Chrome;
 using EndpointPlatform.Domain.Devices;
 using EndpointPlatform.Infrastructure.Auditing;
 using EndpointPlatform.Infrastructure.Persistence;
@@ -75,6 +76,13 @@ public sealed class DeviceInventoryService(
     public const int MaxUpdateHistory = 200;
     public const int MaxDrivers = 4096;
     public const int MaxBitLockerVolumes = 64;
+
+    /// <summary>
+    /// Chrome caps, pinned to the wire contract rather than restated: the agent
+    /// clamps to the contract's values before sending, so the two cannot drift.
+    /// </summary>
+    public const int MaxChromeProfiles = InventoryChrome.MaxProfiles;
+    public const int MaxChromeExtensionsPerProfile = InventoryChromeProfile.MaxExtensions;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -183,6 +191,11 @@ public sealed class DeviceInventoryService(
         if (report.BitLocker is { } bitLocker)
         {
             await ApplyBitLockerAsync(device, bitLocker, now, cancellationToken);
+        }
+
+        if (report.Chrome is { } chrome)
+        {
+            await ApplyChromeAsync(device, chrome, now, cancellationToken);
         }
 
         device.RecordInventory(report.LoggedOnUser, now);
@@ -470,6 +483,212 @@ public sealed class DeviceInventoryService(
 
         return wellFormed.Length == 0 ? null : string.Join(',', wellFormed);
     }
+
+    /// <summary>
+    /// Upserts the device's Chrome installation row and, when the endpoint's
+    /// enumeration was complete, replaces its profiles and extensions wholesale.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The installation row is applied whatever the status says, for the reason the
+    /// BitLocker availability row is: a device with a <c>NotInstalled</c> row has
+    /// reported and said no, a device with no row has never reported, and the
+    /// console has to tell those two apart.
+    /// </para>
+    /// <para>
+    /// Profiles and extensions are replaced only when the status is not
+    /// <see cref="ChromeReportStatus.Error"/>. Error means the agent's enumeration
+    /// was cut short and the list carries whatever it managed to read; letting that
+    /// fragment replace a complete snapshot would make extensions vanish from the
+    /// console because a profile directory was briefly locked. Same keep-last-known
+    /// rule as BitLocker volumes. <c>NotInstalled</c> is a complete answer and
+    /// replaces the profiles with whatever was sent: Chrome's uninstaller leaves
+    /// <c>User Data</c> behind, so leftover profiles are still fact, and an empty
+    /// list means that data is gone too.
+    /// </para>
+    /// <para>
+    /// Not audited. Inventory is re-reported every cycle, and a row per upload
+    /// would bury the events an auditor is looking for under thousands of
+    /// identical ones.
+    /// </para>
+    /// </remarks>
+    private async Task ApplyChromeAsync(
+        Device device,
+        InventoryChrome chrome,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var status = ParseChromeStatus(chrome.Status);
+
+        var installation = await _dbContext.ChromeInstallations
+            .SingleOrDefaultAsync(i => i.DeviceId == device.Id, cancellationToken);
+
+        if (installation is null)
+        {
+            installation = new ChromeInstallation(device.Id);
+            _dbContext.ChromeInstallations.Add(installation);
+        }
+
+        // Truncated to the contract limits before Apply, which throws over them.
+        // The endpoint already refused anything longer, so this is the second
+        // fence rather than the first; it exists so that a value which somehow
+        // gets past the first cannot fail the whole upload.
+        var reported = chrome.Installation;
+
+        installation.Apply(
+            status,
+            Truncate(reported?.Version, InventoryChromeInstallation.MaxVersion),
+            Truncate(reported?.ExecutablePath, InventoryChromeInstallation.MaxExecutablePath),
+            Truncate(reported?.Architecture, InventoryChromeInstallation.MaxArchitecture),
+            Truncate(reported?.Channel, InventoryChromeInstallation.MaxChannel),
+            Truncate(reported?.InstallationScope, InventoryChromeInstallation.MaxInstallationScope),
+            Truncate(reported?.InstalledForUser, InventoryChromeInstallation.MaxInstalledForUser),
+            Truncate(reported?.UpdaterVersion, InventoryChromeInstallation.MaxUpdaterVersion),
+            // Every agent-supplied instant is normalised to UTC before it reaches
+            // the entity: timestamptz takes only offset zero and Npgsql refuses any
+            // other, which would fail the whole upload -- every section, on every
+            // retry -- over a different representation of the same instant.
+            reported?.LastUpdateCheck?.ToUniversalTime(),
+            now);
+
+        // An incomplete enumeration says nothing about what it did not reach, so
+        // the stored profiles stay as last known rather than being replaced by a
+        // fragment -- the BitLocker rule for a query that did not succeed.
+        if (status == ChromeReportStatus.Error)
+        {
+            return;
+        }
+
+        var existingExtensions = await _dbContext.ChromeExtensions
+            .Where(e => e.DeviceId == device.Id)
+            .ToListAsync(cancellationToken);
+        _dbContext.ChromeExtensions.RemoveRange(existingExtensions);
+
+        var existingProfiles = await _dbContext.ChromeProfiles
+            .Where(p => p.DeviceId == device.Id)
+            .ToListAsync(cancellationToken);
+        _dbContext.ChromeProfiles.RemoveRange(existingProfiles);
+
+        // (SID, profile directory) is the profile's identity, so a repeat is a
+        // malformed payload rather than two profiles. Case-insensitive because
+        // NTFS is: "Default" and "default" are one directory.
+        var seenProfiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var profile in chrome.Profiles ?? [])
+        {
+            // The cap counts profiles kept, not entries read, so a duplicate can
+            // never take the slot of a real profile further down the list. The
+            // endpoint has already refused anything past the refusal ceiling, so
+            // the loop itself is bounded.
+            if (seenProfiles.Count >= MaxChromeProfiles)
+            {
+                break;
+            }
+
+            if (profile is null)
+            {
+                continue;
+            }
+
+            var userSid = Truncate(profile.UserSid, InventoryChromeProfile.MaxUserSid);
+            var profileKey = Truncate(profile.ProfileKey, InventoryChromeProfile.MaxProfileKey);
+            var profilePath = Truncate(profile.ProfilePath, InventoryChromeProfile.MaxProfilePath);
+
+            if (userSid is null || profileKey is null || profilePath is null
+                || !seenProfiles.Add($"{userSid}\n{profileKey}"))
+            {
+                continue;
+            }
+
+            var row = new ChromeProfile(
+                device.Id,
+                installation.Id,
+                userSid,
+                Truncate(profile.UserAccount, InventoryChromeProfile.MaxUserAccount),
+                profileKey,
+                Truncate(profile.ProfileName, InventoryChromeProfile.MaxProfileName),
+                profilePath,
+                profile.IsManaged,
+                profile.LastActiveAt?.ToUniversalTime(),
+                now);
+            _dbContext.ChromeProfiles.Add(row);
+
+            // The id is the extension's identity within a profile; first wins,
+            // as for every other duplicate in an inventory upload.
+            var seenExtensions = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var extension in profile.Extensions ?? [])
+            {
+                if (seenExtensions.Count >= MaxChromeExtensionsPerProfile)
+                {
+                    break; // Kept, not read: the same rule as the profile cap.
+                }
+
+                // The id is the one value the fleet-wide extension index is keyed
+                // on, and the constructor refuses a malformed one. Skipping it
+                // here keeps one bad entry from failing the whole upload.
+                if (extension is null
+                    || !ChromeExtension.IsValidExtensionId(extension.ExtensionId)
+                    || !seenExtensions.Add(extension.ExtensionId))
+                {
+                    continue;
+                }
+
+                _dbContext.ChromeExtensions.Add(new ChromeExtension(
+                    device.Id,
+                    row.Id,
+                    extension.ExtensionId,
+                    Truncate(extension.Name, InventoryChromeExtension.MaxName),
+                    Truncate(extension.Version, InventoryChromeExtension.MaxVersion),
+                    // Chrome has shipped manifest versions 1 to 3; anything outside
+                    // 1..99 did not come from Chrome, and unknown is the honest
+                    // value for a number we do not believe.
+                    extension.ManifestVersion is >= 1 and <= 99 ? extension.ManifestVersion : null,
+                    extension.Enabled,
+                    ParseInstallType(extension.InstallType),
+                    extension.IsManaged,
+                    extension.FromWebStore,
+                    Truncate(extension.UpdateUrl, InventoryChromeExtension.MaxUpdateUrl),
+                    extension.InstalledAt?.ToUniversalTime(),
+                    extension.UpdatedAt?.ToUniversalTime(),
+                    now));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Maps the reported Chrome status onto the enum, defaulting to
+    /// <see cref="ChromeReportStatus.Error"/>.
+    /// </summary>
+    /// <remarks>
+    /// The endpoint refuses anything outside the contract's set, so this only
+    /// matters for a value that somehow gets past it. Error is the safe default for
+    /// the reason Unknown is for BitLocker: it is the one status that leaves the
+    /// last known profiles alone, so a value we cannot read never empties a
+    /// device's record and never has an unverified list trusted.
+    /// </remarks>
+    private static ChromeReportStatus ParseChromeStatus(string? status) =>
+        status is not null
+        && InventoryChrome.Statuses.Contains(status)
+        && Enum.TryParse<ChromeReportStatus>(status, ignoreCase: false, out var parsed)
+            ? parsed
+            : ChromeReportStatus.Error;
+
+    /// <summary>
+    /// Maps Chrome's install-type name onto the enum, defaulting to
+    /// <see cref="ChromeExtensionInstallType.Unknown"/>.
+    /// </summary>
+    /// <remarks>
+    /// Checked against the contract's name set before parsing, because
+    /// <c>Enum.TryParse</c> also accepts a numeric string and a payload must not
+    /// be able to pick an install type by number.
+    /// </remarks>
+    private static ChromeExtensionInstallType ParseInstallType(string? installType) =>
+        installType is not null
+        && InventoryChromeExtension.InstallTypes.Contains(installType)
+        && Enum.TryParse<ChromeExtensionInstallType>(installType, ignoreCase: false, out var parsed)
+            ? parsed
+            : ChromeExtensionInstallType.Unknown;
 
     private async Task ApplyDriversAsync(
         Device device,

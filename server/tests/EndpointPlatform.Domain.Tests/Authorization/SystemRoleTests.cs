@@ -94,6 +94,10 @@ public sealed class SystemRoleTests
     // half of every "my drive isn't showing up" call. Opening a data path off
     // an endpoint is a security decision and stays with IT Administrator.
     [InlineData(Permissions.Usb.Manage)]
+    // Helpdesk can see which extension is in which browser, because that is how
+    // "Chrome is broken" calls get diagnosed. Removing or forcing one reaches
+    // into every user's web session and stays with IT Administrator.
+    [InlineData(Permissions.Chrome.Manage)]
     [InlineData(Permissions.Platform.UserManage)]
     [InlineData(Permissions.Platform.RoleManage)]
     [InlineData(Permissions.Platform.SettingsManage)]
@@ -126,7 +130,51 @@ public sealed class SystemRoleTests
         itAdmin.ShouldContain(Permissions.LocalUser.ChangeType);
         itAdmin.ShouldContain(Permissions.Group.Manage);
         itAdmin.ShouldContain(Permissions.Software.Deploy);
+        itAdmin.ShouldContain(Permissions.Chrome.Manage);
         itAdmin.ShouldContain(Permissions.Task.Execute);
+    }
+
+    /// <summary>
+    /// Reading the Chrome inventory is diagnosis, so every operational role holds
+    /// it; changing what Chrome runs reaches into every user's browser session, so
+    /// only the roles trusted to change the estate hold that.
+    /// </summary>
+    /// <remarks>
+    /// The last assertion is the one that matters over time: it fails the moment
+    /// somebody adds a chrome permission without deciding, here, which roles hold
+    /// it, rather than letting it inherit a default.
+    /// </remarks>
+    [Fact]
+    public void Chrome_visibility_is_read_only_and_management_stays_with_administrators()
+    {
+        var catalogue = Permissions.All.ToDictionary(p => p.Key, StringComparer.Ordinal);
+
+        catalogue[Permissions.Chrome.View].HighRisk.ShouldBeFalse();
+        catalogue[Permissions.Chrome.Manage].HighRisk.ShouldBeTrue();
+
+        foreach (var role in new[]
+                 {
+                     SystemRoles.SuperAdministrator, SystemRoles.ItAdministrator,
+                     SystemRoles.Helpdesk, SystemRoles.Auditor,
+                 })
+        {
+            SystemRoles.All[role].PermissionKeys.ShouldContain(
+                Permissions.Chrome.View, $"Role '{role}' should be able to see the Chrome inventory.");
+        }
+
+        var holders = SystemRoles.All
+            .Where(r => r.Value.PermissionKeys.Contains(Permissions.Chrome.Manage, StringComparer.Ordinal))
+            .Select(r => r.Key)
+            .ToArray();
+
+        holders.ShouldBe([SystemRoles.SuperAdministrator, SystemRoles.ItAdministrator], ignoreOrder: true);
+
+        Permissions.AllKeys
+            .Where(k => k.StartsWith("chrome.", StringComparison.Ordinal))
+            .ShouldBe(
+                [Permissions.Chrome.View, Permissions.Chrome.Manage],
+                ignoreOrder: true,
+                customMessage: "a Chrome permission was added without deciding which roles hold it");
     }
 
     /// <summary>

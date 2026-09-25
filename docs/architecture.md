@@ -509,3 +509,16 @@ are reverted automatically.
   restart countdown; the service starts that notifier for users already signed in
   when it starts, through one pinned `CreateProcessAsUser` call site (ADR-0005
   amendment). See [device-groups.md](device-groups.md).
+- **Chrome Management (phases 2–3): complete.** Read-only discovery of the
+  Chrome installation, every local user's profiles and each profile's extensions
+  on the agent — registry and the files Chrome owns, nothing written, nothing
+  launched, no Google account field carried; server ingestion with the inventory
+  snapshot (one installation row per device, profiles and extensions replaced
+  wholesale, last known kept when the agent reports `Error`); a read-only Admin
+  API under `chrome.view` (fleet overview, per-group device table resolved with
+  the Groups page's own membership rule, device detail, per-profile extensions);
+  and a daily inventory refresh sweep that asks any device whose snapshot is
+  older than `Inventory:RefreshAfterHours` for a new one. Update availability is
+  reported as unknown, not zero, until the update reference exists. Enforcement,
+  updates and packages are later phases. See
+  [chrome-management.md](chrome-management.md).

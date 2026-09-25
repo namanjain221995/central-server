@@ -136,6 +136,28 @@ public static class Permissions
         public const string Deploy = "software.deploy";
     }
 
+    /// <summary>
+    /// Google Chrome on managed endpoints: the installation, its profiles and their
+    /// extensions. Split from <see cref="Software"/> because a browser extension is
+    /// a different kind of risk from an installed application -- it runs inside the
+    /// session that holds the user's web credentials -- and the people who read the
+    /// extension inventory are not necessarily the people who deploy packages.
+    /// </summary>
+    public static class Chrome
+    {
+        /// <summary>See Chrome installations, profiles and extensions. Reading only.</summary>
+        public const string View = "chrome.view";
+
+        /// <summary>
+        /// Change what Chrome runs on a device: remove or block extensions, force
+        /// an update. High risk because it reaches into every user's browser
+        /// session on the machine. Nothing behind it exists yet; the permission is
+        /// declared now so the role decision is made once, deliberately, rather
+        /// than inherited by whichever phase first needs it.
+        /// </summary>
+        public const string Manage = "chrome.manage";
+    }
+
     public static class Policy
     {
         public const string View = "policy.view";
@@ -208,6 +230,9 @@ public static class Permissions
 
         new(Software.View, "Software", "View software inventory", HighRisk: false),
         new(Software.Deploy, "Software", "Deploy approved software packages", HighRisk: true),
+
+        new(Chrome.View, "Chrome", "View Chrome installations, profiles and extensions", HighRisk: false),
+        new(Chrome.Manage, "Chrome", "Manage Chrome extensions and updates on devices", HighRisk: true),
 
         new(Policy.View, "Policies", "View policies and compliance results", HighRisk: false),
         new(Policy.Create, "Policies", "Create and version policies", HighRisk: false),

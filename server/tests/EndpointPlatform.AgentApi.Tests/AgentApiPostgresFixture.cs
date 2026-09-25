@@ -106,6 +106,14 @@ public sealed class AgentApiPostgresFixture : IAsyncLifetime
             builder.UseSetting("Redis:ConnectionString", "127.0.0.1:1,abortConnect=false,connectTimeout=100");
             builder.UseSetting("Redis:InstanceName", "endpointplatform:agentapitest:");
 
+            // The enrolment endpoints are rate-limited per source address (120 a
+            // minute in production). Every test here enrols its own device from the
+            // one loopback address the test server sees, and the whole suite runs
+            // in well under a minute, so the production limit throttles the LATER
+            // suites of a run with 429s that have nothing to do with what they
+            // test. Raised for the test host only; the limiter itself is unchanged.
+            builder.UseSetting("AgentServer:EnrollmentRequestsPerMinutePerAddress", "100000");
+
             // The PUBLIC half only, which is the whole point: the Agent API is
             // given the key endpoints seal to and nothing that could open what
             // they send. AgentApiKeyBoundaryGuard fails this host at startup if a

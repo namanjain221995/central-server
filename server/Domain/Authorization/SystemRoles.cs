@@ -79,6 +79,12 @@ public static class SystemRoles
         Permissions.Group.Manage,
         Permissions.Software.View,
         Permissions.Software.Deploy,
+        Permissions.Chrome.View,
+        // Deliberately not granted to Helpdesk. Removing or forcing a browser
+        // extension reaches into every user's signed-in web session on the
+        // machine, which is a change-control decision rather than a support
+        // action -- and Helpdesk can already see the extension and escalate it.
+        Permissions.Chrome.Manage,
         Permissions.Policy.View,
         Permissions.Policy.Create,
         Permissions.Policy.Assign,
@@ -115,6 +121,10 @@ public static class SystemRoles
         Permissions.LocalUser.ForcePasswordChange,
         Permissions.Group.View,
         Permissions.Software.View,
+        // "Which extension broke the browser" is a first-line question, and the
+        // permission grants nothing but reading. Changing what Chrome runs is
+        // chrome.manage, which Helpdesk does not hold.
+        Permissions.Chrome.View,
         Permissions.Policy.View,
         Permissions.Task.View,
     ];
@@ -131,6 +141,10 @@ public static class SystemRoles
         Permissions.LocalUser.View,
         Permissions.Group.View,
         Permissions.Software.View,
+        // Read-only, like everything else Auditor holds: which extensions are on
+        // which machines is exactly the kind of fact an audit asks for.
+        // chrome.manage is deliberately absent, as every mutating permission is.
+        Permissions.Chrome.View,
         Permissions.Policy.View,
         Permissions.Task.View,
         Permissions.Audit.View,

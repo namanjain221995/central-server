@@ -30,6 +30,7 @@ public sealed class RbacEnforcementTests(AdminApiPostgresFixture fixture)
     [InlineData("/admin/v1/devices/counts")]
     [InlineData("/admin/v1/enrollment-tokens")]
     [InlineData("/admin/v1/auth/me")]
+    [InlineData("/admin/v1/chrome/overview")]
     public async Task An_unauthenticated_caller_cannot_reach_any_privileged_endpoint(string path)
     {
         using var client = _fixture.Factory.CreateClient();

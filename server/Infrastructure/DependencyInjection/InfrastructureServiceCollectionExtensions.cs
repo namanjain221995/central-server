@@ -84,6 +84,14 @@ public static class InfrastructureServiceCollectionExtensions
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // How old an inventory may get before the refresh sweep asks for a new
+        // one. Validated on start so an out-of-range value fails the host rather
+        // than silently disabling the sweep or hammering the fleet.
+        services.AddOptions<Devices.InventoryRefreshOptions>()
+            .Bind(configuration.GetSection(Devices.InventoryRefreshOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<Software.PackageStorageOptions>()
             .Bind(configuration.GetSection(Software.PackageStorageOptions.SectionName))
             .ValidateDataAnnotations()
@@ -177,6 +185,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Enrollment.AgentAuthenticationService>();
         services.AddScoped<Devices.DeviceReadService>();
         services.AddScoped<Devices.DeviceInventoryService>();
+        services.AddScoped<Devices.InventoryRefreshSweepService>();
         services.AddScoped<Tasks.DeviceTaskService>();
         services.AddScoped<Policies.PolicyService>();
         services.AddScoped<Groups.DeviceGroupService>();
@@ -184,6 +193,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Devices.SoftwareReadService>();
         services.AddScoped<Devices.SecurityReadService>();
         services.AddScoped<Devices.UpdateReadService>();
+        services.AddScoped<Chrome.ChromeReadService>();
         services.AddScoped<Devices.DeviceLifecycleService>();
         services.AddScoped<Reporting.ReportReadService>();
         services.AddScoped<Devices.LocalAccountManagementService>();
