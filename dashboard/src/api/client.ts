@@ -1149,6 +1149,131 @@ export function cancelGroupRestart(groupId: string): Promise<GroupActionResult> 
   return request<GroupActionResult>(groupPath(groupId, '/actions/cancel-restart'), { method: 'POST' })
 }
 
+// ---------------------------------------------------------------------------
+// Chrome Management. Read-only in this phase: every function here reads what
+// the fleet reported. Group membership is the Groups page's -- the server
+// resolves a group's devices with the same rule, so "All Devices" is the
+// built-in group's devices (the ones in no custom group), never the whole fleet.
+
+/** What the agent said about Chrome the last time it reported the section. */
+export type ChromeReportStatus = 'Available' | 'NotInstalled' | 'Error'
+
+export interface ChromeOverview {
+  totalGroups: number
+  totalDevices: number
+  onlineDevices: number
+  /** Devices that have reported the Chrome section at all, whatever it said. */
+  devicesReportingChrome: number
+  devicesWithChrome: number
+  totalProfiles: number
+  /** Without Chrome's own built-in components. */
+  totalExtensions: number
+  /** Null until a Chrome release reference exists (a later phase). Never 0 in its place. */
+  devicesWithUpdatesAvailable: number | null
+}
+
+/** One device in a group's Chrome table. The Chrome fields are null when it has never reported the section. */
+export interface ChromeDeviceRow {
+  deviceId: string
+  hostname: string
+  displayName: string | null
+  isOnline: boolean
+  lastSeenAt: string | null
+  chromeStatus: ChromeReportStatus | null
+  chromeVersion: string | null
+  channel: string | null
+  profileCount: number
+  extensionCount: number
+  /** "Unknown" until the release reference exists; the server never guesses. */
+  updateStatus: string
+  collectedAt: string | null
+}
+
+export interface ChromeGroupDevices {
+  groupId: string
+  groupName: string
+  isBuiltIn: boolean
+  devices: ChromeDeviceRow[]
+}
+
+export interface ChromeInstallationView {
+  status: ChromeReportStatus
+  version: string | null
+  executablePath: string | null
+  architecture: string | null
+  channel: string | null
+  installationScope: string | null
+  installedForUser: string | null
+  updaterVersion: string | null
+  lastUpdateCheck: string | null
+  updateStatus: string
+  collectedAt: string
+}
+
+export interface ChromeProfileRow {
+  profileId: string
+  userSid: string
+  userAccount: string | null
+  profileKey: string
+  profileName: string | null
+  profilePath: string
+  isManaged: boolean | null
+  lastActiveAt: string | null
+  /** Without Chrome's own built-in components. */
+  extensionCount: number
+  managedExtensionCount: number
+  collectedAt: string
+}
+
+export interface ChromeDeviceDetail {
+  deviceId: string
+  hostname: string
+  displayName: string | null
+  isOnline: boolean
+  inventoryRefreshPending: boolean
+  installation: ChromeInstallationView | null
+  profiles: ChromeProfileRow[]
+}
+
+export interface ChromeExtensionRow {
+  /** This platform's row id. `extensionId` is Chrome's identifier. */
+  extensionRowId: string
+  extensionId: string
+  name: string | null
+  version: string | null
+  manifestVersion: number | null
+  enabled: boolean | null
+  installType: string
+  isManaged: boolean
+  isComponent: boolean
+  fromWebStore: boolean | null
+  updateUrl: string | null
+  installedAt: string | null
+  updatedAt: string | null
+}
+
+const chromeDevicePath = (deviceId: string, suffix = '') =>
+  `/admin/v1/devices/${encodeURIComponent(deviceId)}/chrome${suffix}`
+
+export function getChromeOverview(): Promise<ChromeOverview> {
+  return request<ChromeOverview>('/admin/v1/chrome/overview')
+}
+
+/** The group's devices with their Chrome summary. Membership is resolved on the server. */
+export function getChromeGroupDevices(groupId: string, search?: string): Promise<ChromeGroupDevices> {
+  const q = search?.trim()
+  const query = q ? `?q=${encodeURIComponent(q)}` : ''
+  return request<ChromeGroupDevices>(`/admin/v1/chrome/groups/${encodeURIComponent(groupId)}/devices${query}`)
+}
+
+export function getDeviceChrome(deviceId: string): Promise<ChromeDeviceDetail> {
+  return request<ChromeDeviceDetail>(chromeDevicePath(deviceId))
+}
+
+export function getChromeProfileExtensions(deviceId: string, profileId: string): Promise<ChromeExtensionRow[]> {
+  return request<ChromeExtensionRow[]>(chromeDevicePath(deviceId, `/profiles/${encodeURIComponent(profileId)}/extensions`))
+}
+
 export function getDevice(deviceId: string): Promise<DeviceDetail> {
   return request<DeviceDetail>(`/admin/v1/devices/${encodeURIComponent(deviceId)}`)
 }

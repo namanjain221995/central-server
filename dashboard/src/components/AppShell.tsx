@@ -66,6 +66,9 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: '/software', label: 'Software', icon: 'software' },
       { to: '/policies', label: 'Policies', icon: 'policies' },
+      // Its own page rather than a tab under Software: Chrome is managed by
+      // group and by profile, which the software catalogue has no notion of.
+      { to: '/chrome', label: 'Chrome Management', icon: 'chrome' },
       { to: '/updates', label: 'Updates', icon: 'updates' },
       // /agent-releases, not /agent: nginx proxies the /agent/ prefix to the
       // Agent API for enrolled endpoints, so an /agent SPA route breaks on

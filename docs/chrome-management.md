@@ -191,6 +191,42 @@ the Chrome section; it is an inventory mechanism that Chrome relies on.
 An offline device is asked like any other and answers when it returns; the
 request stays pending until it does.
 
+## The console page
+
+**Chrome Management** sits under Configuration in the sidebar (`/chrome`,
+behind `chrome.view`). It is the Groups page's shape with Chrome facts in it:
+
+- Six summary tiles from the overview route. A tile shows an em-dash, not a
+  zero, before the overview has loaded and wherever the server sent `null`
+  ("Devices Outdated", until the release reference exists).
+- The group panel is the existing groups list (`GET /admin/v1/groups`), All
+  Devices first. Selecting a group loads that group's devices from the Chrome
+  group route, re-read every 30 seconds like the Groups page — so a device
+  moved on the Groups page leaves one table and appears in the other on the
+  next read, and never sits in both. The page never decides membership.
+- The device table: Chrome version and channel with the report status
+  (Installed / Not installed / Incomplete report / Not reported), profile and
+  extension counts (components excluded), update status ("Unknown" today),
+  online state, and **Manage**, which opens the device's workspace below the
+  table without leaving the page. Search filters the loaded list by hostname or
+  display name.
+- The workspace has four tabs: **Overview** (the installation facts),
+  **Profiles** (each profile with its extensions beside it), **Extensions** (a
+  profile picker over the same table) and **Updates** (version, channel, the
+  update status and Google Update's own last-check time). Its one action is
+  **Refresh inventory**, the same request the device page makes, shown only to
+  holders of `device.refresh_inventory`.
+
+Profiles are shown for inspection. Chrome's enterprise policy applies to every
+profile on a PC, so whatever enforcement arrives later will be machine-wide;
+the profile list answers "what does each profile have", not "which profile to
+change". Nothing on the page installs, removes or updates anything, because
+nothing on the server does yet.
+
+The page's rules — tile values, status labels and tones, extension ordering,
+search — live in `dashboard/src/pages/chromeView.ts` and are unit-tested; the
+client functions are pinned to their routes by `chromeApiPaths.test.ts`.
+
 ## Later phases — not yet built
 
 None of the following exists in the codebase. They are listed so that the

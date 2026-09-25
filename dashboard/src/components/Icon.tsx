@@ -43,8 +43,18 @@ export type IconName =
   | 'key'
   | 'usb'
   | 'download'
+  | 'chrome'
 
 const PATHS: Record<IconName, ReactNode> = {
+  // A generic browser glyph -- a ring with a hub and three spokes -- not a
+  // trademark rendering.
+  chrome: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="3.5" />
+      <path d="M12 8.5h8.7M9 13.75 4.7 6.3M15 13.75l-4.3 7.45" />
+    </>
+  ),
   dashboard: (
     <>
       <rect x="3" y="3" width="7" height="7" rx="1" />
