@@ -226,7 +226,8 @@ public static class ChromeInventoryNormalizer
                 path,
                 profile.Info.IsManaged,
                 profile.Info.LastActiveAt,
-                NormalizeExtensions(profile.SecurePreferences, profile.Preferences)));
+                NormalizeExtensions(profile.SecurePreferences, profile.Preferences),
+                Clamp(profile.Info.AccountEmail, InventoryChromeProfile.MaxAccountEmail)));
 
             if (kept.Count >= InventoryChrome.MaxProfiles)
             {

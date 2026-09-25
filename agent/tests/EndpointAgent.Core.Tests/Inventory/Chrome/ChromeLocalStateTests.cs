@@ -127,24 +127,41 @@ public sealed class ChromeLocalStateTests
     }
 
     /// <summary>
-    /// The entry names the Google account the profile is signed in to. Its
-    /// e-mail address and its id never reach a record -- the record has no field
-    /// for them, and this pins that none is ever added that carries them under
-    /// another name. The person's name and the account's domain are different:
-    /// Chrome's own profile label is made of them, and so is ours.
+    /// The entry names the Google account the profile is signed in to. Its id
+    /// and its picture never reach a record -- the record has no field for them,
+    /// and this pins that none is ever added that carries them under another
+    /// name. The e-mail address is carried, in its own field and nowhere else,
+    /// because it is what traces a profile to a person.
     /// </summary>
     [Fact]
-    public void The_account_email_and_id_are_never_carried()
+    public void The_account_id_and_picture_are_never_carried_and_the_email_is_carried_once()
     {
         var state = Parse(TwoProfiles).ShouldNotBeNull();
 
+        state.Profiles[0].AccountEmail.ShouldBe("casey.example@example.com");
+        state.Profiles[1].AccountEmail.ShouldBe("casey@example.com");
+        state.Profiles[0].Name.ShouldNotBeNull().ShouldNotContain("@");
+        state.Profiles[1].Name.ShouldNotBeNull().ShouldNotContain("@");
+
         var carried = JsonSerializer.Serialize(state);
 
-        carried.ShouldNotContain("casey.example@example.com");
-        carried.ShouldNotContain("casey@example.com");
-        carried.ShouldNotContain("@");
         carried.ShouldNotContain("100000000000000000001");
         carried.ShouldNotContain("100000000000000000002");
+        carried.ShouldNotContain("Google Profile Picture.png");
+    }
+
+    [Theory]
+    [InlineData("\"user_name\": \"\"", null)]
+    [InlineData("\"user_name\": \"   \"", null)]
+    [InlineData("\"user_name\": 42", null)]
+    [InlineData("\"user_name\": \" someone@example.com \"", "someone@example.com")]
+    public void A_signed_out_or_malformed_account_has_no_email(string userName, string? expected)
+    {
+        var state = Parse(Document($$"""
+            "Default": { "name": "Solo", {{userName}} }
+            """)).ShouldNotBeNull();
+
+        state.Profiles.Single().AccountEmail.ShouldBe(expected);
     }
 
     /// <summary>

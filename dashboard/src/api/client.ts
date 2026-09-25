@@ -1214,6 +1214,8 @@ export interface ChromeProfileRow {
   profileId: string
   userSid: string
   userAccount: string | null
+  /** The Google account signed in to the profile, as Chrome records it; null when none is. */
+  accountEmail: string | null
   profileKey: string
   profileName: string | null
   profilePath: string

@@ -259,20 +259,23 @@ public sealed class InventoryChromeContractTests
     }
 
     /// <summary>
-    /// Local State records the Google account signed in to each profile
-    /// (user_name, gaia_*, hosted_domain). None of that has a place on the wire,
-    /// by construction: the contract has no field for it, so the agent cannot
-    /// carry it by accident and the server has nothing to redact.
+    /// Local State records the Google account signed in to each profile. The
+    /// address is carried, in exactly one field, because administrators trace a
+    /// profile to a person by it; the account id, its picture and the raw
+    /// user_name/gaia_* fields have no place on the wire, by construction, so
+    /// the agent cannot carry them by accident and the server has nothing to
+    /// redact.
     /// </summary>
     [Fact]
-    public void The_profile_carries_no_google_account_field()
+    public void The_profile_carries_the_account_email_and_nothing_else_about_the_account()
     {
         var names = typeof(InventoryChromeProfile).GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Select(p => p.Name)
             .ToArray();
 
-        names.ShouldNotBeEmpty();
-        foreach (var forbidden in new[] { "Email", "Gaia", "UserName", "HostedDomain", "GoogleAccount" })
+        names.ShouldContain(nameof(InventoryChromeProfile.AccountEmail));
+        names.Count(n => n.Contains("Email", StringComparison.OrdinalIgnoreCase)).ShouldBe(1);
+        foreach (var forbidden in new[] { "Gaia", "UserName", "HostedDomain", "GoogleAccount", "Picture" })
         {
             names.ShouldNotContain(n => n.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
         }

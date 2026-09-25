@@ -610,7 +610,8 @@ public sealed class DeviceInventoryService(
                 profilePath,
                 profile.IsManaged,
                 profile.LastActiveAt?.ToUniversalTime(),
-                now);
+                now,
+                Truncate(profile.AccountEmail, InventoryChromeProfile.MaxAccountEmail));
             _dbContext.ChromeProfiles.Add(row);
 
             // The id is the extension's identity within a profile; first wins,

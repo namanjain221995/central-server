@@ -322,6 +322,7 @@ function ProfileList({
             {profileTitle(p)}
             {p.isManaged && <span className="muted" style={{ fontWeight: 400 }}> · managed</span>}
           </div>
+          {p.accountEmail && <div className="list-item-sub">{p.accountEmail}</div>}
           <div className="list-item-sub">
             {profileSubtitle(p)} · {countLabel(p.extensionCount, 'extension')}
           </div>
@@ -365,6 +366,7 @@ function ProfilesTab({
               <div>
                 <h2 style={{ margin: 0 }}>Extensions — {profileTitle(selectedProfile)}</h2>
                 <div className="muted">
+                  {selectedProfile.accountEmail && <>{selectedProfile.accountEmail} · </>}
                   {profileSubtitle(selectedProfile)} · last active {formatDate(selectedProfile.lastActiveAt)}
                 </div>
               </div>
@@ -415,7 +417,7 @@ function ExtensionsTab({
         >
           {detail.profiles.map((p) => (
             <option key={p.profileId} value={p.profileId}>
-              {profileTitle(p)} — {p.userAccount ?? p.userSid}
+              {profileTitle(p)} — {p.accountEmail ?? p.userAccount ?? p.userSid}
             </option>
           ))}
         </select>

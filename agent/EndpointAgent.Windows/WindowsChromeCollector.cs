@@ -44,10 +44,11 @@ namespace EndpointAgent.Windows;
 /// Only what Chrome records is carried. Extension names and versions come from
 /// Chrome's own settings, never from the extension's <c>manifest.json</c>, whose
 /// name is an unlocalised <c>__MSG_*__</c> placeholder. Of the Google account
-/// fields Chrome keeps beside each profile, only the person's name and the
-/// account's domain are read -- Chrome builds the profile label from them --
-/// and the e-mail address (<c>user_name</c>), account id and picture never are:
-/// the parser in Core does not expose them and this class has no path that could.
+/// fields Chrome keeps beside each profile, the person's name, the account's
+/// domain and its e-mail address are read -- the label is built from the first
+/// two and the address reported beside it -- and the account id and picture
+/// never are: the parser in Core does not expose them and this class has no
+/// path that could.
 /// </para>
 /// <para>
 /// <b>Only inside the user's own profile.</b> The profile root comes from HKLM

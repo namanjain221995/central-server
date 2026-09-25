@@ -1015,7 +1015,8 @@ public static class AgentEndpoints
                     || string.IsNullOrWhiteSpace(profile.ProfilePath)
                     || profile.ProfilePath.Length > InventoryChromeProfile.MaxProfilePath
                     || profile.UserAccount is { Length: > InventoryChromeProfile.MaxUserAccount }
-                    || profile.ProfileName is { Length: > InventoryChromeProfile.MaxProfileName })
+                    || profile.ProfileName is { Length: > InventoryChromeProfile.MaxProfileName }
+                    || profile.AccountEmail is { Length: > InventoryChromeProfile.MaxAccountEmail })
                 {
                     return "A Chrome profile entry is malformed.";
                 }

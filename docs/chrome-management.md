@@ -20,24 +20,26 @@ inventory section (`WindowsChromeCollector`):
 | Channel, architecture, updater version, last update check | The Google Update `Clients` / `ClientState` keys for Chrome's application id. Architecture is the updater's own record, never inferred from the registry view |
 | Executable path | `chrome.exe` under the recorded install location, when it exists and is local |
 | Profiles | Each Windows user's `User Data\Local State` (`profile.info_cache`), reached through the machine's profile list so signed-out users are included — the service's own profile belongs to SYSTEM and holds no one's Chrome |
-| Extensions | Each profile's `Secure Preferences` and `Preferences` (`extensions.settings`), as Chrome records them: name, version, manifest version, enabled state, install type, Web Store origin, update URL, install and update times |
+| Extensions | Each profile's `Secure Preferences` and `Preferences` (`extensions.settings`), as Chrome records them: name, version, manifest version, enabled state, install type, Web Store origin, update URL, install and update times. Records with neither a manifest nor a location are Chrome's bookkeeping (empty leftovers, declined or pending installs), not installed extensions, and are not reported; a record with no enablement key is enabled, which is how current Chrome writes an extension that has never been disabled |
 
 A per-user Chrome counts only when no machine-wide one was found: the report
 carries one installation, and the machine-wide one is the one every account runs.
 
 What is **never** done, structurally rather than by policy:
 
-- **No account e-mail address or id.** Chrome keeps `user_name` (the e-mail),
-  `gaia_id` and a picture beside each profile; the parser does not expose them
-  and the collector has no path that could. What *is* read is what Chrome's own
-  profile menu shows: the person's name (`gaia_given_name`, `gaia_name`) and
-  the account's domain (`hosted_domain`). For a profile signed in to a
+- **No account id or picture.** Chrome keeps `gaia_id` and a picture beside
+  each profile; the parser does not expose them and the collector has no path
+  that could. What *is* read is what an administrator needs: the person's name
+  (`gaia_given_name`, `gaia_name`) and the account's domain (`hosted_domain`),
+  from which the label is composed, and the signed-in account's e-mail address
+  (`user_name`), reported in its own field. For a profile signed in to a
   Workspace account, Chrome stores the **domain** in the profile's `name` field,
   so reporting that field alone labels every managed profile on a PC with the
   same company domain; the label is therefore composed as Chrome composes it —
   the person's own local name if they set one, else "Given name (domain)". A
   profile is *identified* by Windows SID and by its directory name (`Default`,
-  `Profile 1`, …), because labels are renameable.
+  `Profile 1`, …), because labels are renameable. The e-mail address is visible
+  to every holder of `chrome.view`; that is a product decision, recorded here.
 - **No `manifest.json`.** Names and versions come from Chrome's own localised
   record; the on-disk manifest carries an unlocalised `__MSG_*__` placeholder
   and lives in a directory the extension controls.

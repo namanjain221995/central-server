@@ -20,6 +20,7 @@ internal sealed class ChromeProfileConfiguration : IEntityTypeConfiguration<Chro
         // mirrored by the entity's guards.
         builder.Property(p => p.UserSid).HasMaxLength(184).IsRequired();
         builder.Property(p => p.UserAccount).HasMaxLength(256);
+        builder.Property(p => p.AccountEmail).HasMaxLength(256);
         builder.Property(p => p.ProfileKey).HasMaxLength(64).IsRequired();
         builder.Property(p => p.ProfileName).HasMaxLength(256);
         builder.Property(p => p.ProfilePath).HasMaxLength(512).IsRequired();

@@ -18,13 +18,15 @@ namespace EndpointAgent.Core.Inventory.Chrome;
 /// </para>
 /// <para>
 /// Each cache entry also records the Google account the profile is signed in to.
-/// The account's e-mail address (<c>user_name</c>), its id (<c>gaia_id</c>) and
-/// its picture are never carried, and because the reader looks up the few fields
-/// it needs by name rather than walking the entry, they are never even visited.
-/// Nothing here enumerates an entry's properties, and that is deliberate. The
-/// person's name (<c>gaia_given_name</c>, <c>gaia_name</c>) and the account's
-/// domain (<c>hosted_domain</c>) are read, because the profile label Chrome
-/// shows is made from them -- see <see cref="ReadDisplayName"/>.
+/// The account's id (<c>gaia_id</c>) and its picture are never carried, and
+/// because the reader looks up the few fields it needs by name rather than
+/// walking the entry, they are never even visited. Nothing here enumerates an
+/// entry's properties, and that is deliberate. What is read: the person's name
+/// (<c>gaia_given_name</c>, <c>gaia_name</c>) and the account's domain
+/// (<c>hosted_domain</c>), because the profile label Chrome shows is made from
+/// them -- see <see cref="ReadDisplayName"/> -- and the account's e-mail address
+/// (<c>user_name</c>), reported in its own field because it is what an
+/// administrator needs to trace a profile to a person.
 /// </para>
 /// <para>
 /// Pure and platform-neutral: it reads a stream and returns records, so every
@@ -125,7 +127,8 @@ public static class ChromeLocalState
                 entry.Name,
                 ReadDisplayName(entry.Value),
                 ReadFlag(entry.Value, "is_managed"),
-                ReadUnixSeconds(entry.Value, "active_time")));
+                ReadUnixSeconds(entry.Value, "active_time"),
+                ReadString(entry.Value, "user_name")));
         }
 
         return new ChromeLocalStateInfo(profiles, ReadString(profile, "last_used"));
@@ -209,8 +212,8 @@ public static class ChromeLocalState
     /// used as it is. A local name that is the domain (or no name at all) yields
     /// the given name, then the full name, with the domain in parentheses when
     /// Chrome had labelled the profile with it. A profile with no name at all is
-    /// reported without one. Only names are read here; the e-mail address and
-    /// account id beside them are not.
+    /// reported without one. Only names are read here; the e-mail address is
+    /// reported in its own field, and the account id beside it never is.
     /// </para>
     /// </remarks>
     private static string? ReadDisplayName(JsonElement entry)

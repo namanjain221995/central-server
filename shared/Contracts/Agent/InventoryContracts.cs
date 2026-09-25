@@ -124,7 +124,9 @@ public sealed record InventoryChromeInstallation(
 /// A Windows user commonly has several ("Default", "Profile 1", ...), and each
 /// has its own extensions. The Windows user is identified by SID because names
 /// are renameable; the profile by its directory name because the display name
-/// is whatever the person typed. No Google account e-mail address is carried.
+/// is whatever the person typed. The signed-in Google account's e-mail address is
+/// carried in <see cref="AccountEmail"/> -- it is what an administrator needs to
+/// trace a profile to a person -- while the account's id and picture never are.
 /// </remarks>
 /// <param name="UserSid">The Windows account the profile belongs to.</param>
 /// <param name="UserAccount">That account's name (<c>DOMAIN\name</c>), or the SID when it cannot be resolved.</param>
@@ -138,6 +140,11 @@ public sealed record InventoryChromeInstallation(
 /// <param name="IsManaged">Whether Chrome marks the profile as enterprise-managed. Null when unrecorded.</param>
 /// <param name="LastActiveAt">When the profile was last used, as Chrome records it. Null when unrecorded.</param>
 /// <param name="Extensions">Every extension Chrome records for the profile, bounded to <see cref="MaxExtensions"/>.</param>
+/// <param name="AccountEmail">
+/// The Google account signed in to the profile, as Chrome records it
+/// (<c>user_name</c>). Null when the profile is not signed in, and null from
+/// agents older than the field, which sits last so they bind unchanged.
+/// </param>
 public sealed record InventoryChromeProfile(
     string UserSid,
     string? UserAccount,
@@ -146,13 +153,15 @@ public sealed record InventoryChromeProfile(
     string ProfilePath,
     bool? IsManaged,
     DateTimeOffset? LastActiveAt,
-    IReadOnlyList<InventoryChromeExtension> Extensions)
+    IReadOnlyList<InventoryChromeExtension> Extensions,
+    string? AccountEmail = null)
 {
     public const int MaxUserSid = 184;
     public const int MaxUserAccount = 256;
     public const int MaxProfileKey = 64;
     public const int MaxProfileName = 256;
     public const int MaxProfilePath = 512;
+    public const int MaxAccountEmail = 256;
 
     /// <summary>The most extensions one profile carries.</summary>
     public const int MaxExtensions = 256;

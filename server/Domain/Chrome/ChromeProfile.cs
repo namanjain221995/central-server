@@ -44,7 +44,10 @@ public sealed class ChromeProfile : AuditableEntity
         string profilePath,
         bool? isManaged,
         DateTimeOffset? lastActiveAt,
-        DateTimeOffset collectedAt)
+        DateTimeOffset collectedAt,
+        // Last and optional: added after the first rows existed, so every
+        // caller and fixture written before it stays valid.
+        string? accountEmail = null)
     {
         DeviceId = Guard.NotEmpty(deviceId);
         ChromeInstallationId = Guard.NotEmpty(chromeInstallationId);
@@ -53,6 +56,7 @@ public sealed class ChromeProfile : AuditableEntity
         ProfileKey = Guard.NotNullOrWhiteSpace(profileKey, nameof(profileKey), maxLength: 64);
         ProfileName = Guard.OptionalMaxLength(profileName, 256);
         ProfilePath = Guard.NotNullOrWhiteSpace(profilePath, nameof(profilePath), maxLength: 512);
+        AccountEmail = Guard.OptionalMaxLength(accountEmail, 256);
         IsManaged = isManaged;
         LastActiveAt = lastActiveAt;
         CollectedAt = collectedAt;
@@ -67,6 +71,12 @@ public sealed class ChromeProfile : AuditableEntity
 
     /// <summary>That account's name (<c>DOMAIN\name</c>), or the SID when it could not be resolved.</summary>
     public string? UserAccount { get; private set; }
+
+    /// <summary>
+    /// The Google account signed in to the profile, as Chrome records it; null
+    /// when the profile is not signed in or the agent predates the field.
+    /// </summary>
+    public string? AccountEmail { get; private set; }
 
     /// <summary>The profile directory name under <c>User Data</c>: Chrome's stable identity for it.</summary>
     public string ProfileKey { get; private set; }

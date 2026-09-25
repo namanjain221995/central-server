@@ -339,8 +339,14 @@ public sealed class ChromeExtensionSettingsTests
         entry.Enabled.ShouldBe(expected);
     }
 
+    /// <summary>
+    /// Current Chrome creates the disable-reasons list the first time a reason is
+    /// recorded, so an extension that has never been disabled has no enablement
+    /// key at all. Real profiles carry enabled, toolbar-visible extensions in
+    /// exactly this shape; reading them as "unknown" hid their state.
+    /// </summary>
     [Fact]
-    public void A_record_that_says_nothing_about_enablement_is_null()
+    public void A_record_with_no_enablement_key_at_all_is_enabled()
     {
         var entry = Parse(Settings($$"""
             "{{Plain}}": {
@@ -349,7 +355,7 @@ public sealed class ChromeExtensionSettingsTests
             }
             """)).ShouldHaveSingleItem();
 
-        entry.Enabled.ShouldBeNull();
+        entry.Enabled.ShouldBe(true);
     }
 
     /// <summary>
@@ -395,8 +401,28 @@ public sealed class ChromeExtensionSettingsTests
 
     // ---- shape tolerance ---------------------------------------------------------------
 
+    /// <summary>
+    /// Chrome's settings map also holds records that are not installed extensions:
+    /// empty leftovers, and declined or pending external installs, which carry
+    /// neither a manifest nor a location. A real profile had four empty ones,
+    /// which came out as four "(unnamed)" rows. They are not entries.
+    /// </summary>
+    [Theory]
+    [InlineData("{ }")]
+    [InlineData("""{ "ack_external": true }""")]
+    [InlineData("""{ "was_installed_by_default": false, "first_install_time": "13434562575879741" }""")]
+    public void A_record_with_neither_manifest_nor_location_is_bookkeeping_not_an_entry(string record)
+    {
+        var entries = Parse(Settings($$"""
+            "{{Plain}}": {{record}},
+            "ppppoooonnnnmmmmllllkkkkjjjjiiii": { "location": 5, "manifest": { "name": "Genuine", "version": "1.0" } }
+            """));
+
+        entries.ShouldHaveSingleItem().Name.ShouldBe("Genuine");
+    }
+
     [Fact]
-    public void An_entry_without_a_manifest_is_still_an_entry()
+    public void An_entry_with_a_location_but_no_manifest_is_still_an_entry()
     {
         var entry = Parse(Settings($$"""
             "{{Plain}}": {

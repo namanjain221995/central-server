@@ -12,11 +12,13 @@ namespace EndpointAgent.Core.Inventory.Chrome;
 /// <param name="Name">The display name Chrome recorded, or null.</param>
 /// <param name="IsManaged">Chrome's enterprise-managed flag, or null when unrecorded.</param>
 /// <param name="LastActiveAt">When the profile was last used, or null when unrecorded.</param>
+/// <param name="AccountEmail">The Google account signed in to the profile, as Chrome records it; null when none is.</param>
 public sealed record ChromeProfileInfo(
     string ProfileKey,
     string? Name,
     bool? IsManaged,
-    DateTimeOffset? LastActiveAt);
+    DateTimeOffset? LastActiveAt,
+    string? AccountEmail = null);
 
 /// <summary>What <c>Local State</c> says about the profiles of one Chrome installation.</summary>
 /// <param name="Profiles">Every profile in the info cache, in file order.</param>

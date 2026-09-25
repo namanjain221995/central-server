@@ -86,9 +86,9 @@ extensions come from each profile's `Secure Preferences` and `Preferences`, as
 Chrome itself records them. A profile's label is composed the way Chrome's own
 menu composes it — the name the person gave it, or their account's given name
 with the Workspace domain in parentheses when Chrome labelled the profile with
-that domain — and no account e-mail address or id is carried: the parser has no
-path to `user_name` or `gaia_id`. Nothing is read from an extension's own
-directory or its `manifest.json`. Nothing under a profile is ever written and
+that domain — with the signed-in account's e-mail address (`user_name`) in its
+own field; the account id (`gaia_id`) and picture are never carried. Nothing is
+read from an extension's own directory or its `manifest.json`. Nothing under a profile is ever written and
 nothing is launched. `Status` is `Available` (an installation was found),
 `NotInstalled` (none was — leftover `User Data` may still yield profiles, so a
 non-empty profile list never means Chrome is present) or `Error` (enumeration

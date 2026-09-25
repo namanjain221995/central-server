@@ -146,6 +146,17 @@ public static class ChromeExtensionSettings
                 continue;
             }
 
+            // Bookkeeping, not an extension. Chrome writes the manifest and the
+            // location into a record when it installs; a record with neither is
+            // something else the settings map also holds -- an empty leftover, a
+            // declined or still-pending external install -- and chrome://extensions
+            // lists none of them. The first real profile carried four such empty
+            // records, which came out as four "(unnamed)" rows until this check.
+            if (!HasObject(property.Value, "manifest") && Integer(property.Value, "location") is null)
+            {
+                continue;
+            }
+
             entries.Add(ReadEntry(property.Name, property.Value));
         }
 
@@ -159,9 +170,9 @@ public static class ChromeExtensionSettings
         string? updateUrl = null;
         int? manifestVersion = null;
 
-        // An entry without a manifest is still an entry: Chrome has an id, a
-        // location and an install time for it, which is enough to report that it
-        // exists. Name and version are simply unrecorded.
+        // A record with a location but no manifest (an install Chrome has
+        // registered but not yet unpacked) is still an entry: the id and location
+        // say it exists. Name and version are simply unrecorded.
         if (record.TryGetProperty("manifest", out var manifest) && manifest.ValueKind == JsonValueKind.Object)
         {
             name = Text(manifest, "name");
@@ -188,14 +199,18 @@ public static class ChromeExtensionSettings
 
     /// <summary>
     /// Whether Chrome has the extension enabled, from whichever encoding the
-    /// record uses; null when it uses neither.
+    /// record uses. Enabled when the record carries no enablement key at all;
+    /// null when it carries one the reader cannot make sense of.
     /// </summary>
     private static bool? Enabled(JsonElement record)
     {
+        var hasReasons = record.TryGetProperty("disable_reasons", out var reasons);
+        var hasState = record.TryGetProperty("state", out _);
+
         // Current Chrome: a list of reason codes, empty when enabled. The list is
         // the authority whenever it is present, whatever an older "state" left
         // beside it says, because it is what this Chrome consults.
-        if (record.TryGetProperty("disable_reasons", out var reasons) && reasons.ValueKind == JsonValueKind.Array)
+        if (hasReasons && reasons.ValueKind == JsonValueKind.Array)
         {
             return reasons.GetArrayLength() == 0;
         }
@@ -218,13 +233,23 @@ public static class ChromeExtensionSettings
         // changed the value from a bitmask to a list, so a record not yet
         // rewritten by a newer Chrome can still carry the number, where zero
         // means no reason to be disabled.
-        if (reasons.ValueKind == JsonValueKind.Number && reasons.TryGetInt64(out var mask))
+        if (hasReasons && reasons.ValueKind == JsonValueKind.Number && reasons.TryGetInt64(out var mask))
         {
             return mask == 0;
         }
 
-        return null;
+        // No enablement key at all is how current Chrome writes an extension that
+        // has never been disabled: the list is created the first time a reason is
+        // recorded. Real profiles carry enabled, toolbar-visible extensions with
+        // neither key, and reporting them as unknown hid their state. A key that
+        // is present but unreadable is different: that is an answer the reader
+        // cannot trust, so it stays unrecorded.
+        return hasReasons || hasState ? null : true;
     }
+
+    /// <summary>Whether the property is present and is a JSON object.</summary>
+    private static bool HasObject(JsonElement parent, string property) =>
+        parent.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Object;
 
     /// <summary>A string property, trimmed; null when absent, not a string, or blank.</summary>
     private static string? Text(JsonElement parent, string property) =>
