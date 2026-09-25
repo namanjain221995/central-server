@@ -129,7 +129,11 @@ public sealed record InventoryChromeInstallation(
 /// <param name="UserSid">The Windows account the profile belongs to.</param>
 /// <param name="UserAccount">That account's name (<c>DOMAIN\name</c>), or the SID when it cannot be resolved.</param>
 /// <param name="ProfileKey">The profile directory name under <c>User Data</c>: Chrome's stable identity for it.</param>
-/// <param name="ProfileName">The display name Chrome shows for the profile, when recorded.</param>
+/// <param name="ProfileName">
+/// The label Chrome shows for the profile, when recorded: the name the person gave
+/// it, or their account's given name with the Workspace domain in parentheses
+/// when Chrome labelled the profile with that domain. Never an e-mail address.
+/// </param>
 /// <param name="ProfilePath">The profile directory, absolute and local.</param>
 /// <param name="IsManaged">Whether Chrome marks the profile as enterprise-managed. Null when unrecorded.</param>
 /// <param name="LastActiveAt">When the profile was last used, as Chrome records it. Null when unrecorded.</param>

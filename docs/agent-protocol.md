@@ -83,8 +83,11 @@ which view the key was found in). Profiles come from each user's
 `User Data\Local State`, reached through the machine's profile list rather than
 the service's own LocalSystem profile, so signed-out users are covered;
 extensions come from each profile's `Secure Preferences` and `Preferences`, as
-Chrome itself records them. No Google account field is carried — the parser has
-no path to `user_name` or `gaia_*` — and nothing is read from an extension's own
+Chrome itself records them. A profile's label is composed the way Chrome's own
+menu composes it — the name the person gave it, or their account's given name
+with the Workspace domain in parentheses when Chrome labelled the profile with
+that domain — and no account e-mail address or id is carried: the parser has no
+path to `user_name` or `gaia_id`. Nothing is read from an extension's own
 directory or its `manifest.json`. Nothing under a profile is ever written and
 nothing is launched. `Status` is `Available` (an installation was found),
 `NotInstalled` (none was — leftover `User Data` may still yield profiles, so a

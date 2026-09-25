@@ -17,11 +17,14 @@ namespace EndpointAgent.Core.Inventory.Chrome;
 /// Profile"), and Chrome leaves them out of the cache.
 /// </para>
 /// <para>
-/// Each cache entry also records the Google account the profile is signed in to
-/// (<c>user_name</c>, <c>gaia_*</c>, <c>hosted_domain</c>). Those are never
-/// carried, and because the reader looks up the few fields it needs by name
-/// rather than walking the entry, they are never even visited. Nothing here
-/// enumerates an entry's properties, and that is deliberate.
+/// Each cache entry also records the Google account the profile is signed in to.
+/// The account's e-mail address (<c>user_name</c>), its id (<c>gaia_id</c>) and
+/// its picture are never carried, and because the reader looks up the few fields
+/// it needs by name rather than walking the entry, they are never even visited.
+/// Nothing here enumerates an entry's properties, and that is deliberate. The
+/// person's name (<c>gaia_given_name</c>, <c>gaia_name</c>) and the account's
+/// domain (<c>hosted_domain</c>) are read, because the profile label Chrome
+/// shows is made from them -- see <see cref="ReadDisplayName"/>.
 /// </para>
 /// <para>
 /// Pure and platform-neutral: it reads a stream and returns records, so every
@@ -120,7 +123,7 @@ public static class ChromeLocalState
 
             profiles.Add(new ChromeProfileInfo(
                 entry.Name,
-                ReadString(entry.Value, "name"),
+                ReadDisplayName(entry.Value),
                 ReadFlag(entry.Value, "is_managed"),
                 ReadUnixSeconds(entry.Value, "active_time")));
         }
@@ -186,6 +189,57 @@ public static class ChromeLocalState
 
         value = default;
         return false;
+    }
+
+    /// <summary>
+    /// The label Chrome shows for a profile, composed the way Chrome's own
+    /// profile menu composes it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>name</c> is the profile's local name, and for a profile signed in to a
+    /// Google Workspace account Chrome sets it to the account's <b>domain</b>
+    /// ("example.com"), not to anything about the person. Reporting that field
+    /// alone therefore labelled every managed profile on a PC with the same
+    /// company domain -- exactly what a console must not do -- while Chrome's
+    /// menu shows "Casey (example.com)", built from the account's given name.
+    /// </para>
+    /// <para>
+    /// So: a local name that is not the domain is the person's own choice and is
+    /// used as it is. A local name that is the domain (or no name at all) yields
+    /// the given name, then the full name, with the domain in parentheses when
+    /// Chrome had labelled the profile with it. A profile with no name at all is
+    /// reported without one. Only names are read here; the e-mail address and
+    /// account id beside them are not.
+    /// </para>
+    /// </remarks>
+    private static string? ReadDisplayName(JsonElement entry)
+    {
+        var localName = ReadString(entry, "name");
+        var domain = ReadString(entry, "hosted_domain");
+
+        // Chrome's marker for a consumer account; not a domain anyone chose.
+        if (string.Equals(domain, "NO_HOSTED_DOMAIN", StringComparison.OrdinalIgnoreCase))
+        {
+            domain = null;
+        }
+
+        var labelledWithDomain = localName is not null
+            && domain is not null
+            && string.Equals(localName, domain, StringComparison.OrdinalIgnoreCase);
+
+        if (localName is not null && !labelledWithDomain)
+        {
+            return localName;
+        }
+
+        var person = ReadString(entry, "gaia_given_name") ?? ReadString(entry, "gaia_name");
+        if (person is null)
+        {
+            return localName;
+        }
+
+        return labelledWithDomain ? $"{person} ({domain})" : person;
     }
 
     /// <summary>A string field; null when absent, not a string, or blank, because a blank name is no name.</summary>

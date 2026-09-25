@@ -127,21 +127,63 @@ public sealed class ChromeLocalStateTests
     }
 
     /// <summary>
-    /// The entry names the Google account the profile is signed in to. Nothing
-    /// of it may reach a record: the record has no field for it, and this pins
-    /// that no field is ever added that carries it under another name.
+    /// The entry names the Google account the profile is signed in to. Its
+    /// e-mail address and its id never reach a record -- the record has no field
+    /// for them, and this pins that none is ever added that carries them under
+    /// another name. The person's name and the account's domain are different:
+    /// Chrome's own profile label is made of them, and so is ours.
     /// </summary>
     [Fact]
-    public void Nothing_about_the_google_account_is_carried()
+    public void The_account_email_and_id_are_never_carried()
     {
         var state = Parse(TwoProfiles).ShouldNotBeNull();
 
         var carried = JsonSerializer.Serialize(state);
 
-        carried.ShouldNotContain("example.com");
-        carried.ShouldNotContain("Casey Example");
+        carried.ShouldNotContain("casey.example@example.com");
+        carried.ShouldNotContain("casey@example.com");
+        carried.ShouldNotContain("@");
         carried.ShouldNotContain("100000000000000000001");
         carried.ShouldNotContain("100000000000000000002");
+    }
+
+    /// <summary>
+    /// The label is composed the way Chrome's menu composes it. The case that
+    /// matters most is the managed one: for a Workspace-signed-in profile Chrome
+    /// writes the DOMAIN into <c>name</c>, so reading that field alone labelled
+    /// every managed profile on a PC "example.com" -- the person's given name is
+    /// what tells them apart, and Chrome shows it with the domain in brackets.
+    /// </summary>
+    [Theory]
+    // A name the person chose is theirs, domain or not.
+    [InlineData(""" "name": "Work", "gaia_given_name": "Casey", "hosted_domain": "example.com" """, "Work")]
+    [InlineData(""" "name": "Casey", "gaia_given_name": "Casey", "hosted_domain": "NO_HOSTED_DOMAIN" """, "Casey")]
+    // Chrome labelled the profile with the account's domain: the person, then the domain.
+    [InlineData(""" "name": "example.com", "gaia_given_name": "Casey", "gaia_name": "Casey Example", "hosted_domain": "example.com" """, "Casey (example.com)")]
+    [InlineData(""" "name": "Example.COM", "gaia_given_name": "Casey", "hosted_domain": "example.com" """, "Casey (example.com)")]
+    [InlineData(""" "name": "example.com", "gaia_name": "Casey Example", "hosted_domain": "example.com" """, "Casey Example (example.com)")]
+    // Domain-labelled but no person's name recorded: the domain is all there is.
+    [InlineData(""" "name": "example.com", "hosted_domain": "example.com" """, "example.com")]
+    // No local name at all: the person's name stands alone.
+    [InlineData(""" "gaia_given_name": "Casey", "hosted_domain": "example.com" """, "Casey")]
+    [InlineData(""" "name": "   ", "gaia_name": "Casey Example" """, "Casey Example")]
+    // A consumer account's marker is not a domain.
+    [InlineData(""" "name": "NO_HOSTED_DOMAIN", "gaia_given_name": "Casey", "hosted_domain": "NO_HOSTED_DOMAIN" """, "NO_HOSTED_DOMAIN")]
+    public void The_profile_label_is_composed_as_chrome_composes_it(string fields, string expected)
+    {
+        var state = Parse(Document($$"""
+            "Default": { {{fields}}, "user_name": "casey@example.com", "gaia_id": "100000000000000000009" }
+            """)).ShouldNotBeNull();
+
+        state.Profiles.Single().Name.ShouldBe(expected);
+    }
+
+    [Fact]
+    public void A_profile_with_no_name_of_any_kind_is_reported_without_one()
+    {
+        var state = Parse(Document(""" "Default": { "is_managed": 0 } """)).ShouldNotBeNull();
+
+        state.Profiles.Single().Name.ShouldBeNull();
     }
 
     /// <summary>

@@ -27,11 +27,17 @@ carries one installation, and the machine-wide one is the one every account runs
 
 What is **never** done, structurally rather than by policy:
 
-- **No Google account field.** Chrome keeps `user_name` and `gaia_*` beside each
-  profile; the parser does not expose them and the collector has no path that
-  could. A profile is identified by Windows SID and by its directory name
-  (`Default`, `Profile 1`, …), because account names and display names are both
-  renameable.
+- **No account e-mail address or id.** Chrome keeps `user_name` (the e-mail),
+  `gaia_id` and a picture beside each profile; the parser does not expose them
+  and the collector has no path that could. What *is* read is what Chrome's own
+  profile menu shows: the person's name (`gaia_given_name`, `gaia_name`) and
+  the account's domain (`hosted_domain`). For a profile signed in to a
+  Workspace account, Chrome stores the **domain** in the profile's `name` field,
+  so reporting that field alone labels every managed profile on a PC with the
+  same company domain; the label is therefore composed as Chrome composes it —
+  the person's own local name if they set one, else "Given name (domain)". A
+  profile is *identified* by Windows SID and by its directory name (`Default`,
+  `Profile 1`, …), because labels are renameable.
 - **No `manifest.json`.** Names and versions come from Chrome's own localised
   record; the on-disk manifest carries an unlocalised `__MSG_*__` placeholder
   and lives in a directory the extension controls.
