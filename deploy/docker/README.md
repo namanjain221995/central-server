@@ -109,7 +109,7 @@ has run on it. A name with a Let's Encrypt certificate needs nothing on any PC.
 sudo ./generate-env.sh https://epp.example.com   # records the old origin as LAN_ORIGIN
 printf 'dns_cloudflare_api_token = %s
 ' '<token>' > cloudflare.ini && chmod 600 cloudflare.ini
-sudo ./issue-certificate.sh
+./issue-certificate.sh                          # as the owner of .env: needs docker, not root
 ```
 
 `issue-certificate.sh` creates `epp.example.com  A  <LAN address>` with

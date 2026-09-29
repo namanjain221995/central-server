@@ -150,6 +150,9 @@ if [ -f "$env_file" ]; then
         grep -vE '^(PUBLIC_ORIGIN|SERVER_NAME)=' "$env_file" > "$tmp" || true
         printf 'PUBLIC_ORIGIN=%s\nSERVER_NAME=%s\n' "$origin" "$host" >> "$tmp"
         chmod 600 "$tmp"
+        # Keep the original owner: via sudo the replacement would otherwise be
+        # root-owned, and compose run as the operator could no longer read it.
+        chown --reference="$env_file" "$tmp" 2>/dev/null || true
         mv "$tmp" "$env_file"
     fi
 else

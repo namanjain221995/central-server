@@ -3,7 +3,7 @@
 # Gives the public name a publicly trusted certificate, and points the name at
 # this host - with Cloudflare as DNS ONLY.
 #
-#   sudo ./issue-certificate.sh
+#   ./issue-certificate.sh        # as the account that owns .env; it needs docker, not root
 #
 # Reads everything from .env (SERVER_NAME, LAN_ORIGIN) and the Cloudflare API
 # token from cloudflare.ini next to this script:
@@ -63,6 +63,10 @@ set_env() {
     grep -vE "^${key}=" "$env_file" > "$tmp" || true
     printf '%s=%s\n' "$key" "$value" >> "$tmp"
     chmod 600 "$tmp"
+    # Keep the ORIGINAL owner. Written by root (sudo), the replacement would be
+    # root:root 0600, and every later `docker compose` run as the operator
+    # account would fail to read .env.
+    chown --reference="$env_file" "$tmp" 2>/dev/null || true
     mv "$tmp" "$env_file"
 }
 
