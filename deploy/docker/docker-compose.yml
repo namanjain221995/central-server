@@ -121,6 +121,12 @@ services:
       ENDPOINTPLATFORM_Redis__ConnectionString: "redis:6379,password=${REDIS_PASSWORD}"
       ENDPOINTPLATFORM_SecretProtection__Key: ${SECRET_PROTECTION_KEY:?}
       ENDPOINTPLATFORM_Cors__AllowedOrigins__0: ${PUBLIC_ORIGIN:?}
+      # The LAN address, when the public name is a different host. A browser on
+      # https://<lan-address> sends that as its Origin, and without it here the
+      # dashboard answers "Admin API unreachable" on the address that has always
+      # worked. Falls back to PUBLIC_ORIGIN, since a duplicate entry is harmless
+      # and an empty one is not.
+      ENDPOINTPLATFORM_Cors__AllowedOrigins__1: ${LAN_ORIGIN:-${PUBLIC_ORIGIN}}
       ENDPOINTPLATFORM_PackageStorage__Directory: /var/lib/endpoint-platform/packages
       ENDPOINTPLATFORM_AgentReleases__TrustMode: ${AGENT_RELEASE_TRUST_MODE:-Internal}
       ENDPOINTPLATFORM_RecoveryEscrow__Key: ${RECOVERY_ESCROW_KEY:?}
@@ -193,17 +199,56 @@ services:
     <<: *restart
     environment:
       SERVER_NAME: ${SERVER_NAME:-_}
+      # Which certificate the PUBLIC name is served with. Unset means the local-CA
+      # pair; issue-certificate.sh sets both to the Let's Encrypt files once it has
+      # them. The LAN address always keeps the local-CA pair - see the template.
+      TLS_CERT: ${TLS_CERT:-/etc/nginx/tls/server.crt}
+      TLS_KEY: ${TLS_KEY:-/etc/nginx/tls/server.key}
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"
     volumes:
       - ./tls:/etc/nginx/tls:ro
+      # Created by the certbot service. Mounted whole, not just live/, because
+      # live/ holds symlinks into archive/ that must resolve inside this
+      # container too.
+      - ./letsencrypt:/etc/letsencrypt:ro
     depends_on:
       admin-api:
         condition: service_healthy
       agent-api:
         condition: service_healthy
     networks: [backend]
+
+  # --- publicly trusted certificate -----------------------------------------
+
+  # Obtains and renews a Let's Encrypt certificate for the public name by DNS-01:
+  # it proves control of the NAME by writing a TXT record through Cloudflare's
+  # API, so this host needs no inbound connectivity at all - which is the only
+  # way a machine on a private LAN can hold a publicly trusted certificate.
+  #
+  # Cloudflare here is DNS ONLY. The A record is grey-cloud (proxied:false), so
+  # traffic never passes through Cloudflare and TLS stays end to end. See
+  # CLAUDE.md: recovery keys and session tokens must never be decrypted at a
+  # third party's edge.
+  #
+  # Only runs with COMPOSE_PROFILES=letsencrypt, which issue-certificate.sh sets
+  # once the first certificate exists. The API token is a scoped Zone:DNS:Edit
+  # token in cloudflare.ini (0600, git-ignored) - never a tunnel token.
+  certbot:
+    image: certbot/dns-cloudflare:${CERTBOT_TAG:-latest}
+    profiles: [letsencrypt]
+    <<: *restart
+    # `certbot renew` is a no-op until a certificate is inside its renewal
+    # window, and it reuses the settings recorded at issuance. Twice a day is
+    # Let's Encrypt's own recommendation. The trap makes `docker stop` prompt
+    # instead of waiting out a twelve-hour sleep.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done
+    volumes:
+      - ./letsencrypt:/etc/letsencrypt
+      - ./cloudflare.ini:/run/secrets/cloudflare.ini:ro
 
   # --- database console -----------------------------------------------------
 

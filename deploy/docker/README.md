@@ -21,7 +21,7 @@ one — two live paths is how the wrong one gets deployed.
 
 ```bash
 cd deploy/docker
-sudo ./deploy.sh https://192.168.8.96      # or https://epp.example.com
+sudo ./deploy.sh https://<lan-address>     # or https://epp.example.com
 sudo ./bootstrap-admin.sh you@example.com --generate
 ```
 
@@ -98,6 +98,51 @@ recovery passwords to it, and only the Admin API, holding the private half, can
 open them. `generate-env.sh` creates that pair once; a device enrolled before
 the pair existed has to re-enrol to take part.
 
+## A public name with a trusted certificate
+
+The self-signed certificate is the fallback, not the goal. A **Release** build of
+the Windows agent validates the server against the machine trust store and has no
+override, so a PC enrols against a local CA only after `Install-AgentCaRoot.ps1`
+has run on it. A name with a Let's Encrypt certificate needs nothing on any PC.
+
+```bash
+sudo ./generate-env.sh https://epp.example.com   # records the old origin as LAN_ORIGIN
+printf 'dns_cloudflare_api_token = %s
+' '<token>' > cloudflare.ini && chmod 600 cloudflare.ini
+sudo ./issue-certificate.sh
+```
+
+`issue-certificate.sh` creates `epp.example.com  A  <LAN address>` with
+**`proxied: false`**, proves the DNS-01 flow against Let's Encrypt staging, issues
+the real certificate, and recreates only `web` and `certbot`. The `certbot`
+service renews twice a day; `web` reloads itself every six hours to pick the new
+files up, so nothing has to be restarted by hand. The token is a scoped
+**Zone:DNS:Edit** API token for the one zone — Cloudflare's "Edit zone DNS"
+template.
+
+**Cloudflare is DNS only here, never proxied and never a Tunnel.** Either would
+terminate TLS at Cloudflare's edge, and this platform sends revealed BitLocker
+recovery keys, admin session tokens and agent credentials over that connection.
+DNS-01 is what makes a publicly trusted certificate possible without any of that:
+it proves control of the *name*, so the host needs no inbound connectivity. The
+record points at a private address, so the name resolves to something reachable
+only from the office network or a VPN — which is the intended outcome.
+
+**The LAN address keeps the local-CA certificate.** nginx serves two HTTPS server
+blocks from one set of routes (`nginx/site.conf`): the public name with the
+trusted certificate, and a `default_server` — what a client connecting by IP
+lands on, since it sends no SNI — with the local-CA one. Agents enrolled against
+the address before the name existed trust that CA and nothing else; changing the
+certificate they are served would cut every one of them off. Re-enrol them
+against the name when convenient, then the address can be retired.
+
+`LAN_ORIGIN` is kept in the Admin API's CORS list alongside `PUBLIC_ORIGIN`, so
+the dashboard keeps working on both.
+
+A router with DNS-rebinding protection may refuse to resolve a public name to a
+private address. If the name does not resolve from inside the office, allow it in
+the router (dnsmasq: `rebind-domain-ok=/example.com/`) or add it to local DNS.
+
 ## pgAdmin
 
 Reachable two ways: `https://<host>/pgadmin/` through the same HTTPS origin, or
@@ -138,62 +183,27 @@ for PostgreSQL is in the header of `postgres/init/10-setup-database.sh`.
 
 ## CI/CD
 
-A developer pushes. That is the whole deployment procedure.
+`.github/workflows/ci.yml` runs on every push and pull request: the .NET suites
+against a real PostgreSQL and Redis, the dashboard's lint, tests and type check,
+a build of all four images, and a validation of this compose file.
 
-```
-  push to main
-        |
-        v
-  GitHub Actions: ci.yml
-  .NET suites vs real PostgreSQL + Redis · dashboard lint/tests/typecheck
-  all four images build · compose file validated
-        |
-        | green
-        v
-  the host notices, within a minute          <- autodeploy.timer
-        |
-        +-- pg_dump BEFORE anything changes
-        +-- tag the running images :previous
-        +-- git reset --hard <commit>
-        +-- deploy.sh: build, up, smoke test the real public URL
-        |
-        +-- green  -> done
-        +-- red    -> retag :previous, compose up, platform keeps serving
-```
-
-**Deployment is a pull, not a push, and that is not a workaround.** The host is
-on a private network: no GitHub-hosted runner can reach it, and a self-hosted
-runner or an inbound webhook would each mean giving an outside system a way in.
-Polling needs no inbound port, no SSH key, no stored token and no credential on
-GitHub's side at all. The cost is up to a minute of latency, which no one has
-ever noticed.
-
-Install it once, on the host:
+**Deployment is manual and deliberate.** This platform holds BitLocker recovery
+keys and can run commands as SYSTEM on every managed PC, so an unreviewed commit
+must not reach it on its own. An operator deploys a reviewed, green commit:
 
 ```bash
-cd /opt/endpoint-platform/src/deploy/docker
-sudo ./install-autodeploy.sh https://github.com/<owner>/<repo>.git main
+cd /opt/endpoint-platform/src && git pull --ff-only
+cd deploy/docker && sudo ./deploy.sh
 ```
 
-That makes the deployment directory a git clone of the repository — keeping
-`.env`, `tls/` and `pgadmin/pgpass` exactly where they are, because they are
-git-ignored and `git reset --hard` does not touch ignored files — and starts the
-timer.
-
-```bash
-journalctl -u endpoint-platform-autodeploy -f     # watch it
-sudo systemctl start endpoint-platform-autodeploy # do not wait for the minute
-sudo systemctl stop endpoint-platform-autodeploy.timer   # pause deployments
-```
-
-Settings live in `/etc/endpoint-platform/autodeploy.conf`: the branch, the
-number of backups to keep, and `REQUIRE_CI`, which is what stops a commit that
-failed its tests from reaching this database.
+`autodeploy.sh`, `install-autodeploy.sh` and the `systemd/` units implement
+deploy-on-push (poll GitHub, wait for green CI, back up, deploy, roll back on
+failure). They were installed once and **disabled on purpose** — see CLAUDE.md.
+Do not re-enable the timer without that decision being revisited.
 
 ### What a deployment cannot lose
 
-This is the part worth being precise about, because "it redeploys itself" is
-only acceptable if the answer here is *nothing*.
+True of every deployment, manual or automatic: the answer has to be *nothing*.
 
 | | Why it survives |
 |---|---|
@@ -204,9 +214,10 @@ only acceptable if the answer here is *nothing*.
 | `tls/` — the CA and certificate | git-ignored, same |
 | `pgadmin/pgpass` | git-ignored, same |
 
-And before every single deployment, a `pg_dump -Fc` lands in
-`/var/backups/endpoint-platform/` (the last 10 are kept). If a migration ever
-does something regrettable, the state from thirty seconds earlier is on disk:
+Take a dump before any deployment that carries a migration — migrations are
+forward-only, and a rollback restores binaries, not schema. (`autodeploy.sh` does
+this itself into `/var/backups/endpoint-platform/`; by hand, use the command in
+"Day to day".) Restoring one:
 
 ```bash
 ls -lt /var/backups/endpoint-platform/
@@ -220,21 +231,9 @@ would be a dump of the damage.
 ### When a deployment fails
 
 `deploy.sh` only reports success once the dashboard, both APIs and pgAdmin all
-answer over the real HTTPS origin. If they do not, the deployer retags the
-`:previous` images back to `:local`, brings the stack up on them, and the
-platform carries on serving the last version that worked. The bad commit is
-recorded in `/var/lib/endpoint-platform/autodeploy/failed_sha` and is not
-retried every minute; the next commit clears it.
-
-### Deploying without waiting for a push
-
-```bash
-sudo ./deploy.sh                                          # on the host
-./remote-deploy.sh paras-thind@192.168.8.96               # from a workstation
-```
-
-Both bypass the CI gate, so they are for hotfixes and for testing an uncommitted
-change — not for ordinary work.
+answer over the real HTTPS origin, and exits non-zero otherwise. `remote-deploy.sh
+<user>@<host>` does the same from a workstation, including for an uncommitted
+change — which is also why it is for testing, not for ordinary work.
 
 ## Troubleshooting
 
@@ -245,4 +244,6 @@ change — not for ordinary work.
 | `403` on `/endpoint-platform-ca.crt` | `tls/` is not `0755`; nginx's worker cannot traverse it |
 | pgAdmin restarting | check `PGADMIN_EMAIL` — it validates the address, and special-use domains need `PGADMIN_CONFIG_ALLOW_SPECIAL_EMAIL_DOMAINS` |
 | `migrations` exits non-zero | `docker compose logs migrations`; the APIs will not start until it succeeds |
-| Agents cannot connect | they need `tls/ca.crt` in the machine trust store |
+| Agents cannot connect | by IP: they need `tls/ca.crt` in the machine trust store. By name: check the certificate with `openssl s_client -connect <name>:443 -servername <name>` |
+| The public name does not resolve inside the office | the router's DNS-rebinding protection is dropping a public name that points at a private address; allow the domain there |
+| Dashboard says "Admin API unreachable" on the LAN address only | `LAN_ORIGIN` is missing from `.env`, so that origin is not in the CORS list |

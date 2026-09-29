@@ -109,3 +109,7 @@ deploy/docker/.env*
 deploy/docker/tls/
 deploy/docker/pgadmin/pgpass
 deploy/docker/pgadmin/servers.json
+# Let's Encrypt state (private keys for the public name) and the Cloudflare API
+# token certbot uses for DNS-01. Both exist only on the deployment host.
+deploy/docker/letsencrypt/
+deploy/docker/cloudflare.ini
