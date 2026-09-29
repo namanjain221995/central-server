@@ -170,8 +170,12 @@ certbot "${common[@]}" --dry-run
 echo "==> issuing the real certificate for ${name}"
 certbot "${common[@]}" --keep-until-expiring
 
-[ -f "${here}/letsencrypt/live/public/fullchain.pem" ] \
-    || die "certbot reported success but letsencrypt/live/public/fullchain.pem is missing"
+# Checked from INSIDE the certbot container, as root. certbot makes live/ and
+# archive/ 0700 root, so from the host the operator account cannot see the file
+# at all - a host-side [ -f ] reports a certificate that exists as missing.
+# nginx is unaffected: its master process reads certificates as root.
+docker compose run --rm --no-deps --entrypoint test certbot -s /etc/letsencrypt/live/public/fullchain.pem \
+    || die "certbot reported success but live/public/fullchain.pem is missing or empty"
 
 # --- 4. switch the public name over ------------------------------------------
 
