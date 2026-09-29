@@ -97,9 +97,11 @@ cf() { # cf <METHOD> <path> [json-body]
 
 echo "==> DNS: ${name} -> ${lan_host} (DNS only, never proxied)"
 
-verify="$(cf GET /user/tokens/verify)"
-python3 -c 'import json,sys; d=json.loads(sys.argv[1]); sys.exit(0 if d.get("success") and d["result"]["status"]=="active" else 1)' "$verify" \
-    || die "Cloudflare rejected the API token (inactive, expired or mistyped)"
+# No /user/tokens/verify pre-check: that endpoint only accepts USER tokens, and
+# an ACCOUNT token - the better kind for a server, since it is not tied to one
+# person's login - is rejected there as "Invalid API Token" while being
+# perfectly valid for DNS. The zone lookup below is the real test for both
+# kinds, and it fails with a message that says what to check.
 
 # Walk up the labels until Cloudflare recognises a zone, rather than assuming
 # the zone is the last two labels - which is wrong for names under co.uk.
@@ -110,7 +112,9 @@ while [[ "$candidate" == *.* ]]; do
     [ -n "$zone_id" ] && break
     candidate="${candidate#*.}"
 done
-[ -n "$zone_id" ] || die "no Cloudflare zone this token can see contains ${name}"
+[ -n "$zone_id" ] || die "the token cannot see a Cloudflare zone containing ${name}.
+    Check that it is active, was copied whole, and has DNS Edit (\"DNS Write\")
+    on that zone - a token scoped to a different zone looks exactly like this."
 echo "    zone: ${candidate}"
 
 existing="$(cf GET "/zones/${zone_id}/dns_records?name=${name}")"
