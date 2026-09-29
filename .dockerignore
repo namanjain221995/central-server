@@ -11,6 +11,8 @@
 deploy/docker/.env
 deploy/docker/tls/
 deploy/docker/pgadmin/pgpass
+deploy/docker/letsencrypt/
+deploy/docker/cloudflare.ini
 infra/.env
 
 # Version control and CI metadata.

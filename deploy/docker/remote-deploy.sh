@@ -2,13 +2,13 @@
 # ---------------------------------------------------------------------------
 # Deploys this working tree to the Ubuntu host over SSH, from a workstation.
 #
-#   ./remote-deploy.sh paras-thind@192.168.8.96 https://192.168.8.96
-#   ./remote-deploy.sh paras-thind@192.168.8.96                  # reuse the deployed origin
-#   ./remote-deploy.sh paras-thind@192.168.8.96 '' --no-build    # restart, do not rebuild
+#   ./remote-deploy.sh <user>@<host> https://<host-or-ip>
+#   ./remote-deploy.sh <user>@<host>                        # reuse the deployed origin
+#   ./remote-deploy.sh <user>@<host> '' --no-build          # restart, do not rebuild
 #
-# This is the manual path. The pipeline in .github/workflows/deploy.yml does the
-# same thing from a runner installed on the host itself; use this one when there
-# is no runner yet, or to try a change that is not committed.
+# The same as running deploy.sh on the host, from a workstation - including for
+# a change that is not committed yet, which is why it is for testing rather than
+# ordinary work. Deployment is manual on purpose (see CLAUDE.md).
 #
 # It ships the files git knows about (tracked, plus untracked files that are not
 # ignored), so a stray build artefact or a local .env cannot travel with it. On

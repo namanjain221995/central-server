@@ -3,8 +3,8 @@
 # Brings the whole stack up on this machine, and does not claim success until
 # the platform actually answers.
 #
-#   sudo ./deploy.sh https://192.168.8.96          # first time, or any time
-#   sudo ./deploy.sh https://192.168.8.96 --no-build
+#   sudo ./deploy.sh https://<host-or-ip>          # first time, or any time
+#   sudo ./deploy.sh https://<host-or-ip> --no-build
 #
 # Idempotent: generate-env.sh keeps existing secrets and certificates, the
 # database volume survives, and `docker compose up` recreates only what changed.

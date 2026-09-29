@@ -3,8 +3,8 @@
 # Generates this deployment's secrets ONCE, plus the TLS material and the
 # pgAdmin connection file that depend on them.
 #
-#   ./generate-env.sh https://192.168.8.96
-#   ./generate-env.sh https://epp.example.com
+#   ./generate-env.sh https://<lan-address>          # first install
+#   ./generate-env.sh https://epp.example.com         # give it a public name later
 #
 # Writes, all git-ignored, all next to this script:
 #
@@ -135,11 +135,24 @@ if [ -f "$env_file" ]; then
 
     current_origin="$(grep -E '^PUBLIC_ORIGIN=' "$env_file" | tail -n 1 | cut -d= -f2- || true)"
     if [ "$current_origin" != "$origin" ]; then
+        # The origin is about to move - typically from the LAN address to a public
+        # name. Record where it was FIRST, as LAN_ORIGIN, before that value is
+        # overwritten: agents enrolled against it trust the local CA and nothing
+        # else, so that address has to keep being served with the local-CA
+        # certificate (and kept in the CORS list) after the move. Written once;
+        # an existing LAN_ORIGIN is never replaced.
+        if [ -n "$current_origin" ] && ! grep -qE '^LAN_ORIGIN=' "$env_file"; then
+            printf 'LAN_ORIGIN=%s\n' "$current_origin" >> "$env_file"
+            echo "==> recorded LAN_ORIGIN=${current_origin} (enrolled agents keep using it)"
+        fi
         echo "==> PUBLIC_ORIGIN changes: ${current_origin:-<unset>} -> ${origin}"
         tmp="${env_file}.tmp.$$"
         grep -vE '^(PUBLIC_ORIGIN|SERVER_NAME)=' "$env_file" > "$tmp" || true
         printf 'PUBLIC_ORIGIN=%s\nSERVER_NAME=%s\n' "$origin" "$host" >> "$tmp"
         chmod 600 "$tmp"
+        # Keep the original owner: via sudo the replacement would otherwise be
+        # root-owned, and compose run as the operator could no longer read it.
+        chown --reference="$env_file" "$tmp" 2>/dev/null || true
         mv "$tmp" "$env_file"
     fi
 else
@@ -336,13 +349,29 @@ mkdir -p "$tls_dir"
 # traverse this directory. The keys inside stay 0600.
 chmod 755 "$tls_dir"
 
+# The local-CA certificate belongs to the LAN address, not to whatever the
+# public name is today. Once a public name exists it gets a Let's Encrypt
+# certificate instead (issue-certificate.sh), and this one stays exactly as it
+# is for the agents that already trust its CA.
+cert_host="$host"
+lan_origin="$(grep -E '^LAN_ORIGIN=' "$env_file" | tail -n 1 | cut -d= -f2- || true)"
+if [ -n "$lan_origin" ]; then
+    cert_host="${lan_origin#https://}"
+    cert_host="${cert_host%%:*}"
+fi
+
 if [ -f "${tls_dir}/server.crt" ] && [ -f "${tls_dir}/server.key" ]; then
     echo "==> ${tls_dir}/server.crt already exists, keeping it"
-    if ! openssl x509 -in "${tls_dir}/server.crt" -noout -checkhost "$host" >/dev/null 2>&1 \
-    && ! openssl x509 -in "${tls_dir}/server.crt" -noout -checkip "$host" >/dev/null 2>&1; then
-        echo "    WARNING: it does not cover ${host}. Delete ${tls_dir}/ and re-run to reissue."
+    if ! openssl x509 -in "${tls_dir}/server.crt" -noout -checkhost "$cert_host" >/dev/null 2>&1 \
+    && ! openssl x509 -in "${tls_dir}/server.crt" -noout -checkip "$cert_host" >/dev/null 2>&1; then
+        # Deliberately NOT "delete tls/ and re-run": that mints a new CA, and
+        # every enrolled agent stops trusting the server at once.
+        echo "    WARNING: it does not cover ${cert_host}. Re-issuing it creates a NEW local CA,"
+        echo "    which every already-enrolled agent will refuse. Only do that before any"
+        echo "    agent has enrolled, or together with re-running Install-AgentCaRoot.ps1 on each."
     fi
 else
+    host="$cert_host"
     echo "==> issuing a certificate for ${host} from a new local CA"
 
     # An IP address has to appear as IP:, a name as DNS:. Browsers ignore the
@@ -419,13 +448,22 @@ chmod 644 "${pgadmin_dir}/servers.json"
 # ignores a pass file it does not own, so the ownership given by the first (root)
 # run has to survive every later run made as an ordinary user.
 pgpass_line="$(printf 'postgres:5432:%s:%s:%s' "$POSTGRES_DB" "$POSTGRES_SUPERUSER" "$POSTGRES_SUPERUSER_PASSWORD")"
-if [ ! -f "${pgadmin_dir}/pgpass" ] || [ "$(cat "${pgadmin_dir}/pgpass" 2>/dev/null)" != "$pgpass_line" ]; then
+if [ -f "${pgadmin_dir}/pgpass" ] && [ ! -r "${pgadmin_dir}/pgpass" ]; then
+    # Owned by pgAdmin's uid, 0600 - exactly as the first root run left it - and
+    # this run is not root, so it can neither read nor rewrite it. Comparing
+    # anyway would read as "different", try to overwrite, and abort the whole
+    # script under set -e AFTER .env had already been changed. Leave it: only a
+    # database password change needs it rewritten, and that is a root operation.
+    echo "==> ${pgadmin_dir}/pgpass belongs to pgAdmin; leaving it (re-run as root after a password change)"
+elif [ ! -f "${pgadmin_dir}/pgpass" ] || [ "$(cat "${pgadmin_dir}/pgpass" 2>/dev/null)" != "$pgpass_line" ]; then
     printf '%s\n' "$pgpass_line" > "${pgadmin_dir}/pgpass"
     chmod 600 "${pgadmin_dir}/pgpass"
     chown 5050:5050 "${pgadmin_dir}/pgpass" 2>/dev/null \
         || echo "    note: could not chown pgadmin/pgpass to 5050 (needs root); pgAdmin will ask for the database password instead"
 fi
 
-echo "==> rendered ${pgadmin_dir}/servers.json and ${pgadmin_dir}/pgpass"
+# pgpass reports for itself above: it is rewritten only when it changes, and only
+# by a run that can read it.
+echo "==> rendered ${pgadmin_dir}/servers.json"
 echo
 echo "generate-env.sh: done"

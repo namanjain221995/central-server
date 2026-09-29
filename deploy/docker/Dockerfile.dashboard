@@ -18,11 +18,17 @@ COPY dashboard/ ./
 RUN npm run build
 
 FROM nginx:1.29-alpine AS runtime
-# envsubst renders the one variable in the template at container start, so the
-# same image serves any host name.
+# envsubst renders the template at container start, so the same image serves any
+# host name and either kind of certificate.
 COPY deploy/docker/nginx/default.conf.template /etc/nginx/templates/default.conf.template
+# The shared routes are copied, not rendered: they contain only nginx runtime
+# variables, which envsubst must never see.
+COPY deploy/docker/nginx/site.conf /etc/nginx/snippets/site.conf
+COPY --chmod=0755 deploy/docker/nginx/40-reload-certificates.sh /docker-entrypoint.d/40-reload-certificates.sh
 COPY --from=build /src/dist /usr/share/nginx/html
-ENV SERVER_NAME=_
+# Defaults for a stack with no public name: both HTTPS blocks then serve the
+# local-CA certificate. The compose file overrides all three.
+ENV SERVER_NAME=_     TLS_CERT=/etc/nginx/tls/server.crt     TLS_KEY=/etc/nginx/tls/server.key
 EXPOSE 80 443
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
     CMD wget -qO- --no-check-certificate https://127.0.0.1/healthz >/dev/null || exit 1
