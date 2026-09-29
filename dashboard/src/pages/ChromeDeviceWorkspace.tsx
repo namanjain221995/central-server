@@ -19,7 +19,9 @@ import {
   enabledTone,
   formatDate,
   formatDateTime,
-  installTypeLabel,
+  extensionSourceLabel,
+  hiddenExtensionsNote,
+  visibleExtensions,
   profileSubtitle,
   profileTitle,
   scopeLabel,
@@ -428,6 +430,10 @@ function ExtensionsTab({
 }
 
 function ExtensionsTable({ extensions, error }: { extensions: ChromeExtensionRow[] | null; error: string | null }) {
+  // Starts on what Chrome's own extensions menu shows, so the list agrees with
+  // the count beside the profile; the rest is one click away, labelled.
+  const [showAll, setShowAll] = useState(false)
+
   if (error) return <div className="warn-banner">{error}</div>
   if (!extensions) return <p className="muted">Loading extensions…</p>
   if (extensions.length === 0) {
@@ -440,7 +446,28 @@ function ExtensionsTable({ extensions, error }: { extensions: ChromeExtensionRow
     )
   }
 
+  const rows = visibleExtensions(extensions, showAll)
+  const note = hiddenExtensionsNote(extensions)
+
   return (
+    <>
+      {note && (
+        <div className="toolbar" style={{ justifyContent: 'space-between', flexWrap: 'wrap' }}>
+          <span className="muted">
+            {showAll ? 'Showing everything Chrome recorded for this profile.' : `Showing what Chrome’s extensions menu shows. ${note}`}
+          </span>
+          <button type="button" className="btn-sm" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? 'Show active only' : `Show all (${extensions.length})`}
+          </button>
+        </div>
+      )}
+      {rows.length === 0 ? (
+        <div className="empty-state">
+          <Icon name="software" size={36} strokeWidth={1.25} className="icon" />
+          <div className="title">No active extensions</div>
+          <div>Nothing is enabled in this profile’s extensions menu.</div>
+        </div>
+      ) : (
     <div className="table-wrap">
       <table className="table">
         <thead>
@@ -453,8 +480,8 @@ function ExtensionsTable({ extensions, error }: { extensions: ChromeExtensionRow
           </tr>
         </thead>
         <tbody>
-          {extensions.map((e) => (
-            <tr key={e.extensionRowId}>
+          {rows.map((e) => (
+            <tr key={e.extensionRowId} className={e.isActive ? undefined : 'muted'}>
               <td>
                 <div>{e.name ?? <span className="muted">(unnamed)</span>}</div>
                 <div className="muted" style={{ fontSize: 11.5, fontFamily: 'monospace' }}>{e.extensionId}</div>
@@ -466,12 +493,14 @@ function ExtensionsTable({ extensions, error }: { extensions: ChromeExtensionRow
               <td>
                 <span className={`badge ${e.isManaged ? 'ok' : 'neutral'}`}>{e.isManaged ? 'Yes' : 'No'}</span>
               </td>
-              <td className={e.isComponent ? 'muted' : undefined}>{installTypeLabel(e.installType)}</td>
+              <td className={e.isActive ? undefined : 'muted'}>{extensionSourceLabel(e)}</td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+      )}
+    </>
   )
 }
 

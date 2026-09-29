@@ -275,7 +275,8 @@ public static class ChromeInventoryNormalizer
                 entry.FromWebStore,
                 Clamp(entry.UpdateUrl, InventoryChromeExtension.MaxUpdateUrl),
                 entry.InstalledAt,
-                entry.UpdatedAt));
+                entry.UpdatedAt,
+                entry.InstalledByDefault));
 
             if (kept.Count >= InventoryChromeProfile.MaxExtensions)
             {

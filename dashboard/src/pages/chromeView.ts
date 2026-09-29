@@ -158,6 +158,40 @@ export function installTypeLabel(installType: string): string {
   }
 }
 
+/**
+ * Where an extension came from, as a row reads it. A default-installed one is
+ * called what it is -- Chrome put it there -- whatever channel it arrived by.
+ */
+export function extensionSourceLabel(e: Pick<ChromeExtensionRow, 'installType' | 'installedByDefault'>): string {
+  return e.installedByDefault ? 'Chrome default' : installTypeLabel(e.installType)
+}
+
+/**
+ * The rows a profile's list shows. By default only the active ones -- the same
+ * set Chrome's own extensions menu shows, so the list and the count agree -- and
+ * everything when the operator asks for it. The server orders active rows first.
+ */
+export function visibleExtensions(rows: readonly ChromeExtensionRow[], showAll: boolean): ChromeExtensionRow[] {
+  return showAll ? [...rows] : rows.filter((r) => r.isActive)
+}
+
+/** "4 more are disabled, installed by Chrome by default, or part of Chrome." -- or null when there are none. */
+export function hiddenExtensionsNote(rows: readonly ChromeExtensionRow[]): string | null {
+  const hidden = rows.filter((r) => !r.isActive)
+  if (hidden.length === 0) return null
+  const disabled = hidden.filter((r) => r.enabled === false && !r.isComponent).length
+  const byDefault = hidden.filter((r) => r.installedByDefault && r.enabled !== false && !r.isComponent).length
+  const builtIn = hidden.filter((r) => r.isComponent).length
+  const parts = [
+    disabled > 0 ? `${disabled} disabled` : null,
+    byDefault > 0 ? `${byDefault} installed by Chrome by default` : null,
+    builtIn > 0 ? `${builtIn} part of Chrome itself` : null,
+  ].filter((p): p is string => p !== null)
+  const other = hidden.length - disabled - byDefault - builtIn
+  if (other > 0) parts.push(`${other} with an unknown state`)
+  return `${hidden.length} more ${hidden.length === 1 ? 'is' : 'are'} not counted: ${parts.join(', ')}.`
+}
+
 export function enabledLabel(enabled: boolean | null): string {
   if (enabled === null) return 'Unknown'
   return enabled ? 'Enabled' : 'Disabled'
@@ -170,11 +204,13 @@ export function enabledTone(enabled: boolean | null): Tone {
 }
 
 /**
- * Components last -- they are Chrome's own, and an operator opening a profile
- * is looking for what somebody installed -- then named before nameless, then by
- * name, then by id so the order is stable.
+ * Active first -- what Chrome's own extensions menu shows -- then the rest, with
+ * components last because they are Chrome's own and an operator opening a
+ * profile is looking for what somebody installed; then named before nameless,
+ * then by name, then by id so the order is stable.
  */
 export function compareExtensions(a: ChromeExtensionRow, b: ChromeExtensionRow): number {
+  if (a.isActive !== b.isActive) return a.isActive ? -1 : 1
   if (a.isComponent !== b.isComponent) return a.isComponent ? 1 : -1
   if ((a.name === null) !== (b.name === null)) return a.name === null ? 1 : -1
   const byName = (a.name ?? '').localeCompare(b.name ?? '', undefined, { sensitivity: 'base' })

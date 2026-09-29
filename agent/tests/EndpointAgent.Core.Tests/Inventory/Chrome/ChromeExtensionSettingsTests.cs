@@ -233,6 +233,26 @@ public sealed class ChromeExtensionSettingsTests
         entry.UpdateUrl.ShouldBe("https://clients2.google.com/service/update2/crx");
         entry.InstalledAt.ShouldBe(TabTidyInstalled);
         entry.UpdatedAt.ShouldBe(TabTidyUpdated);
+        entry.InstalledByDefault.ShouldBe(false);
+    }
+
+    /// <summary>
+    /// Chrome's mark for an extension it installed as part of its own default
+    /// setup (Google Docs Offline is the usual one). Only a JSON boolean is an
+    /// answer; anything else is unrecorded.
+    /// </summary>
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    [InlineData("1", null)]
+    [InlineData("\"true\"", null)]
+    public void The_installed_by_default_mark_is_read_as_a_boolean(string json, bool? expected)
+    {
+        var entry = Parse(Settings($$"""
+            "{{Plain}}": { "location": 6, "was_installed_by_default": {{json}}, "manifest": { "name": "Docs", "version": "1.0" } }
+            """)).ShouldHaveSingleItem();
+
+        entry.InstalledByDefault.ShouldBe(expected);
     }
 
     [Fact]

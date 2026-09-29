@@ -1248,6 +1248,10 @@ export interface ChromeExtensionRow {
   installType: string
   isManaged: boolean
   isComponent: boolean
+  /** Chrome installed it as part of its own default setup (e.g. Google Docs Offline). Null when unrecorded. */
+  installedByDefault: boolean | null
+  /** Counts as one the profile has: enabled, not built in, not default-installed -- what Chrome's menu shows. */
+  isActive: boolean
   fromWebStore: boolean | null
   updateUrl: string | null
   installedAt: string | null

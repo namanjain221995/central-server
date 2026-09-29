@@ -88,10 +88,16 @@ Ingestion rules, applied with the rest of the inventory snapshot:
   contract's set, or a manifest version outside 1–99. Ingestion restates those
   rules as a second fence (skip the extension / store `Unknown` / store the
   manifest version as unrecorded) that no route reaches.
-- **Component extensions are not counted.** `Component` and `ExternalComponent`
-  are Chrome's own built-ins, not something anyone installed, so every
-  "extension count" the console shows excludes them. They are still stored and
-  still listed, marked as components.
+- **Counts match Chrome's own extensions menu.** An extension counts only when it
+  is **enabled**, is **not one of Chrome's built-ins** (`Component`,
+  `ExternalComponent`) and was **not installed by Chrome as part of its default
+  setup** (`was_installed_by_default`, e.g. Google Docs Offline). Every other row
+  is still stored and listed — the console's extension list opens on the counted
+  ones and shows the rest behind "Show all", each labelled (disabled, Chrome
+  default, built-in). This came from the first real profile, whose menu showed
+  three extensions while its settings held seven: one default-installed, one the
+  user had disabled, two another program had added and Chrome had disabled
+  pending approval.
 - **Nothing is fabricated.** Whether an update is available for an installed
   Chrome is not computable until the update reference exists (a later phase), so
   it is reported as unknown — `null`, never `0` — and every per-device update

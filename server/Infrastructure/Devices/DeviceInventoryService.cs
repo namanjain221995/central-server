@@ -652,7 +652,8 @@ public sealed class DeviceInventoryService(
                     Truncate(extension.UpdateUrl, InventoryChromeExtension.MaxUpdateUrl),
                     extension.InstalledAt?.ToUniversalTime(),
                     extension.UpdatedAt?.ToUniversalTime(),
-                    now));
+                    now,
+                    extension.InstalledByDefault));
             }
         }
     }

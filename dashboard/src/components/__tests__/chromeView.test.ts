@@ -6,6 +6,9 @@ import {
   compareExtensions,
   countLabel,
   enabledLabel,
+  extensionSourceLabel,
+  hiddenExtensionsNote,
+  visibleExtensions,
   enabledTone,
   formatDateTime,
   installTypeLabel,
@@ -41,6 +44,8 @@ function extension(overrides: Partial<ChromeExtensionRow>): ChromeExtensionRow {
     installType: 'Internal',
     isManaged: false,
     isComponent: false,
+    installedByDefault: false,
+    isActive: true,
     fromWebStore: true,
     updateUrl: null,
     installedAt: null,
@@ -177,7 +182,7 @@ describe('extensions', () => {
 
   it('sorts components last, nameless after named, and names case-insensitively', () => {
     const rows = [
-      extension({ extensionRowId: 'c', name: 'Web Store', isComponent: true, installType: 'Component' }),
+      extension({ extensionRowId: 'c', name: 'Web Store', isComponent: true, installType: 'Component', isActive: false }),
       extension({ extensionRowId: 'b', name: 'zeta' }),
       extension({ extensionRowId: 'n', name: null, extensionId: 'ppppoooonnnnmmmmllllkkkkjjjjiiii' }),
       extension({ extensionRowId: 'a', name: 'Alpha' }),
@@ -210,5 +215,45 @@ describe('installation facts', () => {
     expect(countLabel(1, 'profile')).toBe('1 profile')
     expect(countLabel(3, 'profile')).toBe('3 profiles')
     expect(countLabel(0, 'extension')).toBe('0 extensions')
+  })
+})
+
+describe('what counts as an extension the profile has', () => {
+  // The first real profile: Chrome's menu showed three, its settings held more.
+  const rows = [
+    extension({ extensionRowId: 'mail', name: 'Mail Merge' }),
+    extension({ extensionRowId: 'phone', name: 'Softphone' }),
+    extension({ extensionRowId: 'window', name: 'Window Keeper' }),
+    extension({ extensionRowId: 'docs', name: 'Docs Offline', installType: 'ExternalPrefDownload', installedByDefault: true, isActive: false }),
+    extension({ extensionRowId: 'vpn', name: 'Free VPN', enabled: false, isActive: false }),
+    extension({ extensionRowId: 'pdf', name: 'PDF Tools', installType: 'ExternalPrefDownload', enabled: false, isActive: false }),
+    extension({ extensionRowId: 'viewer', name: 'PDF Viewer', installType: 'Component', isComponent: true, isActive: false }),
+  ]
+
+  it('shows by default exactly what Chrome’s extensions menu shows', () => {
+    expect(visibleExtensions(rows, false).map((r) => r.extensionRowId)).toEqual(['mail', 'phone', 'window'])
+  })
+
+  it('shows everything when asked, hiding nothing', () => {
+    expect(visibleExtensions(rows, true)).toHaveLength(7)
+  })
+
+  it('says how many are not counted, and why', () => {
+    expect(hiddenExtensionsNote(rows)).toBe(
+      '4 more are not counted: 2 disabled, 1 installed by Chrome by default, 1 part of Chrome itself.',
+    )
+    expect(hiddenExtensionsNote(rows.slice(0, 3))).toBeNull()
+    expect(hiddenExtensionsNote([rows[4]])).toBe('1 more is not counted: 1 disabled.')
+  })
+
+  it('calls a default-installed extension what it is, whatever channel it came by', () => {
+    expect(extensionSourceLabel({ installType: 'ExternalPrefDownload', installedByDefault: true })).toBe('Chrome default')
+    expect(extensionSourceLabel({ installType: 'ExternalPrefDownload', installedByDefault: false })).toBe('Third-party installer')
+    expect(extensionSourceLabel({ installType: 'Internal', installedByDefault: null })).toBe('User installed')
+  })
+
+  it('orders active extensions before the rest', () => {
+    const shuffled = [rows[4], rows[6], rows[0], rows[3], rows[1]]
+    expect([...shuffled].sort(compareExtensions).map((r) => r.extensionRowId)).toEqual(['mail', 'phone', 'docs', 'vpn', 'viewer'])
   })
 })

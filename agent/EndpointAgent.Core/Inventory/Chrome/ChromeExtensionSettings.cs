@@ -194,7 +194,12 @@ public static class ChromeExtensionSettings
             // JSON number type cannot carry the value exactly, so Chrome quotes it.
             // A number here is not Chrome's encoding and is not trusted.
             ChromeTime.FromWindowsMicroseconds(Text(record, "first_install_time")),
-            ChromeTime.FromWindowsMicroseconds(Text(record, "last_update_time")));
+            ChromeTime.FromWindowsMicroseconds(Text(record, "last_update_time")),
+            // Chrome's own mark for an extension it installed as part of its
+            // default setup (Google Docs Offline is the common one). Chrome
+            // leaves these out of its extensions menu, and so does the console's
+            // count; the record is still reported.
+            Flag(record, "was_installed_by_default"));
     }
 
     /// <summary>

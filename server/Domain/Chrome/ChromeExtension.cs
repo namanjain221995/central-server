@@ -48,7 +48,10 @@ public sealed class ChromeExtension : AuditableEntity
         string? updateUrl,
         DateTimeOffset? installedAt,
         DateTimeOffset? updatedAt,
-        DateTimeOffset collectedAt)
+        DateTimeOffset collectedAt,
+        // Last and optional: added after the first rows existed, so every
+        // caller and fixture written before it stays valid.
+        bool? installedByDefault = null)
     {
         DeviceId = Guard.NotEmpty(deviceId);
         ChromeProfileId = Guard.NotEmpty(chromeProfileId);
@@ -64,6 +67,7 @@ public sealed class ChromeExtension : AuditableEntity
         InstalledAt = installedAt;
         ExtensionUpdatedAt = updatedAt;
         CollectedAt = collectedAt;
+        InstalledByDefault = installedByDefault;
     }
 
     public Guid DeviceId { get; private set; }
@@ -107,6 +111,27 @@ public sealed class ChromeExtension : AuditableEntity
     public DateTimeOffset? ExtensionUpdatedAt { get; private set; }
 
     public DateTimeOffset CollectedAt { get; private set; }
+
+    /// <summary>
+    /// Whether Chrome installed it as part of its own default setup (Google Docs
+    /// Offline is the usual one). Null when the agent did not say.
+    /// </summary>
+    public bool? InstalledByDefault { get; private set; }
+
+    /// <summary>
+    /// Whether the extension counts as one the profile has, the way Chrome's own
+    /// extensions menu counts: enabled, not one of Chrome's built-ins, and not
+    /// one Chrome installed by default. The console's extension counts are this;
+    /// the other rows are still listed, labelled for what they are.
+    /// </summary>
+    /// <remarks>
+    /// Established against a real profile whose menu showed three extensions
+    /// while its settings held seven installed ones: a default-installed Docs
+    /// Offline, a VPN the user had disabled, and two that another program had
+    /// added and Chrome had disabled pending approval. Counting all seven told an
+    /// operator something Chrome's own window contradicted.
+    /// </remarks>
+    public bool IsActive => Enabled == true && !IsComponent && InstalledByDefault != true;
 
     /// <summary>
     /// Whether this is one of Chrome's own built-ins rather than something anyone

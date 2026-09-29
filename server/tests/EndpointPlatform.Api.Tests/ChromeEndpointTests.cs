@@ -322,6 +322,57 @@ public sealed class ChromeEndpointTests(AdminApiPostgresFixture fixture)
         profiles["Profile 1"].GetProperty("managedExtensionCount").GetInt32().ShouldBe(0);
     }
 
+    /// <summary>
+    /// The case the first real profile raised: Chrome's extensions menu showed
+    /// three while its settings held more -- one Chrome installs by default, one
+    /// the user disabled, one another program added and Chrome disabled pending
+    /// approval. The counts match the menu; every row is still listed, flagged.
+    /// </summary>
+    [Fact]
+    public async Task Disabled_and_default_installed_extensions_are_listed_but_not_counted()
+    {
+        using var client = await ItAdminAsync();
+        var device = await _support.SeedDeviceAsync();
+        var group = await _support.CreateGroupAsync(client, UniqueName("ChromeActive"), device);
+        var profiles = await SeedChromeAsync(device, ChromeReportStatus.Available,
+            new ProfileSeed(Sid, "Default")
+                .With(ExtensionId('a'), InstallType.Internal, name: "Mail Merge")
+                .With(ExtensionId('b'), InstallType.Internal, name: "Softphone")
+                .With(ExtensionId('c'), InstallType.Internal, name: "Window Keeper"));
+
+        var now = DateTimeOffset.UtcNow;
+        await using (var db = _fixture.CreateDbContext())
+        {
+            void Add(char first, string name, bool enabled, InstallType type, bool? byDefault) =>
+                db.ChromeExtensions.Add(new ChromeExtension(
+                    device, profiles["Default"], ExtensionId(first), name, "1.0", manifestVersion: 3, enabled, type,
+                    isManaged: false, fromWebStore: false, updateUrl: null, installedAt: null, updatedAt: null, now,
+                    installedByDefault: byDefault));
+
+            Add('d', "Docs Offline", enabled: true, InstallType.ExternalPrefDownload, byDefault: true);
+            Add('e', "Free VPN", enabled: false, InstallType.Internal, byDefault: false);
+            Add('f', "PDF Tools", enabled: false, InstallType.ExternalPrefDownload, byDefault: false);
+            await db.SaveChangesAsync();
+        }
+
+        var row = ByDevice((await ReadAsync(await client.GetAsync(GroupDevices(group)))).GetProperty("devices"))[device];
+        row.GetProperty("extensionCount").GetInt32().ShouldBe(3, "what Chrome's own extensions menu shows");
+
+        var detail = await ReadAsync(await client.GetAsync(DeviceChrome(device)));
+        detail.GetProperty("profiles")[0].GetProperty("extensionCount").GetInt32().ShouldBe(3);
+
+        var rows = (await ReadAsync(await client.GetAsync(ProfileExtensions(device, profiles["Default"]))))
+            .EnumerateArray().ToList();
+
+        rows.Count.ShouldBe(6, "nothing is hidden from the list; only the counts leave rows out");
+        rows.Take(3).ShouldAllBe(r => r.GetProperty("isActive").GetBoolean(), "active rows come first");
+        rows.Skip(3).ShouldAllBe(r => !r.GetProperty("isActive").GetBoolean());
+
+        var docs = rows.Single(r => r.GetProperty("name").GetString() == "Docs Offline");
+        docs.GetProperty("installedByDefault").GetBoolean().ShouldBeTrue();
+        docs.GetProperty("enabled").GetBoolean().ShouldBeTrue("enabled, and still not counted: Chrome put it there");
+    }
+
     [Fact]
     public async Task A_device_that_has_never_reported_Chrome_is_listed_with_no_status_and_zero_counts()
     {

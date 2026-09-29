@@ -190,6 +190,12 @@ public sealed record InventoryChromeProfile(
 /// <param name="UpdateUrl">Where Chrome checks for updates to it, when the manifest names one.</param>
 /// <param name="InstalledAt">When it was first installed, as Chrome records it.</param>
 /// <param name="UpdatedAt">When it was last updated, as Chrome records it.</param>
+/// <param name="InstalledByDefault">
+/// Whether Chrome installed it as part of its own default setup (Chrome's
+/// <c>was_installed_by_default</c>), such as Google Docs Offline. Chrome leaves
+/// these out of its extensions menu. Null when unrecorded, and from agents older
+/// than the field, which sits last so they bind unchanged.
+/// </param>
 public sealed record InventoryChromeExtension(
     string ExtensionId,
     string? Name,
@@ -201,7 +207,8 @@ public sealed record InventoryChromeExtension(
     bool? FromWebStore,
     string? UpdateUrl,
     DateTimeOffset? InstalledAt,
-    DateTimeOffset? UpdatedAt)
+    DateTimeOffset? UpdatedAt,
+    bool? InstalledByDefault = null)
 {
     public const int MaxExtensionId = 32;
     public const int MaxName = 256;

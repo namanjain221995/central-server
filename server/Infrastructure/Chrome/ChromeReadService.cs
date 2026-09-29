@@ -121,7 +121,7 @@ public sealed class ChromeReadService(
         // describe only the devices they can open.
         var totalProfiles = await _dbContext.ChromeProfiles.AsNoTracking()
             .CountAsync(p => devices.Any(d => d.Id == p.DeviceId), cancellationToken);
-        var totalExtensions = await NonComponentExtensions()
+        var totalExtensions = await ActiveExtensions()
             .CountAsync(e => devices.Any(d => d.Id == e.DeviceId), cancellationToken);
 
         return new ChromeOverview(
@@ -199,6 +199,8 @@ public sealed class ChromeReadService(
                 ProfileCount = _dbContext.ChromeProfiles.Count(p => p.DeviceId == d.Id),
                 ExtensionCount = _dbContext.ChromeExtensions.Count(e =>
                     e.DeviceId == d.Id
+                    && e.Enabled == true
+                    && e.InstalledByDefault != true
                     && e.InstallType != ChromeExtensionInstallType.Component
                     && e.InstallType != ChromeExtensionInstallType.ExternalComponent),
             })
@@ -259,13 +261,17 @@ public sealed class ChromeReadService(
                 Profile = p,
                 ExtensionCount = _dbContext.ChromeExtensions.Count(e =>
                     e.ChromeProfileId == p.Id
+                    && e.Enabled == true
+                    && e.InstalledByDefault != true
                     && e.InstallType != ChromeExtensionInstallType.Component
                     && e.InstallType != ChromeExtensionInstallType.ExternalComponent),
-                // Also without components, so the managed count can never exceed
-                // the extension count it sits beside on the console.
+                // Counted on the same rule, so the managed count can never
+                // exceed the extension count it sits beside on the console.
                 ManagedExtensionCount = _dbContext.ChromeExtensions.Count(e =>
                     e.ChromeProfileId == p.Id
                     && e.IsManaged
+                    && e.Enabled == true
+                    && e.InstalledByDefault != true
                     && e.InstallType != ChromeExtensionInstallType.Component
                     && e.InstallType != ChromeExtensionInstallType.ExternalComponent),
             })
@@ -342,8 +348,9 @@ public sealed class ChromeReadService(
             .Take(InventoryChromeProfile.MaxExtensions)
             .ToListAsync(cancellationToken);
 
-        // Components last: they are Chrome's own, and an operator opening a profile
-        // is looking for what somebody installed. Nameless rows after named ones.
+        // Active first -- what the profile's own extensions menu shows -- then the
+        // rest, with Chrome's built-ins last: an operator opening a profile is
+        // looking for what somebody installed. Nameless rows after named ones.
         return extensions
             .Select(e => new ChromeExtensionRow(
                 e.Id,
@@ -355,12 +362,15 @@ public sealed class ChromeReadService(
                 e.InstallType.ToString(),
                 e.IsManaged,
                 e.IsComponent,
+                e.InstalledByDefault,
+                e.IsActive,
                 e.FromWebStore,
                 e.UpdateUrl,
                 e.InstalledAt,
                 // Chrome's own last-update time, not the row's persistence stamp.
                 UpdatedAt: e.ExtensionUpdatedAt))
-            .OrderBy(r => r.IsComponent)
+            .OrderByDescending(r => r.IsActive)
+            .ThenBy(r => r.IsComponent)
             .ThenBy(r => r.Name is null)
             .ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(r => r.ExtensionId, StringComparer.Ordinal)
@@ -374,13 +384,16 @@ public sealed class ChromeReadService(
             .Where(d => d.OrganizationId == organizationId && d.Status == DeviceStatus.Active);
 
     /// <summary>
-    /// Extension rows that count as "extensions" on the console. Filtered on the
-    /// install type in SQL because <see cref="ChromeExtension.IsComponent"/> is a
-    /// computed property and does not translate.
+    /// Extension rows that count as "extensions" on the console: the rule in
+    /// <see cref="ChromeExtension.IsActive"/>, restated in SQL because that is a
+    /// computed property and does not translate. The inline counts in the group
+    /// and profile queries state the same predicate and must stay in step.
     /// </summary>
-    private IQueryable<ChromeExtension> NonComponentExtensions() =>
+    private IQueryable<ChromeExtension> ActiveExtensions() =>
         _dbContext.ChromeExtensions.AsNoTracking()
-            .Where(e => e.InstallType != ChromeExtensionInstallType.Component
+            .Where(e => e.Enabled == true
+                        && e.InstalledByDefault != true
+                        && e.InstallType != ChromeExtensionInstallType.Component
                         && e.InstallType != ChromeExtensionInstallType.ExternalComponent);
 }
 
@@ -474,6 +487,8 @@ public sealed record ChromeProfileRow(
 /// which is what an operator searches the fleet for. <paramref name="UpdateUrl"/>
 /// is agent-reported text bounded by length only: it is for display, is not
 /// validated as a URL, and must never be rendered as a link target.
+/// <paramref name="IsActive"/> is whether the row counts -- enabled, not built in,
+/// not default-installed -- which is what Chrome's own extensions menu shows.
 /// </summary>
 public sealed record ChromeExtensionRow(
     Guid ExtensionRowId,
@@ -485,6 +500,8 @@ public sealed record ChromeExtensionRow(
     string InstallType,
     bool IsManaged,
     bool IsComponent,
+    bool? InstalledByDefault,
+    bool IsActive,
     bool? FromWebStore,
     string? UpdateUrl,
     DateTimeOffset? InstalledAt,

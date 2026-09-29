@@ -52,7 +52,8 @@ public sealed record ChromeExtensionEntry(
     bool? FromWebStore,
     string? UpdateUrl,
     DateTimeOffset? InstalledAt,
-    DateTimeOffset? UpdatedAt);
+    DateTimeOffset? UpdatedAt,
+    bool? InstalledByDefault = null);
 
 /// <summary>
 /// One profile directory the Windows collector found and read, with the
