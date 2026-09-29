@@ -445,13 +445,22 @@ chmod 644 "${pgadmin_dir}/servers.json"
 # ignores a pass file it does not own, so the ownership given by the first (root)
 # run has to survive every later run made as an ordinary user.
 pgpass_line="$(printf 'postgres:5432:%s:%s:%s' "$POSTGRES_DB" "$POSTGRES_SUPERUSER" "$POSTGRES_SUPERUSER_PASSWORD")"
-if [ ! -f "${pgadmin_dir}/pgpass" ] || [ "$(cat "${pgadmin_dir}/pgpass" 2>/dev/null)" != "$pgpass_line" ]; then
+if [ -f "${pgadmin_dir}/pgpass" ] && [ ! -r "${pgadmin_dir}/pgpass" ]; then
+    # Owned by pgAdmin's uid, 0600 - exactly as the first root run left it - and
+    # this run is not root, so it can neither read nor rewrite it. Comparing
+    # anyway would read as "different", try to overwrite, and abort the whole
+    # script under set -e AFTER .env had already been changed. Leave it: only a
+    # database password change needs it rewritten, and that is a root operation.
+    echo "==> ${pgadmin_dir}/pgpass belongs to pgAdmin; leaving it (re-run as root after a password change)"
+elif [ ! -f "${pgadmin_dir}/pgpass" ] || [ "$(cat "${pgadmin_dir}/pgpass" 2>/dev/null)" != "$pgpass_line" ]; then
     printf '%s\n' "$pgpass_line" > "${pgadmin_dir}/pgpass"
     chmod 600 "${pgadmin_dir}/pgpass"
     chown 5050:5050 "${pgadmin_dir}/pgpass" 2>/dev/null \
         || echo "    note: could not chown pgadmin/pgpass to 5050 (needs root); pgAdmin will ask for the database password instead"
 fi
 
-echo "==> rendered ${pgadmin_dir}/servers.json and ${pgadmin_dir}/pgpass"
+# pgpass reports for itself above: it is rewritten only when it changes, and only
+# by a run that can read it.
+echo "==> rendered ${pgadmin_dir}/servers.json"
 echo
 echo "generate-env.sh: done"
