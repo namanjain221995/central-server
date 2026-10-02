@@ -7,6 +7,12 @@ this document is the "how do I operate it" companion.
 
 ## Backup and restore
 
+> **Docker deployment:** use `deploy/docker/backup.sh` (nightly encrypted bundle
+> of database, secrets, certificates and packages) and `deploy/docker/restore.sh`
+> (rebuild on a new machine). The full procedure is in
+> [runbooks/disaster-recovery.md](runbooks/disaster-recovery.md). The rest of this
+> section describes the native deployment.
+
 All durable state is in PostgreSQL plus the package content store. Redis holds
 only cache/session data and is reconstructable.
 

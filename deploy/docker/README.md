@@ -170,11 +170,12 @@ restart policy — which is correct, because the schema it would apply is alread
 applied. Migrations run when you deploy, which is the only time they need to.
 
 Back up the database and the secrets **together** — one without the other is
-not a restore:
+not a restore. `backup.sh` does that nightly into one encrypted bundle, and
+`restore.sh` rebuilds the whole server from a bundle on a new machine. See
+[docs/runbooks/disaster-recovery.md](../../docs/runbooks/disaster-recovery.md).
 
 ```bash
-docker compose exec -T postgres pg_dump -U postgres -Fc endpoint_platform > epp-$(date +%F).dump
-cp .env epp-$(date +%F).env               # 0600, store it somewhere safe
+sudo ./backup.sh --init && sudo ./backup.sh && sudo ./backup.sh --install-timer
 ```
 
 Rotating a database or Redis password means updating `.env` **and** telling the

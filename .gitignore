@@ -113,3 +113,7 @@ deploy/docker/pgadmin/servers.json
 # token certbot uses for DNS-01. Both exist only on the deployment host.
 deploy/docker/letsencrypt/
 deploy/docker/cloudflare.ini
+# Encrypted backup bundles (backup.sh / restore.sh). Encrypted, but each holds
+# every recovery key: they are copied here during a restore and never committed.
+epp-backup-*.tar.gpg*
+*.tar.gpg

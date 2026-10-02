@@ -62,6 +62,11 @@ keys. Do not re-enable it without asking.
 - `MFA_TOTP_KEY` — losing it makes every authenticator enrolment unreadable and
   **nobody can sign in**.
 
+`deploy/docker/backup.sh` bundles these with the database into one GPG-encrypted
+file nightly; `restore.sh` rebuilds the server from it on new hardware
+(`docs/runbooks/disaster-recovery.md`). Never decrypt a bundle anywhere but the
+machine being restored, and never commit one.
+
 None of them may ever reach the **Agent API**, which every managed endpoint can
 talk to. `AgentApiKeyBoundaryGuard` refuses to start that process if any is
 present. The Agent API *does* get `RECOVERY_SEALING_PUBLIC_KEY`: it only
