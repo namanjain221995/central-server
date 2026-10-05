@@ -123,19 +123,37 @@ work="$(mktemp -d "${root_dir}/.work-XXXXXX")"
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
-compose() { docker compose "$@" </dev/null; }
+# The PostgreSQL client tools run in a THROWAWAY container of a separately
+# pulled image, connecting to the database over the compose network - not
+# inside the long-running postgres container. A pull is checked against the
+# registry's digests, so a client binary damaged on this disk (it happened:
+# pg_dump in the running container's image segfaulted on every call) cannot
+# silently break the backup. Same major version as the server.
+pg_image="${BACKUP_PG_IMAGE:-postgres:17-alpine}"
+echo "==> client tools (${pg_image})"
+docker pull -q "$pg_image" >/dev/null || die "could not pull ${pg_image}"
+
+# The superuser password reaches the container through a 0600 env file in the
+# work directory, never through argv (visible to every account via ps).
+admin_password="$(env_value POSTGRES_ADMIN_PASSWORD)"
+[ -n "$admin_password" ] || die ".env has no POSTGRES_ADMIN_PASSWORD"
+printf 'PGPASSWORD=%s\nPGHOST=postgres\nPGUSER=postgres\n' "$admin_password" > "${work}/pg.env"
+unset admin_password
+pg() { docker run --rm -i --network endpoint-platform_backend --env-file "${work}/pg.env" "$pg_image" "$@"; }
 
 echo "==> database dump (${db})"
-compose exec -T postgres pg_dump -U postgres -Fc "$db" > "${work}/db.dump"
-tables="$(docker compose exec -T postgres pg_restore --list < "${work}/db.dump" | grep -c 'TABLE DATA' || true)"
+pg pg_dump -Fc "$db" </dev/null > "${work}/db.dump" \
+    || die "pg_dump failed (exit $?); no backup was made"
+listing="$(pg pg_restore --list < "${work}/db.dump")" \
+    || die "the dump cannot be read back by pg_restore; no backup was made"
+tables="$(grep -c 'TABLE DATA' <<<"$listing" || true)"
 [ "${tables:-0}" -gt 0 ] || die "the dump has no table data; refusing to call it a backup"
 echo "    ${tables} tables, $(du -h "${work}/db.dump" | cut -f1)"
 
 # Row counts the restore compares against, so "it came back" is a fact rather
 # than a feeling. Counts only: nothing here is sensitive.
 count() {
-    compose exec -T postgres psql -U postgres -d "$db" -At \
-        -c "select count(*) from endpoint_platform.$1" 2>/dev/null || echo "?"
+    pg psql -d "$db" -At -c "select count(*) from endpoint_platform.$1" </dev/null 2>/dev/null || echo "?"
 }
 
 echo "==> uploaded packages"
