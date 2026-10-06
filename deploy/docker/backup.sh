@@ -131,7 +131,19 @@ trap cleanup EXIT
 # silently break the backup. Same major version as the server.
 pg_image="${BACKUP_PG_IMAGE:-postgres:17-alpine}"
 echo "==> client tools (${pg_image})"
-docker pull -q "$pg_image" >/dev/null || die "could not pull ${pg_image}"
+# The registry can be briefly unreachable at night (seen: a 10 s timeout at
+# 02:39). Retry, then fall back to the copy already on this machine: a backup
+# from a previously pulled image beats no backup at all.
+pulled=0
+for attempt in 1 2 3; do
+    if docker pull -q "$pg_image" >/dev/null; then pulled=1; break; fi
+    [ "$attempt" -lt 3 ] && sleep 30
+done
+if [ "$pulled" -ne 1 ]; then
+    docker image inspect "$pg_image" >/dev/null 2>&1 \
+        || die "could not pull ${pg_image} and no local copy exists"
+    echo "    WARNING: registry unreachable; using the local copy of ${pg_image}"
+fi
 
 # The superuser password reaches the container through a 0600 env file in the
 # work directory, never through argv (visible to every account via ps).
