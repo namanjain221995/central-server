@@ -43,13 +43,24 @@ public sealed class PostgresFixture : IAsyncLifetime
         }
     }
 
-    public EndpointPlatformDbContext CreateDbContext(TimeProvider? timeProvider = null)
+    /// <param name="retryOnFailure">
+    /// Production enables Npgsql's retrying execution strategy, and that
+    /// strategy refuses a transaction it does not own -- a service that begins
+    /// one directly works in a plain context and fails on the real host. On by
+    /// default so the suites see what production sees; a test that drives a
+    /// transaction by hand to stage a race turns it off.
+    /// </param>
+    public EndpointPlatformDbContext CreateDbContext(TimeProvider? timeProvider = null, bool retryOnFailure = true)
     {
         var options = new DbContextOptionsBuilder<EndpointPlatformDbContext>()
             .UseNpgsql(ConnectionString, npgsql =>
             {
                 npgsql.MigrationsAssembly(EndpointPlatformDbContext.MigrationsAssemblyName);
                 npgsql.MigrationsHistoryTable("__ef_migrations_history", EndpointPlatformDbContext.Schema);
+                if (retryOnFailure)
+                {
+                    npgsql.EnableRetryOnFailure(3, TimeSpan.FromSeconds(5), errorCodesToAdd: null);
+                }
             })
             .AddInterceptors(
                 new DeviceGroupAssignmentInterceptor(),

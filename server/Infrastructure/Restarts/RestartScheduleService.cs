@@ -568,8 +568,22 @@ public sealed class RestartScheduleService(
         return due.Count;
     }
 
-    private async Task DispatchOneAsync(Guid scheduleId, CancellationToken cancellationToken)
+    /// <summary>
+    /// One schedule, one transaction, run through the connection's execution
+    /// strategy: production retries transient failures, and a strategy that
+    /// retries refuses a transaction it does not own. Every attempt starts from
+    /// a clean tracker and re-reads the schedule, so a retried unit sees the
+    /// row as it is and never re-saves an earlier attempt's work.
+    /// </summary>
+    private Task DispatchOneAsync(Guid scheduleId, CancellationToken cancellationToken)
     {
+        var strategy = _dbContext.Database.CreateExecutionStrategy();
+        return strategy.ExecuteAsync(() => DispatchOneInTransactionAsync(scheduleId, cancellationToken));
+    }
+
+    private async Task DispatchOneInTransactionAsync(Guid scheduleId, CancellationToken cancellationToken)
+    {
+        _dbContext.ChangeTracker.Clear();
         await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
 
         try
