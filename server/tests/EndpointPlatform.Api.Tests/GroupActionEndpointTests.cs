@@ -504,7 +504,7 @@ public sealed class GroupActionEndpointTests(AdminApiPostgresFixture fixture)
     /// late -- never as cancelled.
     /// </summary>
     [Fact]
-    public async Task Cancelling_cancels_queued_restarts_and_reports_delivered_ones_as_too_late()
+    public async Task Cancelling_cancels_queued_restarts_and_reports_delivered_ones_on_an_old_agent_as_unsupported()
     {
         using var client = await ItAdminAsync();
         var queued = await _support.SeedDeviceAsync();
@@ -518,13 +518,47 @@ public sealed class GroupActionEndpointTests(AdminApiPostgresFixture fixture)
         response.StatusCode.ShouldBe(HttpStatusCode.OK);
         var byDevice = ByDevice((await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("devices"));
         byDevice[queued].GetProperty("outcome").GetString().ShouldBe("Cancelled");
-        byDevice[delivered].GetProperty("outcome").GetString().ShouldBe("TooLateToCancel",
-            "a delivered restart must not be shown as cancelled");
+        byDevice[delivered].GetProperty("outcome").GetString().ShouldBe("CancelUnsupported",
+            "a delivered restart on a 1.9.0 agent must not be shown as cancelled: that agent cannot abort it");
 
         await using var db = _fixture.CreateDbContext();
         (await db.DeviceTasks.AsNoTracking().SingleAsync(t => t.Id == queuedTask)).Status.ShouldBe(DeviceTaskStatus.Cancelled);
         (await db.DeviceTasks.AsNoTracking().SingleAsync(t => t.Id == deliveredTask)).Status.ShouldBe(DeviceTaskStatus.Delivered,
             "the delivered restart's state must be left exactly as it was");
+        (await _support.TasksAsync(delivered, DeviceTaskType.CancelRestart)).ShouldBe(0, "an agent without the executor is never sent one");
+    }
+
+    /// <summary>
+    /// On an agent that can abort, a delivered restart gets a CancelRestart task
+    /// and is reported as requested -- not cancelled, because only the device's
+    /// confirmation makes it so. The task to watch is the cancellation.
+    /// </summary>
+    [Fact]
+    public async Task Cancelling_a_delivered_restart_on_a_current_agent_sends_a_cancellation_to_the_device()
+    {
+        using var client = await ItAdminAsync();
+        var device = await _support.SeedDeviceAsync(agentVersion: "1.14.0");
+        var group = await _support.CreateGroupAsync(client, UniqueName("CancelLive"), device);
+        var restart = await _support.SeedQueuedRestartAsync(device, delivered: true);
+
+        var body = await (await client.PostAsync(Action(group, "cancel-restart"), content: null)).Content.ReadFromJsonAsync<JsonElement>();
+
+        var result = ByDevice(body.GetProperty("devices"))[device];
+        result.GetProperty("outcome").GetString().ShouldBe("CancelRequested");
+        var cancelTaskId = result.GetProperty("taskId").GetGuid();
+        cancelTaskId.ShouldNotBe(restart, "the task reported is the cancellation, whose result is the device's answer");
+
+        await using var db = _fixture.CreateDbContext();
+        var cancel = await db.DeviceTasks.AsNoTracking().SingleAsync(t => t.Id == cancelTaskId);
+        cancel.Type.ShouldBe(DeviceTaskType.CancelRestart);
+        JsonDocument.Parse(cancel.PayloadJson!).RootElement.GetProperty("restartTaskId").GetGuid().ShouldBe(restart);
+        (await db.DeviceTasks.AsNoTracking().SingleAsync(t => t.Id == restart)).Status.ShouldBe(DeviceTaskStatus.Delivered,
+            "the restart stays as it is until the device confirms the abort");
+
+        // Asking again does not queue a second cancellation.
+        var again = await (await client.PostAsync(Action(group, "cancel-restart"), content: null)).Content.ReadFromJsonAsync<JsonElement>();
+        ByDevice(again.GetProperty("devices"))[device].GetProperty("outcome").GetString().ShouldBe("CancelRequested");
+        (await _support.TasksAsync(device, DeviceTaskType.CancelRestart)).ShouldBe(1);
     }
 
     [Fact]

@@ -3,7 +3,7 @@
   <PropertyGroup>
     <!-- The agent is a separately distributed product; it does not share the
          server's version. This flows to the MSI name and the dashboard. -->
-    <VersionPrefix>1.14.0</VersionPrefix>
+    <VersionPrefix>1.14.1</VersionPrefix>
     <!--
       Plain net10.0-windows rather than net10.0-windows10.0.x: the agent uses
       Win32 P/Invoke, WMI and DPAPI, none of which need the WinRT projections that

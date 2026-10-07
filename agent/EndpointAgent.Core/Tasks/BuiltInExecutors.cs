@@ -114,8 +114,15 @@ public sealed class RestartTaskExecutor(
     IRestartNotifier? notifier = null)
     : DeviceControlTaskExecutor(deviceControl, logger)
 {
-    /// <summary>Windows: a system shutdown has already been scheduled.</summary>
+    /// <summary>Windows: a system shutdown is in progress (<c>ERROR_SHUTDOWN_IN_PROGRESS</c>).</summary>
     internal const int ErrorShutdownInProgress = 1115;
+
+    /// <summary>
+    /// Windows: a timed shutdown is already scheduled (<c>ERROR_SHUTDOWN_IS_SCHEDULED</c>).
+    /// The code <c>InitiateSystemShutdownEx</c> actually returns when a countdown
+    /// is running; it means the same thing for this task as 1115.
+    /// </summary>
+    internal const int ErrorShutdownIsScheduled = 1190;
 
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly IRestartNotifier _notifier = notifier ?? NullRestartNotifier.Instance;
@@ -143,7 +150,7 @@ public sealed class RestartTaskExecutor(
         {
             await DeviceControl.RestartAsync(grace, message, cancellationToken);
         }
-        catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorShutdownInProgress)
+        catch (Win32Exception ex) when (ex.NativeErrorCode is ErrorShutdownInProgress or ErrorShutdownIsScheduled)
         {
             Logger.LogWarning(
                 "Restart task {TaskId} not applied: a restart or shutdown is already in progress on this device.",

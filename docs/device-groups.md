@@ -111,7 +111,7 @@ every device.
 | `lock` | `device.lock` | `LockDevice` |
 | `signout` | `device.sign_out_user` | `SignOutUser` |
 | `force-stop` | `task.execute` | Force Stop, through `ApplicationForceStopService` |
-| `cancel-restart` | `device.restart` | Cancels queued `RestartDevice` tasks |
+| `cancel-restart` | `device.restart` | Cancels `RestartDevice` tasks: queued ones where they sit, accepted ones through the device (`CancelRestart`) |
 
 There is no Sleep: the platform has no sleep action for a single device, so it has
 none for a group.
@@ -193,16 +193,20 @@ active restart.
 ### Cancelling
 
 Only an administrator, through the console, can cancel a restart. The group
-`cancel-restart` action cancels only restarts that are still **Queued**: once
-delivered the agent may already have handed the countdown to Windows, and this
-action does not reach it; such a restart is reported **Already delivered — too
-late to cancel**, never as cancelled. Single-device cancellation is device-scoped
-as well.
+`cancel-restart` action, the single-device cancel and Restart Management all
+make the same decision per restart (`RestartCancellationService`), judged from
+where the restart is at that moment:
 
-Reaching a countdown Windows already owns is what [Restart
-Management](restart-management.md) adds: a department's scheduled restart can be
-cancelled through the devices with the `CancelRestart` task (agent 1.14.0 and
-later), per device and reported per device. The group action here is unchanged.
+| The restart is | What happens | Reported as |
+|---|---|---|
+| still **Queued** | cancelled where it sits; nothing reached the device | `Cancelled` |
+| delivered, or accepted with Windows' moment still ahead | a `CancelRestart` task (agent 1.14.0+) tells the device to abort its countdown; the device confirms on its next check-in | `CancelRequested`, then the cancellation task's own result |
+| accepted, on an agent before 1.14.0 | the countdown cannot be reached; the restart goes ahead | `CancelUnsupported` |
+| past its moment, failed or expired | nothing a device can undo | `TooLateToCancel` |
+
+"Requested" is never shown as "cancelled": only the device's confirmation turns
+the restart task Cancelled. Single-device cancellation is device-scoped as well.
+See [device-restart.md](device-restart.md) for what the device does.
 
 The Techsara notice on the device has no cancel control. Note that Windows itself
 still lets a user who holds `SeShutdownPrivilege` — interactive users on client

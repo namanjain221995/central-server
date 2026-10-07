@@ -26,7 +26,7 @@ public sealed class RestartScheduleOptions
     /// a surprise, not a maintenance window.
     /// </summary>
     [Range(60, 86_400)]
-    public int MissedAfterSeconds { get; init; } = 900;
+    public int MissedAfterSeconds { get; init; } = 300;
 
     /// <summary>How often the sweeper looks for schedules that are due.</summary>
     [Range(5, 300)]

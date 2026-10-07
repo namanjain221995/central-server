@@ -8,6 +8,7 @@ import {
   type FleetTaskPage,
 } from '../api/client'
 import { Icon } from '../components/Icon'
+import { isCancellableTask } from './restartView'
 
 const PAGE_SIZE = 50
 const POLL_INTERVAL_MS = 15_000
@@ -59,12 +60,16 @@ export function TasksPage() {
     setNotice(null)
     setError(null)
     try {
-      await cancelDeviceTask(task.deviceId, task.id)
-      setNotice(`${task.type} for ${task.deviceDisplayName ?? task.deviceHostname} cancelled.`)
+      const requested = await cancelDeviceTask(task.deviceId, task.id)
+      setNotice(
+        requested
+          ? `Cancellation sent to ${task.deviceDisplayName ?? task.deviceHostname}; it confirms on its next check-in.`
+          : `${task.type} for ${task.deviceDisplayName ?? task.deviceHostname} cancelled.`,
+      )
     } catch (e) {
       setError(
         e instanceof ApiError && e.status === 409
-          ? 'Too late to cancel — the task was already delivered to the agent or has finished.'
+          ? (e.detail ?? 'Too late to cancel — the task was already delivered to the agent or has finished.')
           : e instanceof ApiError && e.status === 403
             ? 'You do not have permission to cancel this type of task.'
             : 'The task could not be cancelled.',
@@ -169,7 +174,7 @@ export function TasksPage() {
                         </span>
                       </td>
                       <td style={{ textAlign: 'right' }}>
-                        {t.status === 'Queued' && (
+                        {isCancellableTask(t, new Date()) && (
                           <button
                             type="button"
                             className="btn-ghost btn-sm"

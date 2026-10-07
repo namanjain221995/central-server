@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
 using EndpointPlatform.Domain.Devices;
 using EndpointPlatform.Domain.Enrollment;
 using EndpointPlatform.Domain.Tasks;
@@ -24,7 +26,7 @@ public sealed class TaskManagementEndpointTests(AdminApiPostgresFixture fixture)
     private static Uri CancelOf(Guid deviceId, Guid taskId) =>
         new($"/admin/v1/devices/{deviceId}/tasks/{taskId}/cancel", UriKind.Relative);
 
-    private async Task<Guid> SeedDeviceAsync(string hostname)
+    private async Task<Guid> SeedDeviceAsync(string hostname, string agentVersion = "1.0.0")
     {
         await using var db = _fixture.CreateDbContext();
 
@@ -41,7 +43,7 @@ public sealed class TaskManagementEndpointTests(AdminApiPostgresFixture fixture)
         db.EnrollmentTokens.Add(token);
 
         var device = Device.Enroll(
-            organizationId, hostname, $"smbios-{Guid.CreateVersion7()}", "1.0.0",
+            organizationId, hostname, $"smbios-{Guid.CreateVersion7()}", agentVersion,
             "Windows 11 Pro", token.Id, DateTimeOffset.UtcNow);
         db.Devices.Add(device);
 
@@ -98,7 +100,8 @@ public sealed class TaskManagementEndpointTests(AdminApiPostgresFixture fixture)
     public async Task A_delivered_task_cannot_be_cancelled()
     {
         // The agent may already be acting on it; the server refuses rather than
-        // recording a cancellation that changes nothing on the machine.
+        // recording a cancellation that changes nothing on the machine. For a
+        // restart on an agent that cannot abort (1.0.0 here), the same answer.
         var deviceId = await SeedDeviceAsync("TASK-CANCEL-2");
         var taskId = await SeedTaskAsync(deviceId, DeviceTaskType.RestartDevice, delivered: true);
         var token = await _fixture.SignInAsync(AdminApiPostgresFixture.ItAdminEmail);
@@ -108,6 +111,42 @@ public sealed class TaskManagementEndpointTests(AdminApiPostgresFixture fixture)
 
         response.StatusCode.ShouldBe(HttpStatusCode.Conflict);
         (await StatusOfAsync(taskId)).ShouldBe(DeviceTaskStatus.Delivered);
+
+        var lock_ = await SeedTaskAsync(deviceId, DeviceTaskType.LockDevice, delivered: true);
+        (await client.PostAsync(CancelOf(deviceId, lock_), content: null)).StatusCode.ShouldBe(HttpStatusCode.Conflict,
+            "only a restart can be taken back after delivery");
+    }
+
+    /// <summary>
+    /// A restart the device already has can still be taken back on an agent
+    /// that can abort it: the server queues a CancelRestart task and answers
+    /// 202 with it. The restart itself changes only when the device confirms.
+    /// </summary>
+    [Fact]
+    public async Task A_delivered_restart_on_a_current_agent_is_cancelled_through_the_device()
+    {
+        var deviceId = await SeedDeviceAsync("TASK-CANCEL-3", agentVersion: "1.14.0");
+        var taskId = await SeedTaskAsync(deviceId, DeviceTaskType.RestartDevice, delivered: true);
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.ItAdminEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var response = await client.PostAsync(CancelOf(deviceId, taskId), content: null);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("status").GetString().ShouldBe("CancelRequested");
+        var cancelTaskId = body.GetProperty("cancelTaskId").GetGuid();
+        (await StatusOfAsync(taskId)).ShouldBe(DeviceTaskStatus.Delivered, "requested is not done");
+
+        await using var db = _fixture.CreateDbContext();
+        var cancel = await db.DeviceTasks.AsNoTracking().SingleAsync(t => t.Id == cancelTaskId);
+        cancel.Type.ShouldBe(DeviceTaskType.CancelRestart);
+        cancel.DeviceId.ShouldBe(deviceId);
+        JsonDocument.Parse(cancel.PayloadJson!).RootElement.GetProperty("restartTaskId").GetGuid().ShouldBe(taskId);
+
+        // A second press reports the cancellation already on its way, not a second one.
+        (await client.PostAsync(CancelOf(deviceId, taskId), content: null)).StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        (await db.DeviceTasks.CountAsync(t => t.DeviceId == deviceId && t.Type == DeviceTaskType.CancelRestart)).ShouldBe(1);
     }
 
     [Fact]

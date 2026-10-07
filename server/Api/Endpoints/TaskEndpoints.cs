@@ -96,6 +96,10 @@ public static class TaskEndpoints
                     t.DeliveredAt,
                     t.CompletedAt,
                     t.ResultMessage,
+                    // The agent's structured result, never the payload: for a
+                    // restart it says when Windows acts, which is what decides
+                    // whether the console still offers Cancel.
+                    t.ResultJson,
                 })
             // Re-asserted after the join: SQL only promises the pre-join Skip/Take
             // picked the right page, not that the joined rows come back in order.

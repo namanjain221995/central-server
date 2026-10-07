@@ -7,9 +7,33 @@ import {
   describeDuration,
   describeRestartTiming,
   isAcceptedRestartDelay,
+  isCancellableTask,
   restartResult,
   restartStage,
 } from '../../pages/restartView'
+
+describe('cancellable tasks', () => {
+  const now = new Date('2026-10-08T10:00:00Z')
+  const accepted = (restartAt: string) => JSON.stringify({ graceSeconds: 300, restartAt, outcome: 'Scheduled' })
+
+  it('offers cancel for anything still queued', () => {
+    expect(isCancellableTask({ type: 'LockDevice', status: 'Queued', resultJson: null }, now)).toBe(true)
+    expect(isCancellableTask({ type: 'RestartDevice', status: 'Queued', resultJson: null }, now)).toBe(true)
+  })
+
+  it('offers cancel for a restart the device has but Windows has not acted on', () => {
+    expect(isCancellableTask({ type: 'RestartDevice', status: 'Delivered', resultJson: null }, now)).toBe(true)
+    expect(isCancellableTask({ type: 'RestartDevice', status: 'Succeeded', resultJson: accepted('2026-10-08T10:04:00Z') }, now)).toBe(true)
+  })
+
+  it('does not offer cancel once the restart has happened, or for other delivered tasks', () => {
+    expect(isCancellableTask({ type: 'RestartDevice', status: 'Succeeded', resultJson: accepted('2026-10-08T09:59:00Z') }, now)).toBe(false)
+    expect(isCancellableTask({ type: 'RestartDevice', status: 'Failed', resultJson: null }, now)).toBe(false)
+    expect(isCancellableTask({ type: 'RestartDevice', status: 'Cancelled', resultJson: null }, now)).toBe(false)
+    expect(isCancellableTask({ type: 'LockDevice', status: 'Delivered', resultJson: null }, now)).toBe(false)
+    expect(isCancellableTask({ type: 'ShutdownDevice', status: 'Succeeded', resultJson: null }, now)).toBe(false)
+  })
+})
 
 /**
  * The Restart Device dialog's rules and the way a restart task is described

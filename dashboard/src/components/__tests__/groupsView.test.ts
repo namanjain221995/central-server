@@ -99,6 +99,20 @@ describe('per-device state', () => {
 
   it('does not show a delivered restart as cancelled', () => {
     expect(deviceState('cancel-restart', result('TooLateToCancel'), undefined, now)).toBe('TooLateToCancel')
+    expect(deviceState('cancel-restart', result('CancelUnsupported'), undefined, now)).toBe('CancelUnsupported')
+  })
+
+  it('shows a requested cancellation as cancelled only once the device confirms', () => {
+    const cancel = (status: string) => ({ type: 'CancelRestart', status, resultJson: null })
+    expect(deviceState('cancel-restart', result('CancelRequested'), undefined, now)).toBe('CancelRequested')
+    expect(deviceState('cancel-restart', result('CancelRequested'), cancel('Queued'), now)).toBe('CancelRequested')
+    expect(deviceState('cancel-restart', result('CancelRequested'), cancel('Delivered'), now)).toBe('CancelRequested')
+    expect(deviceState('cancel-restart', result('CancelRequested'), cancel('Succeeded'), now)).toBe('Cancelled')
+    expect(deviceState('cancel-restart', result('CancelRequested'), cancel('Failed'), now)).toBe('Failed')
+    expect(deviceState('cancel-restart', result('CancelRequested'), cancel('Expired'), now)).toBe('Expired')
+    expect(isSettled(['CancelRequested'])).toBe(false)
+    expect(aggregate('cancel-restart', ['Cancelled', 'CancelRequested'])).toBe('InProgress')
+    expect(aggregate('cancel-restart', ['Cancelled', 'CancelUnsupported'])).toBe('CompletedWithIssues')
   })
 
   it('never paints a scheduled or offline device green', () => {

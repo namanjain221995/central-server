@@ -81,7 +81,7 @@ device is not restarted on their behalf. Offline devices are skipped, as a
 group restart skips them, and are **not** restarted when they come back; the
 page says so before the restart is confirmed.
 
-**Missed.** A schedule found more than 15 minutes
+**Missed.** A schedule found more than 5 minutes
 (`RestartSchedules:MissedAfterSeconds`) past its dispatch moment, because the
 server was not running, is marked Missed and nothing is sent. A restart hours
 after it was expected is a surprise, not a maintenance window.
@@ -189,7 +189,7 @@ device leaves its rows as history.
 | Setting | Default | Meaning |
 |---|---|---|
 | `RestartSchedules:WarningSeconds` | 300 | Lead time, and the warning Windows shows (30–3600) |
-| `RestartSchedules:MissedAfterSeconds` | 900 | How late a dispatch may still go out (60–86400) |
+| `RestartSchedules:MissedAfterSeconds` | 300 | How late a dispatch may still go out (60–86400) |
 | `RestartSchedules:SweepIntervalSeconds` | 15 | How often due schedules are looked for (5–300) |
 
 Admin API only, as `ENDPOINTPLATFORM_RestartSchedules__WarningSeconds` and so

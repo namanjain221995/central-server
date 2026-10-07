@@ -49,6 +49,7 @@ namespace EndpointPlatform.Infrastructure.Restarts;
 public sealed class RestartScheduleService(
     EndpointPlatformDbContext dbContext,
     DeviceTaskService taskService,
+    RestartCancellationService cancellation,
     DeviceScopeAuthorizer scope,
     AuditWriter auditWriter,
     TimeProvider timeProvider,
@@ -68,6 +69,7 @@ public sealed class RestartScheduleService(
 
     private readonly EndpointPlatformDbContext _dbContext = dbContext;
     private readonly DeviceTaskService _taskService = taskService;
+    private readonly RestartCancellationService _cancellation = cancellation;
     private readonly DeviceScopeAuthorizer _scope = scope;
     private readonly AuditWriter _auditWriter = auditWriter;
     private readonly TimeProvider _timeProvider = timeProvider;
@@ -369,10 +371,6 @@ public sealed class RestartScheduleService(
         var byDevice = rows.ToDictionary(r => r.DeviceId);
 
         var targets = deviceIds is null ? rows.Select(r => r.DeviceId).ToList() : deviceIds.Distinct().ToList();
-        var agents = await _dbContext.Devices.AsNoTracking()
-            .Where(d => targets.Contains(d.Id))
-            .Select(d => new { d.Id, d.AgentVersion, d.Status })
-            .ToDictionaryAsync(d => d.Id, cancellationToken);
 
         var results = new List<RestartScheduleCancelDeviceResult>(targets.Count);
         foreach (var deviceId in targets)
@@ -389,10 +387,7 @@ public sealed class RestartScheduleService(
                 continue;
             }
 
-            var agent = agents.GetValueOrDefault(deviceId);
-            var (outcome, record) = await CancelOneAsync(
-                organizationId, snapshot, agent?.AgentVersion, agent?.Status == DeviceStatus.Active,
-                actorId, actorDisplay, now, cancellationToken);
+            var (outcome, record) = await CancelOneAsync(organizationId, snapshot, actorId, actorDisplay, now, cancellationToken);
             results.Add(new(deviceId, snapshot.Hostname, outcome));
 
             if (record is { } change)
@@ -441,93 +436,51 @@ public sealed class RestartScheduleService(
     private readonly record struct CancelRecord(RestartCancelOutcome Outcome, Guid? CancelTaskId);
 
     /// <summary>
-    /// What to do about one dispatched device, judged from where its restart is
-    /// right now. Acts through the task service and returns what to record on
-    /// the device's row; the caller saves that, so this never leaves a tracked
-    /// change behind across a task-service call.
+    /// What to do about one dispatched device: the shared cancellation
+    /// decides from where the restart is right now; this only turns its
+    /// answer into what the row records. The caller saves that afterwards, so
+    /// nothing tracked is held across the task-service calls underneath.
     /// </summary>
     private async Task<(RestartScheduleCancelDeviceOutcome Outcome, CancelRecord? Record)> CancelOneAsync(
-        Guid organizationId, RestartScheduleDevice row, string? agentVersion, bool deviceActive,
-        Guid actorId, string actorDisplay, DateTimeOffset now, CancellationToken cancellationToken)
+        Guid organizationId, RestartScheduleDevice row, Guid actorId, string actorDisplay, DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
-        if (row.DispatchOutcome != RestartDispatchOutcome.Queued || row.RestartTaskId is null)
+        if (row.DispatchOutcome != RestartDispatchOutcome.Queued || row.RestartTaskId is not { } restartTaskId)
         {
             return (RestartScheduleCancelDeviceOutcome.NothingToCancel, null);
         }
 
-        var restart = await _dbContext.DeviceTasks.AsNoTracking()
-            .SingleOrDefaultAsync(t => t.Id == row.RestartTaskId.Value, cancellationToken);
-        if (restart is null)
-        {
-            return (RestartScheduleCancelDeviceOutcome.NothingToCancel, null);
-        }
-
+        // What the row already knows is final: a restart cancelled before the
+        // device saw it stays cancelled, and one that had nothing to cancel
+        // still has nothing. Everything else is judged live, so a cancellation
+        // the device refused, or an agent too old at the time, can be tried again.
         switch (row.CancelOutcome)
         {
             case RestartCancelOutcome.CancelledBeforeDelivery:
                 return (RestartScheduleCancelDeviceOutcome.AlreadyCancelled, null);
-
-            case RestartCancelOutcome.Requested when row.CancelTaskId is { } cancelId:
-                var cancel = await _dbContext.DeviceTasks.AsNoTracking()
-                    .SingleOrDefaultAsync(t => t.Id == cancelId, cancellationToken);
-                if (cancel?.Status is DeviceTaskStatus.Queued or DeviceTaskStatus.Delivered)
-                {
-                    return (RestartScheduleCancelDeviceOutcome.AlreadyRequested, null);
-                }
-
-                if (cancel?.Status == DeviceTaskStatus.Succeeded)
-                {
-                    return (RestartScheduleCancelDeviceOutcome.AlreadyCancelled, null);
-                }
-
-                // Failed, expired or gone: the device did not act on it. Try
-                // again below if there is still something to cancel.
-                break;
-
             case RestartCancelOutcome.NotApplicable:
                 return (RestartScheduleCancelDeviceOutcome.NothingToCancel, null);
-
-            // Unsupported: the agent may have been updated since; re-check below.
         }
 
-        if (restart.Status == DeviceTaskStatus.Queued)
+        var attempt = await _cancellation.CancelAsync(
+            organizationId, row.DeviceId, restartTaskId, actorId, actorDisplay, cancellationToken);
+
+        return attempt.Outcome switch
         {
-            var cancelled = await _taskService.CancelAsync(
-                organizationId, row.DeviceId, restart.Id, actorId, actorDisplay, cancellationToken);
-            if (cancelled == TaskCancelResult.Success)
-            {
-                return (RestartScheduleCancelDeviceOutcome.CancelledBeforeDelivery,
-                    new CancelRecord(RestartCancelOutcome.CancelledBeforeDelivery, null));
-            }
-
-            // Claimed in the same instant: the device has it now. Re-read and
-            // carry on as for a delivered one.
-            restart = await _dbContext.DeviceTasks.AsNoTracking().SingleAsync(t => t.Id == restart.Id, cancellationToken);
-        }
-
-        var pendingOnDevice = restart.Status == DeviceTaskStatus.Delivered
-            || (restart.Status == DeviceTaskStatus.Succeeded && RestartAtOf(restart) is { } at && at > now);
-        if (!pendingOnDevice)
-        {
-            // Already restarted, failed, expired or cancelled: nothing a device can undo.
-            return (RestartScheduleCancelDeviceOutcome.NothingToCancel, new CancelRecord(RestartCancelOutcome.NotApplicable, null));
-        }
-
-        if (!deviceActive || !DeviceTaskCatalog.IsSupportedBy(CancelDefinition, agentVersion))
-        {
-            return (RestartScheduleCancelDeviceOutcome.Unsupported, new CancelRecord(RestartCancelOutcome.Unsupported, null));
-        }
-
-        var task = await _taskService.QueueAsync(
-            organizationId, row.DeviceId, DeviceTaskType.CancelRestart,
-            new TaskPayloads.CancelRestart(restart.Id, actorDisplay), actorId, actorDisplay, cancellationToken);
-        if (task is null)
-        {
-            return (RestartScheduleCancelDeviceOutcome.Unsupported, new CancelRecord(RestartCancelOutcome.Unsupported, null));
-        }
-
-        return (RestartScheduleCancelDeviceOutcome.CancelRequested, new CancelRecord(RestartCancelOutcome.Requested, task.Id));
+            RestartCancelAttemptOutcome.CancelledBeforeDelivery => (RestartScheduleCancelDeviceOutcome.CancelledBeforeDelivery,
+                new CancelRecord(RestartCancelOutcome.CancelledBeforeDelivery, null)),
+            RestartCancelAttemptOutcome.CancelRequested => (RestartScheduleCancelDeviceOutcome.CancelRequested,
+                new CancelRecord(RestartCancelOutcome.Requested, attempt.CancelTaskId)),
+            // Already on its way: point the row at that task if it does not already.
+            RestartCancelAttemptOutcome.AlreadyRequested => (RestartScheduleCancelDeviceOutcome.AlreadyRequested,
+                row.CancelTaskId == attempt.CancelTaskId ? null : new CancelRecord(RestartCancelOutcome.Requested, attempt.CancelTaskId)),
+            RestartCancelAttemptOutcome.AlreadyCancelled => (RestartScheduleCancelDeviceOutcome.AlreadyCancelled, null),
+            RestartCancelAttemptOutcome.Unsupported => (RestartScheduleCancelDeviceOutcome.Unsupported,
+                new CancelRecord(RestartCancelOutcome.Unsupported, null)),
+            _ => (RestartScheduleCancelDeviceOutcome.NothingToCancel, new CancelRecord(RestartCancelOutcome.NotApplicable, null)),
+        };
     }
+
 
     private void AuditCancel(
         RestartSchedule schedule, string groupName, Guid actorId, string actorDisplay, string scopeLabel,
@@ -814,7 +767,7 @@ public sealed class RestartScheduleService(
                 device is not null && IsOnline(device.LastSeenAt, now),
                 device?.AgentVersion ?? "",
                 supportsCancel,
-                state.ToString(), detail, row.RestartTaskId, row.CancelTaskId, restart is null ? null : RestartAtOf(restart));
+                state.ToString(), detail, row.RestartTaskId, row.CancelTaskId, restart is null ? null : RestartCancellationService.RestartAtOf(restart));
         }).ToList();
     }
 
@@ -862,7 +815,7 @@ public sealed class RestartScheduleService(
         }
 
         var pendingOnDevice = restart.Status is DeviceTaskStatus.Queued or DeviceTaskStatus.Delivered
-            || (restart.Status == DeviceTaskStatus.Succeeded && RestartAtOf(restart) is { } at && at > now);
+            || (restart.Status == DeviceTaskStatus.Succeeded && RestartCancellationService.RestartAtOf(restart) is { } at && at > now);
         // Judged from the agent as it is NOW, not as it was when the
         // cancellation was refused: a device updated since can be cancelled
         // from the page again, and the service re-checks it the same way.
@@ -876,7 +829,7 @@ public sealed class RestartScheduleService(
         {
             DeviceTaskStatus.Queued => (RestartScheduleDeviceState.Queued, "Waiting for the device to check in."),
             DeviceTaskStatus.Delivered => (RestartScheduleDeviceState.Executing, "The device has the task and has not reported yet."),
-            DeviceTaskStatus.Succeeded => RestartAtOf(restart) is { } when2 && when2 > now
+            DeviceTaskStatus.Succeeded => RestartCancellationService.RestartAtOf(restart) is { } when2 && when2 > now
                 ? (RestartScheduleDeviceState.Scheduled, restart.ResultMessage)
                 : (RestartScheduleDeviceState.Restarted, restart.ResultMessage),
             DeviceTaskStatus.Failed => (RestartScheduleDeviceState.Failed, restart.ResultMessage),
@@ -901,27 +854,6 @@ public sealed class RestartScheduleService(
     private bool IsOnline(DateTimeOffset? lastSeenAt, DateTimeOffset now) =>
         lastSeenAt is { } seen && now - seen <= _staleAfter;
 
-    /// <summary>When Windows said it would act, from the restart task's result; null until the device reported.</summary>
-    internal static DateTimeOffset? RestartAtOf(DeviceTask restart)
-    {
-        if (restart.ResultJson is null)
-        {
-            return null;
-        }
-
-        try
-        {
-            using var doc = JsonDocument.Parse(restart.ResultJson);
-            return doc.RootElement.TryGetProperty("restartAt", out var at) && at.ValueKind == JsonValueKind.String
-                && at.TryGetDateTimeOffset(out var value)
-                ? value
-                : null;
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
 
     private static bool IsUniqueViolation(DbUpdateException exception) =>
         exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };

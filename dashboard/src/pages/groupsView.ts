@@ -101,6 +101,8 @@ export type DeviceActionState =
   | 'Failed'
   | 'Expired'
   | 'Cancelled'
+  | 'CancelRequested'
+  | 'CancelUnsupported'
   | 'TooLateToCancel'
 
 /**
@@ -123,8 +125,23 @@ export function deviceState(
     case 'NotEligible':
     case 'NotAuthorized':
     case 'Cancelled':
+    case 'CancelUnsupported':
     case 'TooLateToCancel':
       return result.outcome
+    case 'CancelRequested':
+      // The task to watch is the cancellation itself: its result is the
+      // device's answer. Until it comes, the restart is neither cancelled nor
+      // not -- it is requested.
+      switch (task?.status) {
+        case 'Succeeded':
+          return 'Cancelled'
+        case 'Failed':
+          return 'Failed'
+        case 'Expired':
+          return 'Expired'
+        default:
+          return 'CancelRequested'
+      }
     case 'Queued':
       break
   }
@@ -176,7 +193,9 @@ export const DEVICE_STATE_LABELS: Record<DeviceActionState, string> = {
   Failed: 'Failed',
   Expired: 'Expired — device never received it',
   Cancelled: 'Cancelled',
-  TooLateToCancel: 'Already delivered — too late to cancel',
+  CancelRequested: 'Cancel sent — waiting for the device',
+  CancelUnsupported: 'Agent cannot cancel — update to 1.14.0',
+  TooLateToCancel: 'Too late — already restarting',
 }
 
 /** Badge tone for a state. Green is only for work the device actually did. */
@@ -191,11 +210,13 @@ export function deviceStateTone(state: DeviceActionState, action: GroupAction | 
     case 'Scheduled':
     case 'Offline':
     case 'AlreadyInProgress':
+    case 'CancelRequested':
       return 'warn'
     case 'NotEligible':
     case 'NotAuthorized':
     case 'Failed':
     case 'Expired':
+    case 'CancelUnsupported':
     case 'TooLateToCancel':
       return 'err'
   }
@@ -218,7 +239,14 @@ function isSuccess(state: DeviceActionState, action: GroupAction | 'cancel-resta
 
 /** A genuine failure, as opposed to a device that was merely busy or away. */
 function isFailure(state: DeviceActionState): boolean {
-  return state === 'Failed' || state === 'Expired' || state === 'NotEligible' || state === 'NotAuthorized' || state === 'TooLateToCancel'
+  return (
+    state === 'Failed' ||
+    state === 'Expired' ||
+    state === 'NotEligible' ||
+    state === 'NotAuthorized' ||
+    state === 'CancelUnsupported' ||
+    state === 'TooLateToCancel'
+  )
 }
 
 /**
@@ -232,7 +260,7 @@ function isFailure(state: DeviceActionState): boolean {
  * - Completed with issues otherwise.
  */
 export function aggregate(action: GroupAction | 'cancel-restart', states: readonly DeviceActionState[]): GroupAggregate {
-  if (states.some((s) => s === 'Pending' || s === 'Scheduled')) return 'InProgress'
+  if (states.some((s) => s === 'Pending' || s === 'Scheduled' || s === 'CancelRequested')) return 'InProgress'
   if (states.every((s) => s === 'Offline')) return 'NoEligibleDevices'
 
   const successes = states.filter((s) => isSuccess(s, action)).length
@@ -251,7 +279,7 @@ export function tally(states: readonly DeviceActionState[]): { label: string; co
 
 /** True once no device's state can change any more, so polling can stop. */
 export function isSettled(states: readonly DeviceActionState[]): boolean {
-  return !states.some((s) => s === 'Pending')
+  return !states.some((s) => s === 'Pending' || s === 'CancelRequested')
 }
 
 /** "Restart 4 devices?" -- the number is the online count, which is what will be sent. */

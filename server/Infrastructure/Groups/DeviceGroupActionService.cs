@@ -5,6 +5,7 @@ using EndpointPlatform.Domain.Tasks;
 using EndpointPlatform.Infrastructure.Auditing;
 using EndpointPlatform.Infrastructure.Configuration;
 using EndpointPlatform.Infrastructure.Persistence;
+using EndpointPlatform.Infrastructure.Restarts;
 using EndpointPlatform.Infrastructure.Security;
 using EndpointPlatform.Infrastructure.Software;
 using EndpointPlatform.Infrastructure.Tasks;
@@ -53,6 +54,7 @@ public enum GroupAction
 public sealed class DeviceGroupActionService(
     EndpointPlatformDbContext dbContext,
     DeviceTaskService taskService,
+    RestartCancellationService cancellation,
     DeviceScopeAuthorizer scope,
     ApplicationForceStopService forceStopService,
     AuditWriter auditWriter,
@@ -61,6 +63,7 @@ public sealed class DeviceGroupActionService(
 {
     private readonly EndpointPlatformDbContext _dbContext = dbContext;
     private readonly DeviceTaskService _taskService = taskService;
+    private readonly RestartCancellationService _cancellation = cancellation;
     private readonly DeviceScopeAuthorizer _scope = scope;
     private readonly ApplicationForceStopService _forceStopService = forceStopService;
     private readonly AuditWriter _auditWriter = auditWriter;
@@ -172,13 +175,16 @@ public sealed class DeviceGroupActionService(
     }
 
     /// <summary>
-    /// Cancels every restart in the group that has not yet been delivered.
+    /// Cancels every restart in the group that is still ahead of its device:
+    /// where it sits while Queued, through the device once the device has it.
     /// </summary>
     /// <remarks>
-    /// Cancellation exists only while a task is <see cref="DeviceTaskStatus.Queued"/>.
-    /// Once delivered the agent may already have handed the countdown to Windows,
-    /// and nothing in this platform can take it back, so those are reported as too
-    /// late rather than shown as cancelled. See docs/device-groups.md.
+    /// The decision per restart is <see cref="RestartCancellationService"/>'s,
+    /// the same one the single-device route and Restart Management use. A
+    /// restart the device has accepted gets a <c>CancelRestart</c> task and is
+    /// reported as requested, not cancelled, until the device confirms; one on
+    /// an agent that cannot abort is reported as unsupported; one whose moment
+    /// has passed is too late. See docs/device-groups.md.
     /// </remarks>
     public async Task<GroupActionResult?> CancelPendingRestartsAsync(
         Guid organizationId, Guid actorId, string actorDisplay, Guid groupId,
@@ -193,13 +199,24 @@ public sealed class DeviceGroupActionService(
         var (groupName, members) = resolution.Value;
         var memberIds = members.Select(m => m.Id).ToList();
         var hostnames = members.ToDictionary(m => m.Id, m => m.Hostname);
+        var now = _timeProvider.GetUtcNow();
 
-        var restarts = await _dbContext.DeviceTasks.AsNoTracking()
+        // Queued or delivered restarts, plus accepted ones whose moment is
+        // still ahead. The latter are Succeeded rows -- Windows accepted them --
+        // completed within the longest grace an agent applies; which of those
+        // are still counting down is decided from the result, in memory.
+        var horizon = now.AddSeconds(-RestartGrace.MaximumDelaySeconds);
+        var candidates = await _dbContext.DeviceTasks.AsNoTracking()
             .Where(t => t.Type == DeviceTaskType.RestartDevice
-                        && (t.Status == DeviceTaskStatus.Queued || t.Status == DeviceTaskStatus.Delivered)
-                        && memberIds.Contains(t.DeviceId))
-            .Select(t => new { t.Id, t.DeviceId })
+                        && memberIds.Contains(t.DeviceId)
+                        && (t.Status == DeviceTaskStatus.Queued
+                            || t.Status == DeviceTaskStatus.Delivered
+                            || (t.Status == DeviceTaskStatus.Succeeded && t.CompletedAt >= horizon)))
             .ToListAsync(cancellationToken);
+        var restarts = candidates
+            .Where(t => t.Status != DeviceTaskStatus.Succeeded || RestartCancellationService.IsPendingOnDevice(t, now))
+            .Select(t => new { t.Id, t.DeviceId })
+            .ToList();
 
         var results = new List<GroupActionDeviceResult>(restarts.Count);
         foreach (var restart in restarts)
@@ -212,12 +229,20 @@ public sealed class DeviceGroupActionService(
                 continue;
             }
 
-            var cancelled = await _taskService.CancelAsync(
+            var attempt = await _cancellation.CancelAsync(
                 organizationId, restart.DeviceId, restart.Id, actorId, actorDisplay, cancellationToken);
 
-            results.Add(new(restart.DeviceId, hostname,
-                cancelled == TaskCancelResult.Success ? GroupActionOutcome.Cancelled : GroupActionOutcome.TooLateToCancel,
-                restart.Id));
+            results.Add(attempt.Outcome switch
+            {
+                RestartCancelAttemptOutcome.CancelledBeforeDelivery or RestartCancelAttemptOutcome.AlreadyCancelled =>
+                    new(restart.DeviceId, hostname, GroupActionOutcome.Cancelled, restart.Id),
+                // The task to watch is the cancellation: its result is the device's answer.
+                RestartCancelAttemptOutcome.CancelRequested or RestartCancelAttemptOutcome.AlreadyRequested =>
+                    new(restart.DeviceId, hostname, GroupActionOutcome.CancelRequested, attempt.CancelTaskId),
+                RestartCancelAttemptOutcome.Unsupported =>
+                    new(restart.DeviceId, hostname, GroupActionOutcome.CancelUnsupported, restart.Id),
+                _ => new(restart.DeviceId, hostname, GroupActionOutcome.TooLateToCancel, restart.Id),
+            });
         }
 
         AuditGroupAction(organizationId, actorId, actorDisplay, groupId, groupName, "CancelRestart", null, results);
@@ -314,7 +339,7 @@ public sealed class DeviceGroupActionService(
             return GroupActionQueueStatus.NoEligibleDevices;
         }
 
-        var succeeded = eligible.Count(r => r.Outcome is GroupActionOutcome.Queued or GroupActionOutcome.Cancelled);
+        var succeeded = eligible.Count(r => r.Outcome is GroupActionOutcome.Queued or GroupActionOutcome.Cancelled or GroupActionOutcome.CancelRequested);
         if (succeeded == 0)
         {
             return GroupActionQueueStatus.NothingQueued;
@@ -367,10 +392,20 @@ public enum GroupActionOutcome
     /// <summary>The caller lost authority over the device between resolution and queueing.</summary>
     NotAuthorized,
 
-    /// <summary>A queued restart was cancelled before delivery.</summary>
+    /// <summary>A queued restart was cancelled before delivery, or was already cancelled.</summary>
     Cancelled,
 
-    /// <summary>The restart was already delivered; it can no longer be cancelled.</summary>
+    /// <summary>
+    /// The device has the restart; a <c>CancelRestart</c> task was sent and the
+    /// device confirms on its next check-in. <see cref="GroupActionDeviceResult.TaskId"/>
+    /// is that task.
+    /// </summary>
+    CancelRequested,
+
+    /// <summary>The device's agent predates cancellation (1.14.0); the countdown cannot be reached.</summary>
+    CancelUnsupported,
+
+    /// <summary>The restart's moment has passed, or it already failed or expired; nothing left to cancel.</summary>
     TooLateToCancel,
 }
 

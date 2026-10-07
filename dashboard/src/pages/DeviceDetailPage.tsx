@@ -23,6 +23,7 @@ import { forceStopApplication, restartDevice } from '../api/client'
 import {
   RESTART_DELAY_OPTIONS,
   describeRestartTiming,
+  isCancellableTask,
   restartStage,
 } from './restartView'
 import { useAuth } from '../auth/AuthContext'
@@ -245,12 +246,16 @@ export function DeviceDetailPage() {
     if (!deviceId) return
     setActionMsg(null)
     try {
-      await cancelDeviceTask(deviceId, taskId)
-      setActionMsg('Task cancelled.')
+      const requested = await cancelDeviceTask(deviceId, taskId)
+      setActionMsg(
+        requested
+          ? 'Cancellation sent to the device. It confirms on its next check-in; the restart shows as cancelled only then.'
+          : 'Task cancelled.',
+      )
     } catch (e) {
       setActionMsg(
         e instanceof ApiError && e.status === 409
-          ? 'Too late to cancel — the task was already delivered to the agent or has finished.'
+          ? (e.detail ?? 'Too late to cancel — the task was already delivered to the agent or has finished.')
           : e instanceof ApiError && e.status === 403
             ? 'You do not have permission to cancel this type of task.'
             : 'The task could not be cancelled.',
@@ -1373,9 +1378,11 @@ export function DeviceDetailPage() {
                       <td>{new Date(t.createdAt).toLocaleString()}</td>
                       <td className="muted">{t.resultMessage ?? '—'}</td>
                       <td style={{ textAlign: 'right' }}>
-                        {/* Only while Queued: once delivered, the agent may be
+                        {/* Anything still Queued; and a restart the device has but
+                            Windows has not yet acted on, which the device can
+                            still abort. Other delivered tasks may be
                             mid-operation and the server refuses anyway. */}
-                        {t.status === 'Queued' && (
+                        {isCancellableTask(t, new Date()) && (
                           <button
                             type="button"
                             className="btn-ghost btn-sm"

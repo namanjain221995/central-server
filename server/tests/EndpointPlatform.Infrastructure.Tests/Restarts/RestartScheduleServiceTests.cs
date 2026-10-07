@@ -53,8 +53,9 @@ public sealed class RestartScheduleServiceTests(PostgresFixture fixture)
         new(db, Audit(db, time), time, NullLogger<DeviceTaskService>.Instance);
 
     private static RestartScheduleService Service(
-        EndpointPlatformDbContext db, TimeProvider time, int warningSeconds = 300, int missedAfterSeconds = 900) =>
-        new(db, Tasks(db, time), new DeviceScopeAuthorizer(db), Audit(db, time), time,
+        EndpointPlatformDbContext db, TimeProvider time, int warningSeconds = 300, int missedAfterSeconds = 300) =>
+        new(db, Tasks(db, time), new RestartCancellationService(db, Tasks(db, time), time, NullLogger<RestartCancellationService>.Instance),
+            new DeviceScopeAuthorizer(db), Audit(db, time), time,
             Options.Create(new RestartScheduleOptions { WarningSeconds = warningSeconds, MissedAfterSeconds = missedAfterSeconds }),
             Options.Create(new AgentServerOptions()),
             NullLogger<RestartScheduleService>.Instance);

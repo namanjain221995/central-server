@@ -98,7 +98,10 @@ keep="$(conf_value OFFSITE_KEEP)"; keep="${keep:-30}"
 [ -n "$remote" ] || die "OFFSITE_REMOTE is not set in ${offsite_conf}"
 [[ "$keep" =~ ^[1-9][0-9]*$ ]] || die "OFFSITE_KEEP must be a positive number"
 
-rc() { rclone --config "$rclone_conf" --retries 5 --low-level-retries 10 "$@"; }
+# --tpslimit: Drive counts queries per minute against the shared rclone
+# project; a burst at the start of an upload has tripped a 403 before. A few
+# calls a second is plenty for one file a night and keeps under the limit.
+rc() { rclone --config "$rclone_conf" --retries 5 --low-level-retries 10 --tpslimit 4 --tpslimit-burst 4 "$@"; }
 
 bundles=("$@")
 if [ "${#bundles[@]}" -eq 0 ]; then

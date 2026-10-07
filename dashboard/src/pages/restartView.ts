@@ -135,6 +135,21 @@ export function restartStage(task: Pick<DeviceTaskItem, 'type' | 'status' | 'res
 }
 
 /**
+ * Whether the console still offers Cancel for a task. Anything Queued can be
+ * cancelled where it sits. A restart can also be cancelled once the device
+ * has it -- delivered, or accepted with Windows' moment still ahead -- because
+ * the device can abort its countdown (agent 1.14.0+; the server answers 409
+ * for an older one). Any other delivered task may be mid-operation and is not
+ * offered; the server would refuse anyway.
+ */
+export function isCancellableTask(task: Pick<DeviceTaskItem, 'type' | 'status' | 'resultJson'>, now: Date): boolean {
+  if (task.status === 'Queued') return true
+  if (task.type !== 'RestartDevice') return false
+  const stage = restartStage(task, now)
+  return stage === 'Executing' || stage === 'Scheduled'
+}
+
+/**
  * The tracker's wording for a restart that Windows accepted: scheduled and
  * still pending while the countdown runs, and honest about what "succeeded"
  * means once it has passed.

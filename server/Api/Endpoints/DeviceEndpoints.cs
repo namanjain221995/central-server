@@ -6,6 +6,7 @@ using EndpointPlatform.Domain.Tasks;
 using EndpointPlatform.Infrastructure.Devices;
 using EndpointPlatform.Infrastructure.Tasks;
 using EndpointPlatform.Infrastructure.Persistence;
+using EndpointPlatform.Infrastructure.Restarts;
 using EndpointPlatform.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 
@@ -419,6 +420,7 @@ public static class DeviceEndpoints
         HttpContext httpContext,
         EndpointPlatformDbContext dbContext,
         DeviceTaskService taskService,
+        RestartCancellationService restartCancellation,
         DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
@@ -450,6 +452,36 @@ public static class DeviceEndpoints
         if (!httpContext.User.HasClaim(AdminAuthenticationHandler.PermissionClaimType, definition.RequiredPermission))
         {
             return Results.Forbid();
+        }
+
+        // A restart is the one task a device can still take back after it has
+        // it: the shared cancellation cancels it where it sits, or through the
+        // device, and says which. Every other task type is cancellable only
+        // while Queued, as before.
+        if (taskType == DeviceTaskType.RestartDevice)
+        {
+            var attempt = await restartCancellation.CancelAsync(
+                actor.OrganizationId, deviceId, taskId, actor.UserId, actor.Email, cancellationToken);
+
+            return attempt.Outcome switch
+            {
+                RestartCancelAttemptOutcome.CancelledBeforeDelivery or RestartCancelAttemptOutcome.AlreadyCancelled =>
+                    Results.NoContent(),
+                // Requested, not done: the device confirms on its next check-in,
+                // and the cancellation task is where that answer lands.
+                RestartCancelAttemptOutcome.CancelRequested or RestartCancelAttemptOutcome.AlreadyRequested =>
+                    Results.Accepted($"/admin/v1/devices/{deviceId}/tasks", new
+                    {
+                        status = "CancelRequested",
+                        cancelTaskId = attempt.CancelTaskId,
+                    }),
+                RestartCancelAttemptOutcome.Unsupported => Results.Problem(
+                    title: "This device's agent cannot abort a restart it has accepted. Update it to 1.14.0 or later; until then the restart goes ahead.",
+                    statusCode: StatusCodes.Status409Conflict),
+                _ => Results.Problem(
+                    title: "The restart can no longer be cancelled — it has already happened, failed or expired.",
+                    statusCode: StatusCodes.Status409Conflict),
+            };
         }
 
         var result = await taskService.CancelAsync(

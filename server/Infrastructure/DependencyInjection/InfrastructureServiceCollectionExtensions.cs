@@ -199,6 +199,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Policies.PolicyService>();
         services.AddScoped<Groups.DeviceGroupService>();
         services.AddScoped<Groups.DeviceGroupActionService>();
+        services.AddScoped<Restarts.RestartCancellationService>();
         services.AddScoped<Restarts.RestartScheduleService>();
         services.AddScoped<Devices.SoftwareReadService>();
         services.AddScoped<Devices.SecurityReadService>();

@@ -220,12 +220,14 @@ public sealed class RestartTaskExecutorTests
     /// A shutdown already scheduled is its own outcome: the machine will go down,
     /// but not on this task's timing, so this task did not do what it was asked.
     /// </summary>
-    [Fact]
-    public async Task A_restart_already_in_progress_is_a_distinct_honest_failure()
+    [Theory]
+    [InlineData(RestartTaskExecutor.ErrorShutdownInProgress)]
+    [InlineData(RestartTaskExecutor.ErrorShutdownIsScheduled)]
+    public async Task A_restart_already_in_progress_is_a_distinct_honest_failure(int code)
     {
         var control = new FakeDeviceControl
         {
-            Throw = new Win32Exception(RestartTaskExecutor.ErrorShutdownInProgress, "A system shutdown has already been scheduled."),
+            Throw = new Win32Exception(code, "A system shutdown has already been scheduled."),
         };
 
         var result = await Executor(control).ExecuteAsync(Task_(300));
@@ -233,7 +235,7 @@ public sealed class RestartTaskExecutorTests
         result.Succeeded.ShouldBeFalse();
         result.Message.ShouldBe("Restart not applied: a restart or shutdown is already in progress on this device.");
         Result(result).GetProperty("outcome").GetString().ShouldBe("AlreadyInProgress");
-        Result(result).GetProperty("code").GetInt32().ShouldBe(1115);
+        Result(result).GetProperty("code").GetInt32().ShouldBe(code);
     }
 
     /// <summary>The privilege step can fail before the API is reached; that is a failure too, not a success.</summary>

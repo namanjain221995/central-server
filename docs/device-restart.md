@@ -91,7 +91,7 @@ Four outcomes, each reported honestly:
 |---|---|---|
 | `Scheduled` | true | Windows accepted the request. `restartAt` is when it will act. |
 | `Expired` | false | The task's deadline had passed. Windows was not asked. |
-| `AlreadyInProgress` | false | Windows reported `ERROR_SHUTDOWN_IN_PROGRESS` (1115): a restart or shutdown was already scheduled, so *this task's timing was not applied*. |
+| `AlreadyInProgress` | false | Windows reported `ERROR_SHUTDOWN_IN_PROGRESS` (1115) or `ERROR_SHUTDOWN_IS_SCHEDULED` (1190): a restart or shutdown was already scheduled, so *this task's timing was not applied*. Agent 1.14.1 and later; earlier agents reported 1190 as a plain failure. |
 | `Failed` | false | Windows refused, or the privilege could not be enabled. The Win32 error is in the message and `code`. |
 
 "Succeeded" means **Windows accepted the restart**. It does not mean the device
@@ -164,9 +164,9 @@ time (the catalogue's minimum version), so the console says "cannot cancel"
 rather than reporting a failure that looks like the device refusing.
 
 The signed-in user's notice changes to "Restart Cancelled" and goes away after a
-minute. Today the console reaches this through
-[Restart Management](restart-management.md); the single-device Cancel and the
-group `cancel-restart` action still cancel only tasks that are still Queued.
+minute. Every cancel in the console reaches this: the single-device Cancel, the
+group `cancel-restart` action and Restart Management all decide through one
+service (`RestartCancellationService`), so a restart is cancelled where it sits while Queued and through the device once the device has it.
 
 ## Known limitations
 

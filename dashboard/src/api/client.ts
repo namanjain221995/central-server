@@ -494,17 +494,27 @@ export async function terminateProcess(
   )
 }
 
+/** A cancellation the device still has to carry out: the server sent it a CancelRestart task. */
+export interface CancelRequestedResult {
+  status: 'CancelRequested'
+  cancelTaskId: string
+}
+
 /**
- * Cancels a task that is still Queued. The server refuses once the task has
- * been delivered -- the agent may already be acting on it, and a cancellation
- * that stops nothing would be a lie. Authorization is per task type: you may
- * cancel exactly what you are permitted to queue.
+ * Cancels a task. Anything still Queued is cancelled where it sits (204). A
+ * restart the device already has is cancelled through the device: the server
+ * queues a CancelRestart task and answers 202 with it, and the device confirms
+ * on its next check-in -- so "requested" is what the caller gets, not "done".
+ * Any other delivered task, and a restart on an agent that cannot abort, is
+ * refused with 409. Authorization is per task type: you may cancel exactly
+ * what you are permitted to queue.
  */
-export async function cancelDeviceTask(deviceId: string, taskId: string): Promise<void> {
-  await request<void>(
+export async function cancelDeviceTask(deviceId: string, taskId: string): Promise<CancelRequestedResult | undefined> {
+  const result = await request<CancelRequestedResult | undefined>(
     `/admin/v1/devices/${encodeURIComponent(deviceId)}/tasks/${encodeURIComponent(taskId)}/cancel`,
     { method: 'POST' },
   )
+  return result && result.status === 'CancelRequested' ? result : undefined
 }
 
 export interface FleetTaskItem {
@@ -519,6 +529,8 @@ export interface FleetTaskItem {
   deliveredAt: string | null
   completedAt: string | null
   resultMessage: string | null
+  /** The agent's structured result; for a restart it says when Windows will act. Absent from older servers. */
+  resultJson?: string | null
 }
 
 export interface FleetTaskPage {
@@ -1052,6 +1064,11 @@ export type GroupActionOutcome =
   | 'NotEligible'
   | 'NotAuthorized'
   | 'Cancelled'
+  /** The device has the restart; a cancellation was sent and `taskId` is that task, whose result is the device's answer. */
+  | 'CancelRequested'
+  /** The device's agent predates cancellation (1.14.0); the countdown cannot be reached. */
+  | 'CancelUnsupported'
+  /** The restart's moment has passed, or it already failed or expired. */
   | 'TooLateToCancel'
 
 export interface GroupActionDeviceResult {
@@ -1144,7 +1161,11 @@ export function forceStopGroup(groupId: string, applicationName: string, publish
   })
 }
 
-/** Cancels the group's restarts that have not been delivered yet. Delivered ones are reported as too late. */
+/**
+ * Cancels the group's restarts that are still ahead of their devices: queued
+ * ones where they sit, accepted ones through the device (reported as
+ * requested until the device confirms). Past their moment is too late.
+ */
 export function cancelGroupRestart(groupId: string): Promise<GroupActionResult> {
   return request<GroupActionResult>(groupPath(groupId, '/actions/cancel-restart'), { method: 'POST' })
 }

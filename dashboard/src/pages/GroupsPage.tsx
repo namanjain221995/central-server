@@ -479,8 +479,9 @@ export function GroupsPage() {
           }
         >
           <p style={{ margin: 0 }}>
-            Restarts that have not yet reached their device are cancelled. A restart already delivered cannot be taken back
-            &mdash; Windows may already be counting down &mdash; and is reported as too late rather than as cancelled.
+            Restarts that have not yet reached their device are cancelled outright. A restart the device already has is told
+            to abort its countdown and shows as &ldquo;cancel sent&rdquo; until the device confirms; one whose moment has
+            passed, or on an agent older than 1.14.0, cannot be taken back and is reported as such.
           </p>
         </GroupDialog>
       )}
