@@ -3,34 +3,34 @@ using EndpointAgent.Core.SessionNotice;
 namespace EndpointAgent.Core.Abstractions;
 
 /// <summary>
-/// Tells signed-in users that a restart Windows has accepted is on its way.
+/// Tells the signed-in user about a restart the server has scheduled - and about
+/// its cancellation - through whatever means the platform provides.
 /// </summary>
 /// <remarks>
-/// <para>
-/// Informational only, and never the thing that restarts anything: Windows owns
-/// the countdown the moment it accepts the request, and it shows its own
-/// shutdown warning regardless. A notifier that fails, or is absent, must not
-/// change the restart or its reported result -- which is why
-/// <c>RestartTaskExecutor</c> calls it only after Windows has said yes, and
-/// swallows anything it throws.
-/// </para>
-/// <para>
-/// There is no "cancelled" notice. A restart is cancellable only before it is
-/// delivered, and an undelivered restart was never announced; once Windows has
-/// it, this platform cannot take it back.
-/// </para>
+/// A courtesy on top of Windows' own shutdown warning. Nothing in the restart
+/// itself depends on it: if a notice cannot be delivered the restart still
+/// happens and is still reported exactly as it is.
 /// </remarks>
 public interface IRestartNotifier
 {
     void RestartScheduled(RestartNotice notice);
+
+    /// <summary>
+    /// The restart the user was told about will not happen. Shown briefly so a
+    /// user who read "restarting in 4 minutes" is not left waiting for it.
+    /// </summary>
+    void RestartCancelled();
 }
 
-/// <summary>Used where there is no session to tell -- and in every test that must not touch one.</summary>
 public sealed class NullRestartNotifier : IRestartNotifier
 {
     public static readonly NullRestartNotifier Instance = new();
 
     public void RestartScheduled(RestartNotice notice)
+    {
+    }
+
+    public void RestartCancelled()
     {
     }
 }

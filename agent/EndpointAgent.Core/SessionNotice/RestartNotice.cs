@@ -5,17 +5,30 @@ namespace EndpointAgent.Core.SessionNotice;
 
 /// <summary>
 /// A restart Windows has accepted: when it will happen and the grace period it
-/// was scheduled with. The only thing the service ever tells the signed-in user's
-/// session.
+/// was scheduled with - or, with <see cref="Cancelled"/> set, the fact that the
+/// restart the user was told about has been called off. The only things the
+/// service ever tells the signed-in user's session.
 /// </summary>
 /// <remarks>
-/// Two numbers and nothing else. There is deliberately no message, title or
-/// administrator text here: the words the user sees are fixed in
+/// <para>
+/// Two numbers and a flag, nothing else. There is deliberately no message, title
+/// or administrator text here: the words the user sees are fixed in
 /// <see cref="RestartNoticeView"/>, so nothing that reaches the endpoint -- not a
 /// task payload, not a compromised server, not another process on the machine --
 /// can put its own words in a notice that claims to come from IT.
+/// </para>
+/// <para>
+/// For a cancellation, <see cref="RestartAt"/> is the moment the restart was
+/// aborted and <see cref="GraceSeconds"/> is zero. The window shows the
+/// cancellation briefly from that moment and then goes away; a notifier that
+/// connects long after it would not show it at all.
+/// </para>
 /// </remarks>
-public sealed record RestartNotice(DateTimeOffset RestartAt, int GraceSeconds);
+public sealed record RestartNotice(DateTimeOffset RestartAt, int GraceSeconds, bool Cancelled = false)
+{
+    /// <summary>The notice that says a pending restart was aborted at <paramref name="at"/>.</summary>
+    public static RestartNotice CancelledAt(DateTimeOffset at) => new(at, 0, Cancelled: true);
+}
 
 /// <summary>
 /// The wire format between the service and the session notifier: one line of
@@ -25,28 +38,25 @@ public sealed record RestartNotice(DateTimeOffset RestartAt, int GraceSeconds);
 /// <para>
 /// Strict because the reader runs in an ordinary user's session and must treat
 /// every byte as hostile until the pipe's server has been verified -- and even
-/// then. A line is refused if it is too long, is not exactly the three expected
+/// then. A line is refused if it is too long, is not exactly the four expected
 /// properties, names an unknown version, or carries a value outside what a real
 /// restart can have. Refusing costs one notice; accepting something unexpected
-/// is how a parser becomes an attack surface.
+/// could cost a user's trust in a window that claims to speak for IT.
 /// </para>
 /// <para>
-/// The format carries data only. There is no command, path or text in it, so
-/// there is nothing a reader could be persuaded to execute or display.
+/// Version 2 added <c>cancelled</c>. The service and the notifier ship in the
+/// same installer, so there is no mixed-version case to tolerate: a version 1
+/// line is refused like any other unexpected one.
 /// </para>
 /// </remarks>
 public static class RestartNoticeProtocol
 {
-    /// <summary>The only version this reader understands.</summary>
-    public const int Version = 1;
+    public const int Version = 2;
 
-    /// <summary>Far above any real notice (about 70 bytes); a longer line is refused unread.</summary>
     public const int MaxLineBytes = 256;
 
-    /// <summary>The longest grace period the agent will ever schedule (its own clamp).</summary>
     public const int MaxGraceSeconds = 3600;
 
-    /// <summary>The line the service writes, newline included.</summary>
     public static byte[] Encode(RestartNotice notice)
     {
         ArgumentNullException.ThrowIfNull(notice);
@@ -55,15 +65,12 @@ public static class RestartNoticeProtocol
             v = Version,
             restartAt = notice.RestartAt.ToUniversalTime().ToString("O"),
             graceSeconds = notice.GraceSeconds,
+            cancelled = notice.Cancelled,
         });
 
         return Encoding.UTF8.GetBytes(json + "\n");
     }
 
-    /// <summary>
-    /// Parses one line, without its newline. Returns false for anything that is
-    /// not exactly a well-formed notice.
-    /// </summary>
     public static bool TryDecode(ReadOnlySpan<byte> line, out RestartNotice? notice)
     {
         notice = null;
@@ -83,10 +90,12 @@ public static class RestartNoticeProtocol
                 return false;
             }
 
-            // Exactly these three. An extra property is not ignored: a sender that
+            // Exactly these four. An extra property is not ignored: a sender that
             // adds fields is not the sender this reader was written for.
             var names = root.EnumerateObject().Select(p => p.Name).ToList();
-            if (names.Count != 3 || !names.Contains("v") || !names.Contains("restartAt") || !names.Contains("graceSeconds"))
+            if (names.Count != 4
+                || !names.Contains("v") || !names.Contains("restartAt")
+                || !names.Contains("graceSeconds") || !names.Contains("cancelled"))
             {
                 return false;
             }
@@ -106,6 +115,12 @@ public static class RestartNoticeProtocol
                 return false;
             }
 
+            var cancelledElement = root.GetProperty("cancelled");
+            if (cancelledElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            {
+                return false;
+            }
+
             var restartElement = root.GetProperty("restartAt");
             if (restartElement.ValueKind != JsonValueKind.String
                 || !DateTimeOffset.TryParse(
@@ -117,7 +132,7 @@ public static class RestartNoticeProtocol
                 return false;
             }
 
-            notice = new RestartNotice(restartAt.ToUniversalTime(), grace);
+            notice = new RestartNotice(restartAt.ToUniversalTime(), grace, cancelledElement.GetBoolean());
             return true;
         }
         catch (JsonException)
@@ -127,11 +142,16 @@ public static class RestartNoticeProtocol
     }
 }
 
-/// <summary>What the notice window shows at a given moment.</summary>
-/// <param name="Visible">Whether there is anything to show at all.</param>
+/// <summary>
+/// What the window shows for a notice at a given moment: nothing, a countdown,
+/// "restarting now", or "cancelled". Pure, so every state is testable without a
+/// window.
+/// </summary>
+/// <param name="Visible">Whether there is anything to show.</param>
 /// <param name="Countdown">Time remaining as HH:MM:SS, or null once it has run out.</param>
 /// <param name="Restarting">True once the scheduled time has passed.</param>
-public sealed record RestartNoticeView(bool Visible, string? Countdown, bool Restarting)
+/// <param name="Cancelled">True while a cancellation is being shown.</param>
+public sealed record RestartNoticeView(bool Visible, string? Countdown, bool Restarting, bool Cancelled = false)
 {
     /// <summary>Fixed. Never taken from the wire, the task, or the server.</summary>
     public const string Title = "Restart Scheduled";
@@ -148,22 +168,42 @@ public sealed record RestartNoticeView(bool Visible, string? Countdown, bool Res
     /// <summary>Fixed.</summary>
     public const string Footer = "Please save your work.";
 
-    /// <summary>
-    /// After the scheduled time, how long the notice stays before it assumes the
-    /// restart did not happen -- aborted, or the clock was wrong -- and goes away
-    /// rather than claiming "restarting now" indefinitely on a machine that is
-    /// plainly still running.
-    /// </summary>
+    /// <summary>Fixed. The title while a cancellation is shown.</summary>
+    public const string CancelledTitle = "Restart Cancelled";
+
+    /// <summary>Fixed. Says who cancelled it, and nothing else.</summary>
+    public const string CancelledHeadline = "Your IT administrator has cancelled the scheduled restart.";
+
+    /// <summary>Fixed.</summary>
+    public const string CancelledBody = "No restart is pending.";
+
+    /// <summary>Fixed.</summary>
+    public const string CancelledFooter = "You can continue working.";
+
     public static readonly TimeSpan LingerAfterRestart = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// How long a cancellation stays on screen. Long enough to be read by someone
+    /// who looked up at the countdown a moment ago; short enough not to become a
+    /// second interruption.
+    /// </summary>
+    public static readonly TimeSpan LingerAfterCancel = TimeSpan.FromMinutes(1);
 
     private static readonly RestartNoticeView Hidden = new(false, null, false);
 
-    /// <summary>The view for <paramref name="notice"/> at <paramref name="now"/>.</summary>
     public static RestartNoticeView For(RestartNotice? notice, DateTimeOffset now)
     {
         if (notice is null)
         {
             return Hidden;
+        }
+
+        if (notice.Cancelled)
+        {
+            var since = now - notice.RestartAt;
+            return since >= TimeSpan.Zero && since < LingerAfterCancel
+                ? new RestartNoticeView(true, null, Restarting: false, Cancelled: true)
+                : Hidden;
         }
 
         var remaining = notice.RestartAt - now;
@@ -178,10 +218,6 @@ public sealed record RestartNoticeView(bool Visible, string? Countdown, bool Res
             : Hidden;
     }
 
-    /// <summary>
-    /// HH:MM:SS, rounded up: a notice that has 0.4 seconds left must not already
-    /// say 00:00:00 while the machine is still waiting.
-    /// </summary>
     public static string Format(TimeSpan remaining)
     {
         var seconds = (long)Math.Ceiling(Math.Max(0, remaining.TotalSeconds));

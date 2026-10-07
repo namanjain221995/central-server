@@ -49,6 +49,7 @@ internal static class NoticeWindow
     private static RestartNoticeView _view = RestartNoticeView.For(null, DateTimeOffset.UtcNow);
     private static bool _shown;
     private static bool _userHid;
+    private static bool _titledCancelled;
     private static float _scale = 1f;
     private static IntPtr _titleFont;
     private static IntPtr _bodyFont;
@@ -178,8 +179,17 @@ internal static class NoticeWindow
 
         _view = RestartNoticeView.For(notice, now);
 
-        var remaining = notice is null ? TimeSpan.MaxValue : notice.RestartAt - now;
+        // A cancellation is shown once and can be dismissed for good: there is no
+        // final minute to come back for. A pending restart comes back for its
+        // last minute even if the user hid it.
+        var remaining = notice is null || notice.Cancelled ? TimeSpan.MaxValue : notice.RestartAt - now;
         var shouldShow = _view.Visible && (!_userHid || _view.Restarting || remaining <= FinalMinute);
+
+        if (_view.Cancelled != _titledCancelled)
+        {
+            _titledCancelled = _view.Cancelled;
+            _ = SetWindowTextW(window, _view.Cancelled ? RestartNoticeView.CancelledTitle : RestartNoticeView.Title);
+        }
 
         if (shouldShow && !_shown)
         {
@@ -216,6 +226,16 @@ internal static class NoticeWindow
 
             var margin = Scale(22);
             var top = margin;
+
+            if (_view.Cancelled)
+            {
+                // Every word is still a constant; only which constants changes.
+                Draw(hdc, _titleFont, RestartNoticeView.CancelledTitle, client, ref top, Scale(34), DT_LEFT);
+                Draw(hdc, _bodyFont, RestartNoticeView.CancelledHeadline, client, ref top, Scale(46), DT_LEFT | DT_WORDBREAK);
+                Draw(hdc, _countdownFont, RestartNoticeView.CancelledBody, client, ref top, Scale(76), DT_CENTER);
+                Draw(hdc, _bodyFont, RestartNoticeView.CancelledFooter, client, ref top, Scale(26), DT_LEFT);
+                return;
+            }
 
             Draw(hdc, _titleFont, RestartNoticeView.Title, client, ref top, Scale(34), DT_LEFT);
             Draw(hdc, _bodyFont, RestartNoticeView.Headline, client, ref top, Scale(46), DT_LEFT | DT_WORDBREAK);
@@ -357,6 +377,10 @@ internal static class NoticeWindow
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ShowWindow(IntPtr hWnd, int command);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowTextW(IntPtr hWnd, string text);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -44,8 +44,16 @@ export type IconName =
   | 'usb'
   | 'download'
   | 'chrome'
+  | 'restart'
 
 const PATHS: Record<IconName, ReactNode> = {
+  // The power symbol: a broken ring with a bar through the gap.
+  restart: (
+    <>
+      <path d="M12 3v9" />
+      <path d="M6.3 6.3a8 8 0 1 0 11.4 0" />
+    </>
+  ),
   // A generic browser glyph -- a ring with a hub and three spokes -- not a
   // trademark rendering.
   chrome: (

@@ -161,6 +161,27 @@ public sealed class DeviceTask : AuditableEntity
     }
 
     /// <summary>Expires a task whose deadline passed while queued (swept by a background job).</summary>
+    /// <summary>
+    /// Marks a restart that the device had already accepted as Cancelled,
+    /// because a <see cref="DeviceTaskType.CancelRestart"/> task later aborted
+    /// the countdown. The one transition out of a settled state, and only for
+    /// a restart: "Succeeded" meant Windows accepted the request, and once the
+    /// request has been withdrawn that is no longer the truth about this task.
+    /// </summary>
+    public bool TryCancelAcceptedRestart(DateTimeOffset now, string? reason)
+    {
+        if (Type != DeviceTaskType.RestartDevice
+            || Status is not (DeviceTaskStatus.Delivered or DeviceTaskStatus.Succeeded))
+        {
+            return false;
+        }
+
+        Status = DeviceTaskStatus.Cancelled;
+        CompletedAt = now;
+        ResultMessage = Guard.OptionalMaxLength(reason, 1024);
+        return true;
+    }
+
     public bool TryExpire(DateTimeOffset now)
     {
         if (Status is DeviceTaskStatus.Queued or DeviceTaskStatus.Delivered && now >= ExpiresAt)

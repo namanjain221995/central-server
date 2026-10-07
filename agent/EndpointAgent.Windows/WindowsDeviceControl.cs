@@ -47,6 +47,25 @@ public sealed class WindowsDeviceControl(ILogger<WindowsDeviceControl> logger) :
         return Task.CompletedTask;
     }
 
+    public Task AbortRestartAsync(CancellationToken cancellationToken = default)
+    {
+        // Same privilege as scheduling one: aborting a shutdown is the same
+        // right exercised in the other direction.
+        EnableShutdownPrivilege();
+
+        if (!AbortSystemShutdownW(lpMachineName: null))
+        {
+            // ERROR_NO_SHUTDOWN_IN_PROGRESS (1116) comes through here too; the
+            // executor tells it apart from a refusal and reports it as "nothing
+            // to cancel" rather than as an error.
+            var error = Marshal.GetLastWin32Error();
+            throw new Win32Exception(error, $"AbortSystemShutdown failed (error={error}).");
+        }
+
+        _logger.LogWarning("The pending restart or shutdown was aborted by an authorized server task.");
+        return Task.CompletedTask;
+    }
+
     public Task LockAsync(CancellationToken cancellationToken = default)
     {
         // LockWorkStation only works from within the interactive session, and the
@@ -224,6 +243,10 @@ public sealed class WindowsDeviceControl(ILogger<WindowsDeviceControl> logger) :
         [MarshalAs(UnmanagedType.Bool)] bool bForceAppsClosed,
         [MarshalAs(UnmanagedType.Bool)] bool bRebootAfterShutdown,
         uint dwReason);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AbortSystemShutdownW(string? lpMachineName);
 
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();

@@ -10,6 +10,7 @@ import { UsbAccessPage } from './pages/UsbAccessPage'
 import { GroupsPage } from './pages/GroupsPage'
 import { PoliciesPage } from './pages/PoliciesPage'
 import { ChromePage } from './pages/ChromePage'
+import { RestartManagementPage } from './pages/RestartManagementPage'
 import { SoftwarePage } from './pages/SoftwarePage'
 import { UpdatesPage } from './pages/UpdatesPage'
 import { LoginPage } from './pages/LoginPage'
@@ -88,6 +89,7 @@ function AuthGate() {
           <Route path="software" element={<SoftwarePage />} />
           <Route path="policies" element={<PoliciesPage />} />
           <Route path="chrome" element={<ChromePage />} />
+          <Route path="restart-management" element={<RestartManagementPage />} />
           <Route path="updates" element={<UpdatesPage />} />
           <Route path="agent-releases" element={<AgentReleasesPage />} />
           <Route path="security" element={<SecurityPage />} />

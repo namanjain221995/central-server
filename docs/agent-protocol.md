@@ -139,3 +139,12 @@ For a restart the `resultJson` is `{graceSeconds, restartAt, outcome, code}`:
 shutdown API accepted the request; `outcome` is `Scheduled`, `Expired`,
 `AlreadyInProgress` or `Failed`. A successful result means Windows accepted the
 restart — not that the device has restarted; its next heartbeat is the proof.
+
+`CancelRestart` (agent 1.14.0+) is the undo of a restart the device has already
+accepted: the executor calls `AbortSystemShutdown` and its `resultJson` is
+`{outcome, restartTaskId, code}` with `outcome` one of `Cancelled`,
+`NothingToCancel` (Windows had nothing pending) or `Failed`. On `Cancelled` the
+server marks the named restart task Cancelled, provided it belongs to the same
+device. The server refuses to queue it for an agent below 1.14.0. Unlike
+`RestartDevice`, the executor does not refuse an expired task: aborting what is
+still pending is always safe. See [device-restart.md](device-restart.md).

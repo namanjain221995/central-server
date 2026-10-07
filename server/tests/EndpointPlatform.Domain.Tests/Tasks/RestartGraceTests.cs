@@ -101,11 +101,16 @@ public sealed class RestartGraceTests
         definition.MinimumAgentVersion.ShouldBeNull();
     }
 
+    /// <summary>
+    /// A timed restart, a group restart and a scheduled restart all extend
+    /// RestartDevice; none introduces a second way to restart. The one other
+    /// type that names a restart is its undo, which restarts nothing.
+    /// </summary>
     [Fact]
-    public void There_is_exactly_one_restart_task_type()
+    public void There_is_exactly_one_task_type_that_restarts_and_one_that_cancels_a_restart()
     {
-        Enum.GetNames<DeviceTaskType>().Count(n => n.Contains("Restart", StringComparison.Ordinal))
-            .ShouldBe(1, "a timed restart extends RestartDevice; it must not introduce a second restart type");
+        Enum.GetNames<DeviceTaskType>().Where(n => n.Contains("Restart", StringComparison.Ordinal))
+            .ShouldBe([nameof(DeviceTaskType.RestartDevice), nameof(DeviceTaskType.CancelRestart)], ignoreOrder: true);
     }
 
     /// <summary>

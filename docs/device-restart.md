@@ -141,17 +141,50 @@ required permission and the payload — which is the requested timing and the
 message the user will see. Nothing else is in it: no credential, no token, no
 machine detail beyond hostname and id. The result is on the task row.
 
+## Cancelling a restart Windows has accepted
+
+Once the device has handed the countdown to Windows, the only thing that can
+take it back is the device. `CancelRestart` (agent 1.14.0 and later) is that:
+the agent calls `AbortSystemShutdownW` and reports one of three outcomes,
+all honest.
+
+| Outcome | `succeeded` | Meaning |
+|---|---|---|
+| `Cancelled` | true | Windows aborted the pending restart. The server marks the restart task **Cancelled**: "Succeeded" meant Windows had accepted it, and that is no longer true. |
+| `NothingToCancel` | false | Windows reported nothing pending (`ERROR_NO_SHUTDOWN_IN_PROGRESS`, 1116): the restart already happened, was never accepted, or was aborted locally. The restart task is left as it is. |
+| `Failed` | false | Windows refused, with the Win32 error in the message and `code`. |
+
+The payload names the restart it undoes (`restartTaskId`) and who asked
+(`requestedBy`); Windows has at most one pending shutdown, so the agent aborts
+whatever it is. Unlike a restart, a cancellation past its deadline is still
+executed: aborting what is still pending is always the safe choice. The task's
+TTL is ten minutes, because a cancellation is only useful while the countdown it
+targets is running. An agent without the executor is refused the task at queue
+time (the catalogue's minimum version), so the console says "cannot cancel"
+rather than reporting a failure that looks like the device refusing.
+
+The signed-in user's notice changes to "Restart Cancelled" and goes away after a
+minute. Today the console reaches this through
+[Restart Management](restart-management.md); the single-device Cancel and the
+group `cancel-restart` action still cancel only tasks that are still Queued.
+
 ## Known limitations
 
 - **The ceiling is one hour**, for the reason above. It is an agent limit
-  surfaced honestly, not a product decision.
+  surfaced honestly, not a product decision. A restart further away than that
+  is a [scheduled restart](restart-management.md), which the server holds
+  until shortly before the moment.
 - **"In 10 minutes" counts from receipt, not from the click.** If the device is
   offline the countdown starts when it reconnects — within the 15-minute expiry
   — or never. The dialog says so.
 - **Success is Windows accepting, not the device restarting.** A restart Windows
   accepted can still be cancelled locally by an administrator on the machine
   (`shutdown /a`). The platform does not observe that; the device's heartbeat
-  does.
+  does, and a later `CancelRestart` reports `NothingToCancel`.
 - **`AlreadyInProgress` is a failure for this task**, even though the machine
   will restart: the timing asked for was not applied, and reporting success
   would hide that.
+- **A cancellation needs the device to check in.** It arrives on the next
+  heartbeat, about 15 seconds; a countdown with less than that left may run out
+  first, and a device that lost its network after accepting the restart cannot
+  be reached at all.

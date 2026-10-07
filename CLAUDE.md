@@ -67,6 +67,14 @@ file nightly; `restore.sh` rebuilds the server from it on new hardware
 (`docs/runbooks/disaster-recovery.md`). Never decrypt a bundle anywhere but the
 machine being restored, and never commit one.
 
+**Scheduled restarts are held by the server, then sent as ordinary restart
+tasks.** Restart Management (`docs/restart-management.md`) never adds a
+"scheduled restart" task type: the sweeper queues `RestartDevice` per online
+member shortly before the moment, with the lead time as Windows' warning.
+Cancelling after that goes through `CancelRestart` (agent 1.14.0+), which is
+the only thing that can abort a countdown Windows already owns. Keep it that
+way: one way to restart, one way to undo it.
+
 None of them may ever reach the **Agent API**, which every managed endpoint can
 talk to. `AgentApiKeyBoundaryGuard` refuses to start that process if any is
 present. The Agent API *does* get `RECOVERY_SEALING_PUBLIC_KEY`: it only

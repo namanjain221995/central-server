@@ -192,11 +192,17 @@ active restart.
 
 ### Cancelling
 
-Only an administrator, through the console, can cancel a restart, and only while
-it is still **Queued**. Once delivered the agent may already have handed the
-countdown to Windows, and this platform has no way to take it back; such a restart
-is reported **Already delivered — too late to cancel**, never as cancelled.
-Single-device cancellation is device-scoped as well.
+Only an administrator, through the console, can cancel a restart. The group
+`cancel-restart` action cancels only restarts that are still **Queued**: once
+delivered the agent may already have handed the countdown to Windows, and this
+action does not reach it; such a restart is reported **Already delivered — too
+late to cancel**, never as cancelled. Single-device cancellation is device-scoped
+as well.
+
+Reaching a countdown Windows already owns is what [Restart
+Management](restart-management.md) adds: a department's scheduled restart can be
+cancelled through the devices with the `CancelRestart` task (agent 1.14.0 and
+later), per device and reported per device. The group action here is unchanged.
 
 The Techsara notice on the device has no cancel control. Note that Windows itself
 still lets a user who holds `SeShutdownPrivilege` — interactive users on client

@@ -10,6 +10,14 @@ public static class TaskPayloads
     /// <param name="Message">Optional message shown to the interactive user.</param>
     public sealed record RestartOrShutdown(int GraceSeconds, string? Message);
 
+    /// <summary>
+    /// Abort the countdown that <paramref name="RestartTaskId"/> started. The id
+    /// is for the record -- Windows has at most one pending shutdown, and the
+    /// agent aborts whatever it is -- and <paramref name="RequestedBy"/> is who
+    /// asked, so the agent's log and the task row say the same thing.
+    /// </summary>
+    public sealed record CancelRestart(Guid RestartTaskId, string RequestedBy);
+
     /// <remarks>
     /// Serialised BY NAME, never by number. The agent's executor reads the wire
     /// value as a string ("Start"/"Stop"/"Restart") and matches it exactly; the

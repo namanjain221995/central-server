@@ -92,6 +92,15 @@ public static class InfrastructureServiceCollectionExtensions
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // Department-wide scheduled restarts: the warning handed to Windows and
+        // how late a missed dispatch may still go out. Validated on start for
+        // the same reason: a bad value must not silently send restarts with no
+        // warning, or never send them.
+        services.AddOptions<Restarts.RestartScheduleOptions>()
+            .Bind(configuration.GetSection(Restarts.RestartScheduleOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<Software.PackageStorageOptions>()
             .Bind(configuration.GetSection(Software.PackageStorageOptions.SectionName))
             .ValidateDataAnnotations()
@@ -190,6 +199,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Policies.PolicyService>();
         services.AddScoped<Groups.DeviceGroupService>();
         services.AddScoped<Groups.DeviceGroupActionService>();
+        services.AddScoped<Restarts.RestartScheduleService>();
         services.AddScoped<Devices.SoftwareReadService>();
         services.AddScoped<Devices.SecurityReadService>();
         services.AddScoped<Devices.UpdateReadService>();

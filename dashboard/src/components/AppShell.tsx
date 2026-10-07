@@ -69,6 +69,9 @@ const NAV_SECTIONS: NavSection[] = [
       // Its own page rather than a tab under Software: Chrome is managed by
       // group and by profile, which the software catalogue has no notion of.
       { to: '/chrome', label: 'Chrome Management', icon: 'chrome' },
+      // A department's restart at a chosen moment, with cancellation. Its own
+      // page rather than a button on Groups: it is about a time, not an action.
+      { to: '/restart-management', label: 'Restart Management', icon: 'restart' },
       { to: '/updates', label: 'Updates', icon: 'updates' },
       // /agent-releases, not /agent: nginx proxies the /agent/ prefix to the
       // Agent API for enrolled endpoints, so an /agent SPA route breaks on

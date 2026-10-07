@@ -39,6 +39,16 @@ public static class DeviceTaskCatalog
             new(DeviceTaskType.Ping, Permissions.Task.Execute, HighRisk: false, 300),
             new(DeviceTaskType.RefreshInventory, Permissions.Device.RefreshInventory, HighRisk: false, 3600),
             new(DeviceTaskType.RestartDevice, Permissions.Device.Restart, HighRisk: true, 900),
+
+            // Not high-risk: it prevents a restart rather than causing one. Short
+            // TTL, because a cancellation is only useful while the countdown it
+            // targets is still running; one that an offline device would pick up
+            // an hour later has nothing left to abort. Gated on the agent that has
+            // the executor: an older one would fail it as an unknown type, which
+            // would read exactly like "could not cancel" -- and the operator would
+            // believe the machine was about to stay up when it was not.
+            new(DeviceTaskType.CancelRestart, Permissions.Device.Restart, HighRisk: false, 600,
+                MinimumAgentVersion: "1.14.0"),
             new(DeviceTaskType.ShutdownDevice, Permissions.Device.Shutdown, HighRisk: true, 900),
             new(DeviceTaskType.LockDevice, Permissions.Device.Lock, HighRisk: false, 900),
             new(DeviceTaskType.SignOutUser, Permissions.Device.SignOutUser, HighRisk: true, 900),

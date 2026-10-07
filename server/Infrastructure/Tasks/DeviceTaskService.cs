@@ -316,6 +316,11 @@ public sealed class DeviceTaskService(
                 .OnTarget("device_task", task.Id.ToString(), task.Type.ToString())
                 .WithFailureReason(succeeded ? null : message));
 
+        if (task.Type == DeviceTaskType.CancelRestart && succeeded)
+        {
+            await MarkRestartCancelledAsync(task, deviceId, now, cancellationToken);
+        }
+
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
@@ -323,5 +328,59 @@ public sealed class DeviceTaskService(
             taskId, task.Type, succeeded ? "success" : "failure");
 
         return true;
+    }
+
+    /// <summary>
+    /// The device aborted the countdown a restart task had started, so that
+    /// restart is now Cancelled: "Succeeded" meant Windows had accepted it, and
+    /// that is no longer the truth. The restart is named in the cancellation's
+    /// payload and must belong to the same device -- a device can only ever
+    /// undo its own restart.
+    /// </summary>
+    private async Task MarkRestartCancelledAsync(
+        DeviceTask cancellation, Guid deviceId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        Guid restartTaskId;
+        string requestedBy;
+        try
+        {
+            var payload = JsonSerializer.Deserialize<TaskPayloads.CancelRestart>(cancellation.PayloadJson ?? "", JsonOptions);
+            if (payload is null)
+            {
+                return;
+            }
+
+            (restartTaskId, requestedBy) = (payload.RestartTaskId, payload.RequestedBy);
+        }
+        catch (JsonException)
+        {
+            _logger.LogWarning("Cancel-restart task {TaskId} carries no readable restart id; no restart marked cancelled.", cancellation.Id);
+            return;
+        }
+
+        var restart = await _dbContext.DeviceTasks
+            .SingleOrDefaultAsync(t => t.Id == restartTaskId && t.DeviceId == deviceId, cancellationToken);
+        if (restart is null || !restart.TryCancelAcceptedRestart(now, $"Cancelled by {requestedBy}: the device aborted the restart before it happened."))
+        {
+            return;
+        }
+
+        _auditWriter.Stage(
+            restart.OrganizationId,
+            AuditActorType.Agent,
+            deviceId,
+            deviceId.ToString(),
+            action: "task.cancel.restartdevice",
+            AuditResult.Success,
+            audit => audit
+                .OnDevice(deviceId, deviceId.ToString())
+                .OnTarget("device_task", restart.Id.ToString(), restart.Type.ToString())
+                .WithStateChange(
+                    JsonSerializer.Serialize(new { status = "Succeeded" }),
+                    JsonSerializer.Serialize(new { status = "Cancelled", cancelTaskId = cancellation.Id, requestedBy })));
+
+        _logger.LogInformation(
+            "Restart task {RestartTaskId} marked Cancelled: device {DeviceId} aborted it on cancel task {CancelTaskId}.",
+            restart.Id, deviceId, cancellation.Id);
     }
 }

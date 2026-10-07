@@ -48,6 +48,9 @@ public sealed class RestartTaskExecutorTests
         public Task ShutdownAsync(int graceSeconds, string? message, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("a restart task must never shut the device down");
 
+        public Task AbortRestartAsync(CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("a restart task must never abort anything");
+
         public Task LockAsync(CancellationToken cancellationToken = default) => throw new InvalidOperationException();
 
         public Task SignOutAsync(CancellationToken cancellationToken = default) => throw new InvalidOperationException();
@@ -268,6 +271,9 @@ public sealed class RestartTaskExecutorTests
 
             Notices.Add(notice);
         }
+
+        public void RestartCancelled() =>
+            throw new InvalidOperationException("a restart task must never announce a cancellation");
     }
 
     private static RestartTaskExecutor Executor(FakeDeviceControl control, IRestartNotifier notifier, DateTimeOffset? now = null) =>

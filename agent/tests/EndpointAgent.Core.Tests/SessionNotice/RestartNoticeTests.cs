@@ -31,16 +31,31 @@ public sealed class RestartNoticeTests
         line[^1].ShouldBe((byte)'\n');
         RestartNoticeProtocol.TryDecode(line.AsSpan(0, line.Length - 1), out var decoded).ShouldBeTrue();
         decoded.ShouldBe(notice);
+        decoded!.Cancelled.ShouldBeFalse();
     }
 
     [Fact]
-    public void The_encoded_line_carries_only_the_time_and_the_grace_period()
+    public void A_cancellation_round_trips_exactly()
+    {
+        var notice = RestartNotice.CancelledAt(Now);
+
+        var line = RestartNoticeProtocol.Encode(notice);
+
+        RestartNoticeProtocol.TryDecode(line.AsSpan(0, line.Length - 1), out var decoded).ShouldBeTrue();
+        decoded.ShouldBe(notice);
+        decoded!.Cancelled.ShouldBeTrue();
+        decoded.GraceSeconds.ShouldBe(0);
+    }
+
+    [Fact]
+    public void The_encoded_line_carries_only_the_time_the_grace_period_and_the_flag()
     {
         var text = Encoding.UTF8.GetString(RestartNoticeProtocol.Encode(new RestartNotice(Now, 60)));
 
-        text.ShouldContain("\"v\":1");
+        text.ShouldContain("\"v\":2");
         text.ShouldContain("\"restartAt\"");
         text.ShouldContain("\"graceSeconds\":60");
+        text.ShouldContain("\"cancelled\":false");
         text.ShouldNotContain("message", Case.Insensitive);
         text.Length.ShouldBeLessThan(RestartNoticeProtocol.MaxLineBytes);
     }
@@ -50,17 +65,23 @@ public sealed class RestartNoticeTests
     [InlineData("not json")]
     [InlineData("[]")]
     [InlineData("\"a string\"")]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z"}""")]
-    [InlineData("""{"v":1,"graceSeconds":60}""")]
-    [InlineData("""{"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","cancelled":false}""")]
+    [InlineData("""{"v":2,"graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
     [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60}""")]
-    [InlineData("""{"v":"1","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60}""")]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":-1}""")]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":3601}""")]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":1.5}""")]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":"60"}""")]
-    [InlineData("""{"v":1,"restartAt":"not a date","graceSeconds":60}""")]
-    [InlineData("""{"v":1,"restartAt":12345,"graceSeconds":60}""")]
+    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60}""")]
+    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":3,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":"2","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":-1,"cancelled":false}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":3601,"cancelled":false}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":1.5,"cancelled":false}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":"60","cancelled":false}""")]
+    [InlineData("""{"v":2,"restartAt":"not a date","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":2,"restartAt":12345,"graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":"false"}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":0}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":null}""")]
     public void Anything_that_is_not_exactly_a_notice_is_refused(string line)
     {
         Decode(line, out var notice).ShouldBeFalse($"'{line}' must be refused");
@@ -73,9 +94,10 @@ public sealed class RestartNoticeTests
     /// way to put words in front of a user.
     /// </summary>
     [Theory]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"message":"Click here to keep working"}""")]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"command":"calc.exe"}""")]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"extra":null}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"message":"Click here to keep working"}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"command":"calc.exe"}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"extra":null}""")]
+    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":true,"reason":"because"}""")]
     public void An_extra_property_is_refused_whatever_it_is(string line)
     {
         Decode(line, out _).ShouldBeFalse();
@@ -84,7 +106,8 @@ public sealed class RestartNoticeTests
     [Fact]
     public void A_line_longer_than_the_protocol_allows_is_refused_unread()
     {
-        var padded = """{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60}""".PadRight(RestartNoticeProtocol.MaxLineBytes + 1);
+        var padded = """{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}"""
+            .PadRight(RestartNoticeProtocol.MaxLineBytes + 1);
 
         Decode(padded, out _).ShouldBeFalse();
     }
@@ -108,6 +131,7 @@ public sealed class RestartNoticeTests
 
         view.Visible.ShouldBeTrue();
         view.Restarting.ShouldBeFalse("it must not claim to be restarting while it is still counting down");
+        view.Cancelled.ShouldBeFalse();
         view.Countdown.ShouldBe(expected);
     }
 
@@ -143,6 +167,32 @@ public sealed class RestartNoticeTests
     }
 
     /// <summary>
+    /// A cancellation is shown from the moment it was issued, for long enough to
+    /// be read, and never with a countdown or "restarting now".
+    /// </summary>
+    [Fact]
+    public void A_cancellation_is_shown_briefly_and_then_goes_away()
+    {
+        var notice = RestartNotice.CancelledAt(Now);
+
+        var shown = RestartNoticeView.For(notice, Now.AddSeconds(5));
+        shown.Visible.ShouldBeTrue();
+        shown.Cancelled.ShouldBeTrue();
+        shown.Restarting.ShouldBeFalse();
+        shown.Countdown.ShouldBeNull();
+
+        RestartNoticeView.For(notice, Now + RestartNoticeView.LingerAfterCancel - TimeSpan.FromSeconds(1)).Visible.ShouldBeTrue();
+        RestartNoticeView.For(notice, Now + RestartNoticeView.LingerAfterCancel).Visible.ShouldBeFalse();
+    }
+
+    /// <summary>A cancellation stamped in the future is a clock problem, not something to show early.</summary>
+    [Fact]
+    public void A_cancellation_from_the_future_is_not_shown()
+    {
+        RestartNoticeView.For(RestartNotice.CancelledAt(Now.AddMinutes(5)), Now).Visible.ShouldBeFalse();
+    }
+
+    /// <summary>
     /// Every word the user sees is a constant. Nothing about a notice -- no field,
     /// no value -- can change what the window says, only the number counting down.
     /// </summary>
@@ -152,8 +202,11 @@ public sealed class RestartNoticeTests
         RestartNoticeView.Headline.ShouldBe("Your IT administrator has scheduled this device to restart.");
         RestartNoticeView.Title.ShouldBe("Restart Scheduled");
         RestartNoticeView.Footer.ShouldBe("Please save your work.");
+        RestartNoticeView.CancelledTitle.ShouldBe("Restart Cancelled");
+        RestartNoticeView.CancelledHeadline.ShouldBe("Your IT administrator has cancelled the scheduled restart.");
 
         typeof(RestartNoticeView).GetField(nameof(RestartNoticeView.Headline))!.IsLiteral.ShouldBeTrue();
+        typeof(RestartNoticeView).GetField(nameof(RestartNoticeView.CancelledHeadline))!.IsLiteral.ShouldBeTrue();
         typeof(RestartNotice).GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Select(p => p.PropertyType)
             .ShouldNotContain(typeof(string), "a notice carries no text at all");

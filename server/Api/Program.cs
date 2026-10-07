@@ -73,6 +73,11 @@ public sealed class Program
                 .AddHostedService<EndpointPlatform.Infrastructure.Peripherals.UsbGrantExpirySweeper>()
                 .AddHostedService<EndpointPlatform.Infrastructure.Identity.LocalAdminElevationExpirySweeper>();
 
+            // Sends department-wide scheduled restarts when their moment comes.
+            // The schedule is held here until then; nothing reaches a device
+            // before the sweeper queues its ordinary restart task.
+            builder.Services.AddHostedService<EndpointPlatform.Infrastructure.Restarts.RestartScheduleSweeper>();
+
             // --- Authentication and authorization (Phase 3) -------------------
             builder.Services.AddOptions<AdminAuthOptions>()
                 .Bind(builder.Configuration.GetSection(AdminAuthOptions.SectionName))
@@ -265,6 +270,7 @@ public sealed class Program
             app.MapReportEndpoints();
             app.MapPolicyEndpoints();
             app.MapGroupEndpoints();
+            app.MapRestartScheduleEndpoints();
             app.MapTaskEndpoints();
             app.MapAgentReleaseEndpoints();
             app.MapUsbEndpoints();

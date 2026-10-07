@@ -1150,6 +1150,156 @@ export function cancelGroupRestart(groupId: string): Promise<GroupActionResult> 
 }
 
 // ---------------------------------------------------------------------------
+// Restart Management: a department's restart at a chosen moment. The server
+// holds the schedule and sends the ordinary restart task to each online member
+// shortly before the moment, with that lead time as the warning Windows shows.
+// Until then nothing has reached a device, so cancelling is just deleting the
+// plan; afterwards the server cancels through the devices and says, per device,
+// how that went. "Department" here is a device group, membership and all.
+
+export type RestartScheduleStatus = 'Pending' | 'Dispatched' | 'Cancelled' | 'Missed'
+
+/** Where one device stands in a schedule, as the server names it. */
+export type RestartScheduleDeviceState =
+  // Before the restart goes out
+  | 'WillRestart'
+  | 'Excluded'
+  | 'OfflineNow'
+  // After it went out, from the device's restart task
+  | 'Queued'
+  | 'Executing'
+  | 'Scheduled'
+  | 'Restarted'
+  | 'Failed'
+  | 'Expired'
+  | 'Cancelled'
+  // After it went out, from a cancellation
+  | 'CancelRequested'
+  | 'CancelFailed'
+  | 'CancelUnsupported'
+  // Not targeted when it went out
+  | 'SkippedOffline'
+  | 'SkippedBusy'
+  | 'SkippedIneligible'
+  | 'SkippedUnauthorized'
+
+export interface RestartScheduleDevice {
+  deviceId: string
+  hostname: string
+  displayName: string | null
+  isOnline: boolean
+  agentVersion: string
+  /** Whether this device's agent can abort a restart it has already accepted. */
+  supportsCancel: boolean
+  state: RestartScheduleDeviceState
+  /** The server's one-line explanation of the state, when there is one. */
+  detail: string | null
+  restartTaskId: string | null
+  cancelTaskId: string | null
+  /** When Windows said it would act, once the device reported. */
+  restartAt: string | null
+}
+
+export interface RestartSchedule {
+  id: string
+  groupId: string
+  groupName: string
+  status: RestartScheduleStatus
+  /** What was chosen, in seconds from when it was created. */
+  requestedDelaySeconds: number
+  /** The lead time: the restart tasks go out this long before `restartAt`, and Windows shows it as the warning. */
+  warningSeconds: number
+  restartAt: string
+  dispatchAt: string
+  createdAt: string
+  createdByDisplay: string
+  dispatchedAt: string | null
+  cancelledAt: string | null
+  cancelledByDisplay: string | null
+  missedAt: string | null
+  /** True while nothing has reached a device: cancelling now sends nothing. */
+  canCancelCleanly: boolean
+  devices: RestartScheduleDevice[]
+}
+
+export interface RestartScheduleGroup {
+  id: string
+  name: string
+  isBuiltIn: boolean
+  deviceCount: number
+  onlineCount: number
+  /** The server's configured lead time, so the dialog can say what a new schedule will do. */
+  warningSeconds: number
+}
+
+export interface GroupRestartSchedules {
+  group: RestartScheduleGroup
+  /** The one pending schedule, if any. */
+  active: RestartSchedule | null
+  /** The last few, newest first, not including the active one. */
+  recent: RestartSchedule[]
+}
+
+/** What a cancellation did about one device. */
+export type RestartScheduleCancelOutcome =
+  | 'Excluded'
+  | 'AlreadyExcluded'
+  | 'CancelledBeforeDelivery'
+  | 'CancelRequested'
+  | 'AlreadyRequested'
+  | 'AlreadyCancelled'
+  | 'Unsupported'
+  | 'NothingToCancel'
+  | 'NotInSchedule'
+  | 'NotAuthorized'
+
+export interface RestartScheduleCancelDevice {
+  deviceId: string
+  hostname: string | null
+  outcome: RestartScheduleCancelOutcome
+}
+
+export interface RestartScheduleCancelResult {
+  schedule: RestartSchedule
+  devices: RestartScheduleCancelDevice[]
+}
+
+export const restartSchedulePaths = {
+  create: '/admin/v1/restart-schedules',
+  forGroup: (groupId: string) => `/admin/v1/restart-schedules/groups/${encodeURIComponent(groupId)}`,
+  schedule: (scheduleId: string) => `/admin/v1/restart-schedules/${encodeURIComponent(scheduleId)}`,
+  cancel: (scheduleId: string) => `/admin/v1/restart-schedules/${encodeURIComponent(scheduleId)}/cancel`,
+}
+
+export function getGroupRestartSchedules(groupId: string): Promise<GroupRestartSchedules> {
+  return request<GroupRestartSchedules>(restartSchedulePaths.forGroup(groupId))
+}
+
+export function getRestartSchedule(scheduleId: string): Promise<RestartSchedule> {
+  return request<RestartSchedule>(restartSchedulePaths.schedule(scheduleId))
+}
+
+/** Schedules the department's restart `delaySeconds` from now. 409 when it already has one pending. */
+export function createRestartSchedule(groupId: string, delaySeconds: number): Promise<RestartSchedule> {
+  return request<RestartSchedule>(restartSchedulePaths.create, {
+    method: 'POST',
+    body: JSON.stringify({ groupId, delaySeconds }),
+  })
+}
+
+/**
+ * Cancels for the whole department (no device ids) or for the named devices
+ * only. Before the restart goes out this sends nothing; after it, the server
+ * cancels through each device and reports how that went.
+ */
+export function cancelRestartSchedule(scheduleId: string, deviceIds?: string[]): Promise<RestartScheduleCancelResult> {
+  return request<RestartScheduleCancelResult>(restartSchedulePaths.cancel(scheduleId), {
+    method: 'POST',
+    body: deviceIds ? JSON.stringify({ deviceIds }) : undefined,
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Chrome Management. Read-only in this phase: every function here reads what
 // the fleet reported. Group membership is the Groups page's -- the server
 // resolves a group's devices with the same rule, so "All Devices" is the

@@ -159,6 +159,30 @@ public sealed class SessionNoticePipeServer : BackgroundService, IRestartNotifie
         StartNotifiersWhereMissing();
     }
 
+    /// <inheritdoc />
+    public void RestartCancelled()
+    {
+        // Stamped with this clock, like the restart notice: the window shows a
+        // cancellation briefly from that moment and a notifier that connects
+        // later than that sees nothing, exactly as with a restart long past.
+        var notice = RestartNotice.CancelledAt(_time.GetUtcNow());
+
+        List<Client> clients;
+        lock (_gate)
+        {
+            _current = notice;
+            clients = [.. _clients];
+        }
+
+        var bytes = RestartNoticeProtocol.Encode(notice);
+        foreach (var client in clients)
+        {
+            _ = SendAsync(client, bytes);
+        }
+
+        _logger.LogInformation("Restart cancellation notice sent to {Count} session(s).", clients.Count);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)

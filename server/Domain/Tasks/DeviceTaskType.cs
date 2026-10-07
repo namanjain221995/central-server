@@ -35,6 +35,19 @@ public enum DeviceTaskType
     /// <summary>Sign out the interactive user.</summary>
     SignOutUser = 5,
 
+    /// <summary>
+    /// Abort the restart Windows is counting down on the device
+    /// (<c>AbortSystemShutdown</c>). The undo of <see cref="RestartDevice"/>,
+    /// for a restart that has already been delivered and accepted.
+    /// </summary>
+    /// <remarks>
+    /// Queued by Restart Management when an administrator cancels after the
+    /// countdown has started. The payload names the restart task it undoes; on
+    /// success the server marks that restart Cancelled. Needs an agent with the
+    /// executor (1.14.0), so the catalogue gates it.
+    /// </remarks>
+    CancelRestart = 6,
+
     /// <summary>Start/stop/restart a named Windows service (Phase 9).</summary>
     ControlService = 20,
 

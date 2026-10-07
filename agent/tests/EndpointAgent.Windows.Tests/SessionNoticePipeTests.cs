@@ -279,6 +279,52 @@ public sealed class SessionNoticePipeTests
     }
 
     /// <summary>
+    /// A cancellation replaces the countdown: the reader's latest notice becomes
+    /// the cancellation, stamped by the server's clock, and a session that
+    /// connects afterwards is replayed the cancellation rather than the restart.
+    /// </summary>
+    [Fact]
+    public async Task A_cancellation_replaces_the_countdown_for_connected_and_later_readers()
+    {
+        var name = UniquePipe();
+        var at = new DateTimeOffset(2026, 10, 7, 10, 0, 0, TimeSpan.Zero);
+        // Two readers at once need a second pipe instance, which only the service
+        // identity may create; as in the multi-session test, that is this user here.
+        var server = new SessionNoticePipeServer(
+            name, NullLogger<SessionNoticePipeServer>.Instance, new FixedClock(at),
+            serviceIdentity: WindowsIdentity.GetCurrent().User);
+        using var stop = new CancellationTokenSource();
+        await server.StartAsync(stop.Token);
+
+        var reader = new SessionNoticeReader(name, _ => SessionNoticePipe.Trust.Trusted, new FixedClock(at));
+        var reading = reader.RunAsync(stop.Token);
+        (await EventuallyAsync(() => server.ConnectedCount == 1)).ShouldBeTrue("the reader must connect");
+
+        server.RestartScheduled(new RestartNotice(at.AddMinutes(5), 300));
+        (await EventuallyAsync(() => reader.Latest is { Cancelled: false })).ShouldBeTrue();
+
+        server.RestartCancelled();
+
+        (await EventuallyAsync(() => reader.Latest is { Cancelled: true })).ShouldBeTrue();
+        reader.Latest.ShouldBe(RestartNotice.CancelledAt(at));
+
+        var late = new SessionNoticeReader(name, _ => SessionNoticePipe.Trust.Trusted, new FixedClock(at.AddSeconds(30)));
+        var lateReading = late.RunAsync(stop.Token);
+        (await EventuallyAsync(() => late.Latest is not null)).ShouldBeTrue("the replay must carry the cancellation");
+        late.Latest!.Cancelled.ShouldBeTrue();
+
+        stop.Cancel();
+        await server.StopAsync(CancellationToken.None);
+        await reading;
+        await lateReading;
+    }
+
+    private sealed class FixedClock(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    /// <summary>
     /// Every connected session is told.
     /// </summary>
     /// <remarks>
