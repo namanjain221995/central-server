@@ -168,6 +168,11 @@ minute. Every cancel in the console reaches this: the single-device Cancel, the
 group `cancel-restart` action and Restart Management all decide through one
 service (`RestartCancellationService`), so a restart is cancelled where it sits while Queued and through the device once the device has it.
 
+A department restart scheduled through Restart Management may instead
+reach a 1.15.0+ device in advance as `ScheduleRestart`, held on the device
+until its moment (see [restart-management.md](restart-management.md)). It is
+cancelled the same way: before its countdown begins the agent simply drops it.
+
 ## Known limitations
 
 - **The ceiling is one hour**, for the reason above. It is an agent limit

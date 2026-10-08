@@ -102,15 +102,29 @@ public sealed class RestartGraceTests
     }
 
     /// <summary>
-    /// A timed restart, a group restart and a scheduled restart all extend
-    /// RestartDevice; none introduces a second way to restart. The one other
-    /// type that names a restart is its undo, which restarts nothing.
+    /// A timed restart and a group restart extend RestartDevice. The one
+    /// deliberate second way is ScheduleRestart: a restart handed over in
+    /// advance so the device carries it out at its moment without the network
+    /// (agent 1.15.0+). The only other type naming a restart is the undo,
+    /// which restarts nothing. A fourth needs the same justification.
     /// </summary>
     [Fact]
-    public void There_is_exactly_one_task_type_that_restarts_and_one_that_cancels_a_restart()
+    public void Restart_task_types_are_the_immediate_one_the_armed_one_and_the_undo()
     {
         Enum.GetNames<DeviceTaskType>().Where(n => n.Contains("Restart", StringComparison.Ordinal))
-            .ShouldBe([nameof(DeviceTaskType.RestartDevice), nameof(DeviceTaskType.CancelRestart)], ignoreOrder: true);
+            .ShouldBe(
+                [nameof(DeviceTaskType.RestartDevice), nameof(DeviceTaskType.ScheduleRestart), nameof(DeviceTaskType.CancelRestart)],
+                ignoreOrder: true);
+    }
+
+    [Fact]
+    public void An_armed_restart_needs_the_agent_that_can_hold_it_and_can_wait_up_to_a_week()
+    {
+        var definition = DeviceTaskCatalog.Require(DeviceTaskType.ScheduleRestart);
+
+        definition.MinimumAgentVersion.ShouldBe("1.15.0");
+        definition.HighRisk.ShouldBeTrue();
+        definition.DefaultTimeToLiveSeconds.ShouldBe(7 * 24 * 3600);
     }
 
     /// <summary>

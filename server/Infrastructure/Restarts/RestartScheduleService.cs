@@ -67,6 +67,15 @@ public sealed class RestartScheduleService(
 
     private static readonly DeviceTaskDefinition CancelDefinition = DeviceTaskCatalog.Require(DeviceTaskType.CancelRestart);
 
+    private static readonly DeviceTaskDefinition ArmDefinition = DeviceTaskCatalog.Require(DeviceTaskType.ScheduleRestart);
+
+    /// <summary>
+    /// How long after the moment an armed device that was off or asleep may
+    /// still restart (the agent's tolerance), plus slack for its warning and a
+    /// heartbeat. Seen online later than this without a new boot, it did not.
+    /// </summary>
+    private static readonly TimeSpan ArmedLateTolerance = TimeSpan.FromMinutes(15);
+
     private readonly EndpointPlatformDbContext _dbContext = dbContext;
     private readonly DeviceTaskService _taskService = taskService;
     private readonly RestartCancellationService _cancellation = cancellation;
@@ -140,7 +149,84 @@ public sealed class RestartScheduleService(
             "Restart schedule {ScheduleId} created for group {GroupId}: restart at {RestartAt:u}, dispatch at {DispatchAt:u}, by {Actor}.",
             schedule.Id, groupId, schedule.RestartAt, schedule.DispatchAt, actorDisplay);
 
-        return new(RestartScheduleCreateStatus.Created, await ViewAsync(schedule, groupName, now, cancellationToken));
+        await ArmAsync(schedule, groupName, actorId, actorDisplay, cancellationToken);
+
+        return new(RestartScheduleCreateStatus.Created, await ViewAsync(schedule, groupName, _timeProvider.GetUtcNow(), cancellationToken));
+    }
+
+    /// <summary>
+    /// Sends the restart to every member whose agent can hold it (1.15.0+) at
+    /// once, so each one restarts at the moment even if it is offline by then.
+    /// </summary>
+    /// <remarks>
+    /// A member that is offline now gets the task queued with a deadline of
+    /// the moment: it is armed the instant it checks in before then. Members
+    /// on older agents get no row here and are handled by the sweep shortly
+    /// before the moment, as before. A failure here costs nothing but the
+    /// head start: the sweep covers every member without a row.
+    /// </remarks>
+    private async Task ArmAsync(
+        RestartSchedule schedule, string groupName, Guid actorId, string actorDisplay, CancellationToken cancellationToken)
+    {
+        var now = _timeProvider.GetUtcNow();
+        var ttl = schedule.RestartAt - now;
+
+        // A delay no longer than the warning is due at once: the sweep sends
+        // it on its next tick, and arming as well would race it to the device.
+        if (ttl <= TimeSpan.Zero || schedule.DispatchAt <= now)
+        {
+            return;
+        }
+
+        var members = await _dbContext.Devices.AsNoTracking()
+            .Where(d => d.DeviceGroupId == schedule.DeviceGroupId
+                        && d.OrganizationId == schedule.OrganizationId
+                        && d.Status == DeviceStatus.Active)
+            .OrderBy(d => d.Hostname)
+            .Select(d => new { d.Id, d.Hostname, d.AgentVersion })
+            .ToListAsync(cancellationToken);
+
+        var payload = new TaskPayloads.ScheduleRestart(
+            schedule.RestartAt, schedule.WarningSeconds, RestartGrace.MessageFor(schedule.WarningSeconds));
+        var rows = new List<RestartScheduleDevice>();
+
+        foreach (var member in members.Where(m => DeviceTaskCatalog.IsSupportedBy(ArmDefinition, m.AgentVersion)))
+        {
+            if (!await _scope.CanActOnDeviceAsync(actorId, schedule.OrganizationId, member.Id, cancellationToken))
+            {
+                continue; // The sweep records it as not authorized.
+            }
+
+            var task = await _taskService.QueueAsync(
+                schedule.OrganizationId, member.Id, DeviceTaskType.ScheduleRestart, payload,
+                actorId, actorDisplay, cancellationToken, ttl);
+            if (task is not null)
+            {
+                rows.Add(new RestartScheduleDevice(schedule.Id, member.Id, member.Hostname, RestartDispatchOutcome.Queued, task.Id));
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            return;
+        }
+
+        _dbContext.AddRange(rows);
+        _auditWriter.Stage(schedule.OrganizationId, AuditActorType.PlatformUser, actorId, actorDisplay,
+            action: "restart_schedule.arm", AuditResult.Success,
+            a => a.OnTarget("restart_schedule", schedule.Id.ToString(), groupName)
+                  .Requiring(Domain.Authorization.Permissions.Device.Restart)
+                  .WithStateChange(null, JsonSerializer.Serialize(new
+                  {
+                      restartAt = schedule.RestartAt,
+                      warningSeconds = schedule.WarningSeconds,
+                      armed = rows.Select(r => r.Hostname),
+                  })));
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        _logger.LogInformation(
+            "Restart schedule {ScheduleId}: sent to {Count} device(s) in advance; they restart at the moment with or without the network.",
+            schedule.Id, rows.Count);
     }
 
     // -------------------------------------------------------------------- read
@@ -280,7 +366,11 @@ public sealed class RestartScheduleService(
         }
 
         _logger.LogInformation("Restart schedule {ScheduleId} cancelled before dispatch by {Actor}.", schedule.Id, actorDisplay);
-        return new(RestartScheduleCancelStatus.Ok, await ViewAsync(schedule, groupName, now, cancellationToken), []);
+
+        // Devices armed in advance already hold the restart: the plan is gone,
+        // and now each of them is told so.
+        var results = await CancelRowsAsync(schedule.Id, schedule.OrganizationId, null, actorId, actorDisplay, now, cancellationToken);
+        return new(RestartScheduleCancelStatus.Ok, await ViewAsync(schedule, groupName, now, cancellationToken), results);
     }
 
     private async Task<RestartScheduleCancelResult?> ExcludeAsync(
@@ -297,9 +387,23 @@ public sealed class RestartScheduleService(
             .Select(e => e.DeviceId)
             .ToHashSetAsync(cancellationToken);
 
+        // Devices armed in advance hold the restart already: excluding them
+        // means cancelling it on the device, after this save.
+        var armed = await _dbContext.Set<RestartScheduleDevice>().AsNoTracking()
+            .Where(r => r.ScheduleId == schedule.Id)
+            .Select(r => r.DeviceId)
+            .ToHashSetAsync(cancellationToken);
+        var armedTargets = new List<Guid>();
+
         var results = new List<RestartScheduleCancelDeviceResult>(deviceIds.Count);
         foreach (var deviceId in deviceIds.Distinct())
         {
+            if (armed.Contains(deviceId))
+            {
+                armedTargets.Add(deviceId);
+                continue;
+            }
+
             if (!members.TryGetValue(deviceId, out var member))
             {
                 results.Add(new(deviceId, null, RestartScheduleCancelDeviceOutcome.NotInSchedule));
@@ -348,6 +452,12 @@ public sealed class RestartScheduleService(
                 : null;
         }
 
+        if (armedTargets.Count > 0)
+        {
+            results.AddRange(await CancelRowsAsync(
+                schedule.Id, schedule.OrganizationId, armedTargets, actorId, actorDisplay, now, cancellationToken));
+        }
+
         return new(RestartScheduleCancelStatus.Ok, await ViewAsync(schedule, groupName, now, cancellationToken), results);
     }
 
@@ -364,7 +474,50 @@ public sealed class RestartScheduleService(
     {
         var now = _timeProvider.GetUtcNow();
         var scheduleId = schedule.Id;
-        var organizationId = schedule.OrganizationId;
+        var results = await CancelRowsAsync(scheduleId, schedule.OrganizationId, deviceIds, actorId, actorDisplay, now, cancellationToken);
+
+        // The same for the schedule itself: a fresh tracked copy, then one save
+        // with the audit entry for the whole operation. Two cancellations in
+        // the same instant meet on the row version; the loser's device work is
+        // already saved, so it only redoes this last write on top of the winner's.
+        for (var attempt = 0; ; attempt++)
+        {
+            _dbContext.ChangeTracker.Clear();
+            schedule = await _dbContext.Set<RestartSchedule>().SingleAsync(s => s.Id == scheduleId, cancellationToken);
+            if (deviceIds is null)
+            {
+                schedule.RecordCancelRequested(now, actorId, actorDisplay);
+            }
+
+            AuditCancel(schedule, groupName, actorId, actorDisplay, deviceIds is null ? "department" : "devices", results);
+            try
+            {
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                break;
+            }
+            catch (DbUpdateConcurrencyException) when (attempt < MaxConcurrencyRetries)
+            {
+                _logger.LogInformation("Restart schedule {ScheduleId} changed while its cancellation was recorded; retrying.", scheduleId);
+            }
+        }
+
+        _logger.LogInformation(
+            "Restart schedule {ScheduleId}: cancellation by {Actor} for {Scope}: {Summary}.",
+            schedule.Id, actorDisplay, deviceIds is null ? "the department" : $"{deviceIds.Count} device(s)",
+            string.Join(", ", results.GroupBy(r => r.Outcome).Select(g => $"{g.Key} {g.Count()}")));
+
+        return new(RestartScheduleCancelStatus.Ok, await ViewAsync(schedule, groupName, now, cancellationToken), results);
+    }
+
+    /// <summary>
+    /// Cancels each sent restart of the schedule -- every one, or the named
+    /// devices' -- through the shared cancellation, saving each device's row
+    /// on its own. A named device without a row is reported not in the schedule.
+    /// </summary>
+    private async Task<List<RestartScheduleCancelDeviceResult>> CancelRowsAsync(
+        Guid scheduleId, Guid organizationId, IReadOnlyCollection<Guid>? deviceIds, Guid actorId, string actorDisplay,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
         var rows = await _dbContext.Set<RestartScheduleDevice>().AsNoTracking()
             .Where(d => d.ScheduleId == scheduleId)
             .ToListAsync(cancellationToken);
@@ -400,37 +553,8 @@ public sealed class RestartScheduleService(
             }
         }
 
-        // The same for the schedule itself: a fresh tracked copy, then one save
-        // with the audit entry for the whole operation. Two cancellations in
-        // the same instant meet on the row version; the loser's device work is
-        // already saved, so it only redoes this last write on top of the winner's.
-        for (var attempt = 0; ; attempt++)
-        {
-            _dbContext.ChangeTracker.Clear();
-            schedule = await _dbContext.Set<RestartSchedule>().SingleAsync(s => s.Id == scheduleId, cancellationToken);
-            if (deviceIds is null)
-            {
-                schedule.RecordCancelRequested(now, actorId, actorDisplay);
-            }
-
-            AuditCancel(schedule, groupName, actorId, actorDisplay, deviceIds is null ? "department" : "devices", results);
-            try
-            {
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                break;
-            }
-            catch (DbUpdateConcurrencyException) when (attempt < MaxConcurrencyRetries)
-            {
-                _logger.LogInformation("Restart schedule {ScheduleId} changed while its cancellation was recorded; retrying.", scheduleId);
-            }
-        }
-
-        _logger.LogInformation(
-            "Restart schedule {ScheduleId}: cancellation by {Actor} for {Scope}: {Summary}.",
-            schedule.Id, actorDisplay, deviceIds is null ? "the department" : $"{targets.Count} device(s)",
-            string.Join(", ", results.GroupBy(r => r.Outcome).Select(g => $"{g.Key} {g.Count()}")));
-
-        return new(RestartScheduleCancelStatus.Ok, await ViewAsync(schedule, groupName, now, cancellationToken), results);
+        _dbContext.ChangeTracker.Clear();
+        return results;
     }
 
     private readonly record struct CancelRecord(RestartCancelOutcome Outcome, Guid? CancelTaskId);
@@ -551,6 +675,47 @@ public sealed class RestartScheduleService(
             var now = _timeProvider.GetUtcNow();
             var groupName = await GroupNameAsync(schedule.DeviceGroupId, cancellationToken);
 
+            // Devices armed when the schedule was made hold the restart already;
+            // this pass is for everyone else.
+            var armed = await _dbContext.Set<RestartScheduleDevice>().AsNoTracking()
+                .Where(r => r.ScheduleId == schedule.Id)
+                .Select(r => r.DeviceId)
+                .ToHashSetAsync(cancellationToken);
+
+            if (now - schedule.DispatchAt > TimeSpan.FromSeconds(_options.MissedAfterSeconds) && armed.Count > 0)
+            {
+                // Too late to send the rest, but the armed devices restart on
+                // their own: the schedule went out, and the others are recorded
+                // as missed rather than silently absent.
+                var others = await _dbContext.Devices.AsNoTracking()
+                    .Where(d => d.DeviceGroupId == schedule.DeviceGroupId
+                                && d.OrganizationId == schedule.OrganizationId
+                                && d.Status == DeviceStatus.Active
+                                && !armed.Contains(d.Id))
+                    .Select(d => new { d.Id, d.Hostname })
+                    .ToListAsync(cancellationToken);
+                _dbContext.AddRange(others.Select(o =>
+                    new RestartScheduleDevice(schedule.Id, o.Id, o.Hostname, RestartDispatchOutcome.Missed, null)));
+                schedule.MarkDispatched(now);
+                _auditWriter.Stage(schedule.OrganizationId, AuditActorType.System, actorId: null, SystemActorDisplay,
+                    action: "restart_schedule.dispatch", AuditResult.Success,
+                    a => a.OnTarget("restart_schedule", schedule.Id.ToString(), groupName)
+                          .WithStateChange(null, JsonSerializer.Serialize(new
+                          {
+                              scheduledBy = schedule.CreatedByDisplay,
+                              restartAt = schedule.RestartAt,
+                              armedInAdvance = armed.Count,
+                              missed = others.Select(o => o.Hostname),
+                          })));
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+
+                _logger.LogWarning(
+                    "Restart schedule {ScheduleId}: the final pass was missed (due {DispatchAt:u}, seen {Now:u}); {Armed} armed device(s) restart on their own, {Missed} not sent.",
+                    schedule.Id, schedule.DispatchAt, now, armed.Count, others.Count);
+                return;
+            }
+
             if (now - schedule.DispatchAt > TimeSpan.FromSeconds(_options.MissedAfterSeconds))
             {
                 schedule.MarkMissed(now);
@@ -615,6 +780,11 @@ public sealed class RestartScheduleService(
                 RestartDispatchOutcome outcome;
                 Guid? taskId = null;
 
+                if (armed.Contains(member.Id))
+                {
+                    continue; // Has its row, and its restart, since the schedule was made.
+                }
+
                 if (excluded.Contains(member.Id))
                 {
                     outcome = RestartDispatchOutcome.Excluded;
@@ -666,8 +836,8 @@ public sealed class RestartScheduleService(
             await transaction.CommitAsync(cancellationToken);
 
             _logger.LogInformation(
-                "Restart schedule {ScheduleId} dispatched for group {GroupId}: {Queued} queued of {Members} member(s).",
-                schedule.Id, schedule.DeviceGroupId, rows.Count(r => r.DispatchOutcome == RestartDispatchOutcome.Queued), rows.Count);
+                "Restart schedule {ScheduleId} dispatched for group {GroupId}: {Queued} queued now, {Armed} armed in advance, {Members} member(s).",
+                schedule.Id, schedule.DeviceGroupId, rows.Count(r => r.DispatchOutcome == RestartDispatchOutcome.Queued), armed.Count, rows.Count + armed.Count);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -705,11 +875,17 @@ public sealed class RestartScheduleService(
             schedule.RequestedDelaySeconds, schedule.WarningSeconds, schedule.RestartAt, schedule.DispatchAt,
             schedule.CreatedAt, schedule.CreatedByDisplay, schedule.DispatchedAt,
             schedule.CancelledAt, schedule.CancelledByDisplay, schedule.MissedAt,
-            CanCancelCleanly: schedule.Status == RestartScheduleStatus.Pending && now < schedule.DispatchAt,
+            // Clean means nothing has reached a device yet: once any device
+            // holds the restart, cancelling it goes through the device too.
+            CanCancelCleanly: schedule.Status == RestartScheduleStatus.Pending && now < schedule.DispatchAt
+                              && devices.All(d => d.RestartTaskId is null),
             devices);
     }
 
-    /// <summary>What a pending schedule would do if it went out now: the group's members as they are.</summary>
+    /// <summary>
+    /// What a pending schedule would do if it went out now: the group's members
+    /// as they are, and for those armed in advance, where their restart is.
+    /// </summary>
     private async Task<IReadOnlyList<RestartScheduleDeviceView>> PlannedDevicesAsync(
         RestartSchedule schedule, DateTimeOffset now, CancellationToken cancellationToken)
     {
@@ -721,8 +897,9 @@ public sealed class RestartScheduleService(
         var excluded = await _dbContext.Set<RestartScheduleExclusion>().AsNoTracking()
             .Where(e => e.ScheduleId == schedule.Id)
             .ToDictionaryAsync(e => e.DeviceId, cancellationToken);
+        var armed = (await RowViewsAsync(schedule, now, cancellationToken)).ToDictionary(v => v.DeviceId);
 
-        return members.Select(m =>
+        var planned = members.Where(m => !armed.ContainsKey(m.Id)).Select(m =>
         {
             var online = IsOnline(m.LastSeenAt, now);
             var (state, detail) = excluded.TryGetValue(m.Id, out var exclusion)
@@ -733,12 +910,20 @@ public sealed class RestartScheduleService(
             return new RestartScheduleDeviceView(
                 m.Id, m.Hostname, m.DisplayName, online, m.AgentVersion,
                 DeviceTaskCatalog.IsSupportedBy(CancelDefinition, m.AgentVersion),
-                state.ToString(), detail, null, null, null);
-        }).ToList();
+                state.ToString(), detail, null, null, null,
+                DeviceTaskCatalog.IsSupportedBy(ArmDefinition, m.AgentVersion));
+        });
+
+        return planned.Concat(armed.Values).OrderBy(v => v.Hostname, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     /// <summary>What a dispatched schedule did to each device, and where each restart is now.</summary>
     private async Task<IReadOnlyList<RestartScheduleDeviceView>> DispatchedDevicesAsync(
+        RestartSchedule schedule, DateTimeOffset now, CancellationToken cancellationToken) =>
+        await RowViewsAsync(schedule, now, cancellationToken);
+
+    /// <summary>Every device the schedule has a row for -- sent in advance or at dispatch -- and where its restart is.</summary>
+    private async Task<List<RestartScheduleDeviceView>> RowViewsAsync(
         RestartSchedule schedule, DateTimeOffset now, CancellationToken cancellationToken)
     {
         var rows = await _dbContext.Set<RestartScheduleDevice>().AsNoTracking()
@@ -748,7 +933,7 @@ public sealed class RestartScheduleService(
         var deviceIds = rows.Select(r => r.DeviceId).ToList();
         var live = await _dbContext.Devices.AsNoTracking()
             .Where(d => deviceIds.Contains(d.Id))
-            .Select(d => new { d.Id, d.DisplayName, d.AgentVersion, d.LastSeenAt })
+            .Select(d => new { d.Id, d.DisplayName, d.AgentVersion, d.LastSeenAt, d.LastBootAt })
             .ToDictionaryAsync(d => d.Id, cancellationToken);
         var taskIds = rows.SelectMany(r => new[] { r.RestartTaskId, r.CancelTaskId }).Where(id => id.HasValue).Select(id => id!.Value).ToList();
         var tasks = await _dbContext.DeviceTasks.AsNoTracking()
@@ -762,13 +947,63 @@ public sealed class RestartScheduleService(
             var cancel = row.CancelTaskId is { } cid ? tasks.GetValueOrDefault(cid) : null;
             var supportsCancel = DeviceTaskCatalog.IsSupportedBy(CancelDefinition, device?.AgentVersion);
             var (state, detail) = StateOf(row, restart, cancel, supportsCancel, now);
+            if (restart?.Type == DeviceTaskType.ScheduleRestart)
+            {
+                (state, detail) = ArmedStateOf(state, detail, restart, schedule.RestartAt, device?.LastSeenAt, device?.LastBootAt, now);
+            }
+
             return new RestartScheduleDeviceView(
                 row.DeviceId, row.Hostname, device?.DisplayName,
                 device is not null && IsOnline(device.LastSeenAt, now),
                 device?.AgentVersion ?? "",
                 supportsCancel,
-                state.ToString(), detail, row.RestartTaskId, row.CancelTaskId, restart is null ? null : RestartCancellationService.RestartAtOf(restart));
+                state.ToString(), detail, row.RestartTaskId, row.CancelTaskId,
+                restart is null ? null : RestartCancellationService.RestartAtOf(restart),
+                DeviceTaskCatalog.IsSupportedBy(ArmDefinition, device?.AgentVersion));
         }).ToList();
+    }
+
+    /// <summary>
+    /// Refines the state of a restart sent in advance. Its task succeeds when
+    /// the device ARMS it, not when it restarts, so "done" is judged from the
+    /// device's own boot time once the moment has passed.
+    /// </summary>
+    private static (RestartScheduleDeviceState State, string? Detail) ArmedStateOf(
+        RestartScheduleDeviceState state, string? detail, DeviceTask restart, DateTimeOffset restartAt,
+        DateTimeOffset? lastSeenAt, DateTimeOffset? lastBootAt, DateTimeOffset now)
+    {
+        switch (state)
+        {
+            // Past its deadline but not yet swept to Expired: the same thing.
+            case RestartScheduleDeviceState.Queued when restart.ExpiresAt <= now:
+                return (RestartScheduleDeviceState.Expired, "The device did not come online before the restart time; nothing restarted.");
+            case RestartScheduleDeviceState.Queued:
+                return (RestartScheduleDeviceState.AwaitingDevice,
+                    "Not yet picked up. The device receives the restart as soon as it checks in, if that is before the restart time.");
+            case RestartScheduleDeviceState.Scheduled:
+                return (RestartScheduleDeviceState.Armed,
+                    "The device holds the restart and carries it out at the time, even without the network.");
+            case RestartScheduleDeviceState.Expired when restart.DeliveredAt is null:
+                return (RestartScheduleDeviceState.Expired, "The device did not come online before the restart time; nothing restarted.");
+            case RestartScheduleDeviceState.Restarted:
+                // Booted at or after the moment (less a minute for clocks): done.
+                if (lastBootAt is { } boot && boot >= restartAt - TimeSpan.FromMinutes(1))
+                {
+                    return (RestartScheduleDeviceState.Restarted, $"Restarted; back up at {boot:u}.");
+                }
+
+                // Seen after the late tolerance without a new boot: it did not.
+                if (lastSeenAt is { } seen && seen > restartAt + ArmedLateTolerance + TimeSpan.FromMinutes(2))
+                {
+                    return (RestartScheduleDeviceState.NotRestarted,
+                        "The device is online but has not restarted since the restart time (it may have been off for too long, or the restart was refused).");
+                }
+
+                return (RestartScheduleDeviceState.Armed,
+                    "The restart time has passed; waiting for the device to report back after its restart.");
+            default:
+                return (state, detail);
+        }
     }
 
     private static (RestartScheduleDeviceState State, string? Detail) StateOf(
@@ -786,6 +1021,8 @@ public sealed class RestartScheduleService(
                 return (RestartScheduleDeviceState.SkippedIneligible, "Retired, or its agent could not take the task.");
             case RestartDispatchOutcome.NotAuthorized:
                 return (RestartScheduleDeviceState.SkippedUnauthorized, "The administrator who scheduled it no longer had authority over this device.");
+            case RestartDispatchOutcome.Missed:
+                return (RestartScheduleDeviceState.SkippedMissed, "The server was not running when the restart was due to go out, so it was not sent.");
         }
 
         if (restart is null)
@@ -938,11 +1175,21 @@ public enum RestartScheduleDeviceState
     SkippedBusy,
     SkippedIneligible,
     SkippedUnauthorized,
+    SkippedMissed,
+
+    // Sent in advance (agent 1.15.0+)
+    /// <summary>Queued for a device that was offline; it is armed when the device checks in before the moment.</summary>
+    AwaitingDevice,
+    /// <summary>The device holds the restart and carries it out at the moment, network or not.</summary>
+    Armed,
+    /// <summary>The moment passed and the device has been back without having restarted.</summary>
+    NotRestarted,
 }
 
 public sealed record RestartScheduleDeviceView(
     Guid DeviceId, string Hostname, string? DisplayName, bool IsOnline, string AgentVersion, bool SupportsCancel,
-    string State, string? Detail, Guid? RestartTaskId, Guid? CancelTaskId, DateTimeOffset? RestartAt);
+    string State, string? Detail, Guid? RestartTaskId, Guid? CancelTaskId, DateTimeOffset? RestartAt,
+    bool SupportsOfflineRestart);
 
 public sealed record RestartScheduleView(
     Guid Id, Guid GroupId, string GroupName, string Status,

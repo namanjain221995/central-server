@@ -101,4 +101,20 @@ public sealed class DeviceTests
 
         device.IsOnline(Now, TimeSpan.FromDays(365)).ShouldBeFalse();
     }
+
+    [Fact]
+    public void A_heartbeat_with_uptime_records_the_boot_on_the_servers_clock_and_one_without_keeps_the_last()
+    {
+        var device = Device.Enroll(Guid.CreateVersion7(), "PC-BOOT", "m-boot", "1.15.0", null, Guid.CreateVersion7(), Now);
+        device.LastBootAt.ShouldBeNull();
+
+        device.RecordHeartbeat("PC-BOOT", "1.15.0", null, Now.AddMinutes(10), TimeSpan.FromMinutes(3));
+        device.LastBootAt.ShouldBe(Now.AddMinutes(7));
+
+        device.RecordHeartbeat("PC-BOOT", "1.14.0", null, Now.AddMinutes(11));
+        device.LastBootAt.ShouldBe(Now.AddMinutes(7), "an older agent says nothing; what is known stands");
+
+        device.RecordHeartbeat("PC-BOOT", "1.15.0", null, Now.AddMinutes(12), TimeSpan.FromDays(-1));
+        device.LastBootAt.ShouldBe(Now.AddMinutes(7), "a nonsense uptime is ignored");
+    }
 }

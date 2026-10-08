@@ -18,6 +18,13 @@ public static class TaskPayloads
     /// </summary>
     public sealed record CancelRestart(Guid RestartTaskId, string RequestedBy);
 
+    /// <summary>
+    /// A restart the device arms and carries out itself. <paramref name="RestartAt"/>
+    /// is server time; the agent measures it against the server time it was
+    /// handed the task at, so its own clock does not matter.
+    /// </summary>
+    public sealed record ScheduleRestart(DateTimeOffset RestartAt, int WarningSeconds, string Message);
+
     /// <remarks>
     /// Serialised BY NAME, never by number. The agent's executor reads the wire
     /// value as a string ("Start"/"Stop"/"Restart") and matches it exactly; the

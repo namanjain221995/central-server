@@ -69,23 +69,25 @@ export function describeRestartTiming(delaySeconds: number): string {
   return `Restart the device in ${describeDuration(delaySeconds)}, counted from when the device receives the task.`
 }
 
-/** The structured result a RestartDevice task carries once the agent has answered. */
+/** The structured result a RestartDevice or ScheduleRestart task carries once the agent has answered. */
 export interface RestartResult {
   graceSeconds: number
   /** When Windows will act, as the agent reported it. Null unless the restart was accepted. */
   restartAt: string | null
-  /** `Scheduled`, `Expired`, `AlreadyInProgress` or `Failed`. */
+  /** `Scheduled`, `Armed`, `Expired`, `AlreadyInProgress` or `Failed`. */
   outcome: string
 }
 
 /** Reads a restart result; null for a task that is not a restart, has no result yet, or carries something unreadable. */
 export function restartResult(task: Pick<DeviceTaskItem, 'type' | 'resultJson'>): RestartResult | null {
-  if (task.type !== 'RestartDevice' || !task.resultJson) return null
+  if (!isRestartTaskType(task.type) || !task.resultJson) return null
   try {
-    const parsed = JSON.parse(task.resultJson) as Partial<RestartResult>
-    if (typeof parsed.outcome !== 'string' || typeof parsed.graceSeconds !== 'number') return null
+    const parsed = JSON.parse(task.resultJson) as Partial<RestartResult> & { warningSeconds?: number }
+    // An armed restart (ScheduleRestart) names its lead time warningSeconds.
+    const grace = typeof parsed.graceSeconds === 'number' ? parsed.graceSeconds : parsed.warningSeconds
+    if (typeof parsed.outcome !== 'string' || typeof grace !== 'number') return null
     return {
-      graceSeconds: parsed.graceSeconds,
+      graceSeconds: grace,
       restartAt: typeof parsed.restartAt === 'string' ? parsed.restartAt : null,
       outcome: parsed.outcome,
     }
@@ -144,7 +146,7 @@ export function restartStage(task: Pick<DeviceTaskItem, 'type' | 'status' | 'res
  */
 export function isCancellableTask(task: Pick<DeviceTaskItem, 'type' | 'status' | 'resultJson'>, now: Date): boolean {
   if (task.status === 'Queued') return true
-  if (task.type !== 'RestartDevice') return false
+  if (!isRestartTaskType(task.type)) return false
   const stage = restartStage(task, now)
   return stage === 'Executing' || stage === 'Scheduled'
 }
@@ -155,9 +157,22 @@ export function isCancellableTask(task: Pick<DeviceTaskItem, 'type' | 'status' |
  * means once it has passed.
  */
 export function describeAcceptedRestart(result: RestartResult, now: Date): string {
+  if (result.outcome === 'Armed' && result.restartAt && new Date(result.restartAt).getTime() > now.getTime()) {
+    const at = new Date(result.restartAt)
+    return `Armed — the device restarts itself at ${at.toLocaleTimeString()}, even without the network, after a ${describeDuration(result.graceSeconds)} warning`
+  }
   if (result.restartAt && new Date(result.restartAt).getTime() > now.getTime()) {
     const at = new Date(result.restartAt)
     return `Scheduled — Windows will restart the device at ${at.toLocaleTimeString()} (${describeDuration(result.graceSeconds)} after it received the task)`
   }
   return 'Succeeded — Windows accepted the restart; the device’s next heartbeat confirms it came back'
+}
+
+/**
+ * The two task types that restart a device: the immediate one, and the one
+ * handed over in advance that the device carries out at its moment (agent
+ * 1.15.0+). Both are cancellable the same way once the device has them.
+ */
+export function isRestartTaskType(type: string): boolean {
+  return type === 'RestartDevice' || type === 'ScheduleRestart'
 }

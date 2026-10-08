@@ -458,7 +458,7 @@ public static class DeviceEndpoints
         // it: the shared cancellation cancels it where it sits, or through the
         // device, and says which. Every other task type is cancellable only
         // while Queued, as before.
-        if (taskType == DeviceTaskType.RestartDevice)
+        if (taskType is DeviceTaskType.RestartDevice or DeviceTaskType.ScheduleRestart)
         {
             var attempt = await restartCancellation.CancelAsync(
                 actor.OrganizationId, deviceId, taskId, actor.UserId, actor.Email, cancellationToken);

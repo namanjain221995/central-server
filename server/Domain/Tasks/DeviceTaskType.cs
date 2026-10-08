@@ -48,6 +48,19 @@ public enum DeviceTaskType
     /// </remarks>
     CancelRestart = 6,
 
+    /// <summary>
+    /// Arm a restart for a later moment on the device itself, so it happens at
+    /// that moment with or without the network (agent 1.15.0+).
+    /// </summary>
+    /// <remarks>
+    /// Sent by Restart Management as soon as a department restart is scheduled.
+    /// The device stores it and, the warning's length before the moment, hands
+    /// Windows the countdown exactly as a <see cref="RestartDevice"/> would. Its
+    /// result is "armed"; whether the machine restarted is told by the boot time
+    /// it reports afterwards. Undone by <see cref="CancelRestart"/>.
+    /// </remarks>
+    ScheduleRestart = 7,
+
     /// <summary>Start/stop/restart a named Windows service (Phase 9).</summary>
     ControlService = 20,
 

@@ -49,6 +49,14 @@ public static class DeviceTaskCatalog
             // believe the machine was about to stay up when it was not.
             new(DeviceTaskType.CancelRestart, Permissions.Device.Restart, HighRisk: false, 600,
                 MinimumAgentVersion: "1.14.0"),
+
+            // The same authority as a restart, because it is one, later. The
+            // catalogue TTL is only the ceiling: each task is queued with a
+            // deadline of its own moment, after which arming it is pointless.
+            // Gated: an older agent would fail it as unknown and the department
+            // would look armed when it is not.
+            new(DeviceTaskType.ScheduleRestart, Permissions.Device.Restart, HighRisk: true, 7 * 24 * 3600,
+                MinimumAgentVersion: "1.15.0"),
             new(DeviceTaskType.ShutdownDevice, Permissions.Device.Shutdown, HighRisk: true, 900),
             new(DeviceTaskType.LockDevice, Permissions.Device.Lock, HighRisk: false, 900),
             new(DeviceTaskType.SignOutUser, Permissions.Device.SignOutUser, HighRisk: true, 900),

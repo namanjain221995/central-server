@@ -41,6 +41,7 @@ function device(state: RestartScheduleDevice['state'], supportsCancel = true): R
     restartTaskId: null,
     cancelTaskId: null,
     restartAt: null,
+    supportsOfflineRestart: false,
   }
 }
 
@@ -115,25 +116,28 @@ describe('words', () => {
     const lines = describeSchedulePlan(7200, 3, 5, Now)
 
     expect(lines[0]).toContain('Restart 5 devices in 2 hours, at ')
-    expect(lines[1]).toBe('Only devices online at that moment are restarted; 3 of 5 are online now.')
-    expect(lines[2]).toBe('Each device shows a 5 minutes warning first.')
-    expect(lines[3]).toMatch(/^You can cancel without any device noticing until .*; after that, cancelling goes through each device\.$/)
+    expect(lines[1]).toBe(
+      'Devices on agent 1.15 or later get the restart now and carry it out at that time even if they go offline; 3 of 5 are online now.',
+    )
+    expect(lines[2]).toBe('Older agents are restarted only if they are online shortly before that time.')
+    expect(lines[3]).toBe('Each device shows a 5 minutes warning first.')
+    expect(lines[4]).toMatch(/^You can cancel without any device noticing until .*; after that, cancelling goes through each device\.$/)
   })
 
   it('says a short delay goes out at once', () => {
     const lines = describeSchedulePlan(120, 1, 1, Now)
 
     expect(lines[0]).toContain('Restart 1 device in 2 minutes')
-    expect(lines[1]).toBe('Only devices online at that moment are restarted; 1 of 1 is online now.')
-    expect(lines[2]).toBe('Each device shows a 2 minutes warning first.')
-    expect(lines[3]).toBe('The restart goes to the devices straight away; cancelling then goes through each device.')
+    expect(lines[1]).toContain('1 of 1 is online now.')
+    expect(lines[3]).toBe('Each device shows a 2 minutes warning first.')
+    expect(lines[4]).toBe('The restart goes to the devices straight away; cancelling then goes through each device.')
   })
 })
 
 describe('device states', () => {
   it('has a label and a tone for every state the server can name', () => {
     const states = Object.keys(DEVICE_STATE_LABELS) as RestartScheduleDevice['state'][]
-    expect(states).toHaveLength(17)
+    expect(states).toHaveLength(21)
     for (const state of states) {
       expect(DEVICE_STATE_LABELS[state]).not.toBe('')
       expect(['ok', 'warn', 'crit', 'info', 'neutral']).toContain(deviceStateTone(state))
@@ -141,7 +145,7 @@ describe('device states', () => {
   })
 
   it('never shows green for a restart that has not happened yet', () => {
-    for (const state of ['WillRestart', 'Queued', 'Executing', 'Scheduled', 'CancelRequested'] as const) {
+    for (const state of ['WillRestart', 'Queued', 'Executing', 'Scheduled', 'CancelRequested', 'AwaitingDevice', 'Armed'] as const) {
       expect(deviceStateTone(state), state).toBe('warn')
     }
     expect(deviceStateTone('Restarted')).toBe('ok')
@@ -155,7 +159,11 @@ describe('device states', () => {
     expect(isCancellable(device('Scheduled', false))).toBe(false)
     expect(isCancellable(device('Executing', false))).toBe(false)
     expect(isCancellable(device('CancelFailed'))).toBe(true)
-    for (const done of ['Excluded', 'Restarted', 'Failed', 'Expired', 'Cancelled', 'CancelRequested', 'CancelUnsupported', 'SkippedOffline', 'SkippedBusy', 'SkippedIneligible', 'SkippedUnauthorized'] as const) {
+    // Sent in advance: withdrawn where it sits until the device has it, then
+    // cancelled on the device (every agent that can hold one can cancel it).
+    expect(isCancellable(device('AwaitingDevice'))).toBe(true)
+    expect(isCancellable(device('Armed'))).toBe(true)
+    for (const done of ['Excluded', 'Restarted', 'Failed', 'Expired', 'Cancelled', 'CancelRequested', 'CancelUnsupported', 'SkippedOffline', 'SkippedBusy', 'SkippedIneligible', 'SkippedUnauthorized', 'SkippedMissed', 'NotRestarted'] as const) {
       expect(isCancellable(device(done)), done).toBe(false)
     }
   })

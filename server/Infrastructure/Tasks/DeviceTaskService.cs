@@ -66,7 +66,8 @@ public sealed class DeviceTaskService(
         object? payload,
         Guid actorId,
         string actorDisplay,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? timeToLive = null)
     {
         var device = await _dbContext.Devices
             .SingleOrDefaultAsync(
@@ -95,9 +96,13 @@ public sealed class DeviceTaskService(
         var payloadJson = payload is null ? null : JsonSerializer.Serialize(payload, JsonOptions);
         var now = _timeProvider.GetUtcNow();
 
+        // A caller may shorten the deadline (a scheduled restart is pointless
+        // after its moment), never lengthen it past the catalogue's ceiling.
+        var ceiling = TimeSpan.FromSeconds(definition.DefaultTimeToLiveSeconds);
+        var ttl = timeToLive is { } requested && requested > TimeSpan.Zero && requested < ceiling ? requested : ceiling;
+
         var task = DeviceTask.Create(
-            organizationId, deviceId, type, payloadJson, actorId, actorDisplay,
-            now, TimeSpan.FromSeconds(definition.DefaultTimeToLiveSeconds));
+            organizationId, deviceId, type, payloadJson, actorId, actorDisplay, now, ttl);
 
         _dbContext.DeviceTasks.Add(task);
 

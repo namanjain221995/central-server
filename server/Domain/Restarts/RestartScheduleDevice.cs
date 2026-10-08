@@ -22,6 +22,13 @@ public enum RestartDispatchOutcome
 
     /// <summary>The administrator who scheduled it no longer had authority over the device.</summary>
     NotAuthorized = 5,
+
+    /// <summary>
+    /// The server could not send it in time (it was not running at the moment),
+    /// and a restart was not sent late. Devices that were armed in advance are
+    /// unaffected: they restart on their own.
+    /// </summary>
+    Missed = 6,
 }
 
 /// <summary>What happened when a cancellation was asked for after dispatch.</summary>

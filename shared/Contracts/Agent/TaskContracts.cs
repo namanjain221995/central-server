@@ -13,7 +13,14 @@ namespace EndpointPlatform.Contracts.Agent;
 /// or a badly skewed clock) is refused rather than carried out late. Optional
 /// and last so an agent that does not read it still deserialises the record.
 /// </param>
-public sealed record AgentTask(Guid TaskId, string Type, string? PayloadJson, DateTimeOffset? ExpiresAt = null);
+/// <param name="ServerTime">
+/// The server's clock when it handed the task out, or null from older servers.
+/// An executor that acts at an absolute moment (a scheduled restart) measures
+/// that moment against this, not against its own clock, so a device whose clock
+/// is wrong still acts at the right time.
+/// </param>
+public sealed record AgentTask(
+    Guid TaskId, string Type, string? PayloadJson, DateTimeOffset? ExpiresAt = null, DateTimeOffset? ServerTime = null);
 
 /// <summary>Response to the agent's task poll: zero or more tasks to run now.</summary>
 public sealed record AgentTaskListResponse(IReadOnlyList<AgentTask> Tasks);

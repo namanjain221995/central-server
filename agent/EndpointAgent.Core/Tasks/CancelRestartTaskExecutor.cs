@@ -41,8 +41,11 @@ public sealed class CancelRestartTaskExecutor(
     IDeviceControl deviceControl,
     ILogger<CancelRestartTaskExecutor> logger,
     IRestartNotifier? notifier = null,
-    TimeProvider? timeProvider = null) : ITaskExecutor
+    TimeProvider? timeProvider = null,
+    Restarts.RestartScheduler? scheduler = null) : ITaskExecutor
 {
+    private readonly Restarts.RestartScheduler? _scheduler = scheduler;
+
     /// <summary>Windows: no system shutdown is in progress, so there is nothing to abort.</summary>
     internal const int ErrorNoShutdownInProgress = 1116;
 
@@ -56,6 +59,19 @@ public sealed class CancelRestartTaskExecutor(
     public async Task<AgentTaskResult> ExecuteAsync(AgentTask task, CancellationToken cancellationToken = default)
     {
         var restartTaskId = ParseRestartTaskId(task.PayloadJson);
+
+        // A scheduled restart still waiting on this device for its moment has
+        // no Windows countdown yet: removing it is the whole cancellation.
+        // Once its countdown has started it is no longer armed, and the abort
+        // below is what takes it back.
+        if (restartTaskId is { } armedId && _scheduler is not null
+            && await _scheduler.DisarmAsync(armedId, cancellationToken))
+        {
+            return new AgentTaskResult(
+                true,
+                "Restart cancelled: the scheduled restart was removed from the device before its countdown began.",
+                ResultJson("Cancelled", restartTaskId, null));
+        }
 
         try
         {

@@ -351,6 +351,7 @@ public static class AgentEndpoints
         [FromHeader(Name = AgentProtocol.Headers.ProtocolVersion)] int? protocolVersion,
         AgentAuthenticationService authenticationService,
         Infrastructure.Tasks.DeviceTaskService taskService,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
         if (protocolVersion != AgentProtocol.Version)
@@ -368,7 +369,7 @@ public static class AgentEndpoints
         var claimed = await taskService.ClaimForDeviceAsync(auth.Device!.Id, cancellationToken);
 
         var tasks = claimed
-            .Select(t => new AgentTask(t.Id, t.Type.ToString(), t.PayloadJson, t.ExpiresAt))
+            .Select(t => new AgentTask(t.Id, t.Type.ToString(), t.PayloadJson, t.ExpiresAt, timeProvider.GetUtcNow()))
             .ToArray();
 
         return Results.Ok(new AgentTaskListResponse(tasks));
@@ -651,7 +652,11 @@ public static class AgentEndpoints
             request.Hostname.Trim(),
             request.AgentVersion.Trim(),
             string.IsNullOrWhiteSpace(request.OperatingSystem) ? null : request.OperatingSystem.Trim(),
-            now);
+            now,
+            // Uptime, both ends on the agent's clock; the device turns it into a
+            // boot time on ours. A nonsensical value is ignored, not refused:
+            // it costs a "restarted?" answer, never a heartbeat.
+            request.BootedAt is { } booted ? request.AgentTimestamp - booted : null);
 
         // Heartbeats are routine, high-volume signals - they update last_seen but
         // do not each produce an audit entry, which would bury real events under

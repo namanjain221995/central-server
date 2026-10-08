@@ -80,10 +80,17 @@ public sealed class TaskLoopTests(AgentApiPostgresFixture fixture)
         var taskId = await QueueTaskAsync(orgId, deviceId, DeviceTaskType.Ping);
         using var client = _fixture.Factory.CreateClient();
 
+        var before = DateTimeOffset.UtcNow;
         var claim = await client.SendAsync(Req(AgentProtocol.Routes.Tasks, credential: credential, method: HttpMethod.Get));
         claim.StatusCode.ShouldBe(HttpStatusCode.OK);
         var tasks = (await claim.Content.ReadFromJsonAsync<AgentTaskListResponse>())!;
         tasks.Tasks.ShouldContain(t => t.TaskId == taskId && t.Type == "Ping");
+
+        // The server's clock rides along, so an agent can place a deadline
+        // given in server time on its own clock without trusting either to agree.
+        var serverTime = tasks.Tasks.Single(t => t.TaskId == taskId).ServerTime;
+        serverTime.ShouldNotBeNull();
+        serverTime.Value.ShouldBeInRange(before.AddSeconds(-1), DateTimeOffset.UtcNow.AddSeconds(1));
 
         await using (var db = _fixture.CreateDbContext())
         {

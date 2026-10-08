@@ -37,6 +37,44 @@ the whole delay when the delay is shorter: "restart in 2 minutes" hands
 Windows 2 minutes and goes out on the next sweep. It is clamped to what every
 deployed agent accepts as a grace period, 30 seconds to one hour.
 
+## Offline-safe restarts (agent 1.15.0+)
+
+A device on agent 1.15.0 or later does not wait for the sweep. **The moment the
+schedule is saved, the server queues a `ScheduleRestart` task for every active
+member on 1.15.0+, online or not**, with a deadline of the restart moment.
+The device claims it on its next check-in (within seconds when online), stores
+it in `armed-restarts.json` under the agent's ProgramData state directory, and
+reports `Armed`. From then on the device needs no network: 5 minutes before the
+moment (the warning) its own scheduler hands Windows the usual countdown.
+
+- **Offline when scheduled.** The task waits in the queue. If the device checks
+  in before the moment, it is armed then; if not, the task expires and nothing
+  restarts.
+- **Off or asleep at the moment.** A device that comes back within 15 minutes
+  of the moment restarts with the full warning; later than that, the restart is
+  skipped and dropped, because a restart hours late is a surprise.
+- **Clock skew.** The claim carries the server's time, and the agent places
+  the moment on its own clock from the difference, so a device whose clock is
+  wrong still restarts at the server's moment.
+- **Older agents** are unchanged: they get the ordinary restart from the sweep
+  shortly before the moment, and only if online then.
+- **The sweep still runs** at `dispatchAt` for everyone without an armed task.
+  If the server misses it, the armed devices still restart; the rest are
+  recorded as `SkippedMissed` and the schedule shows Dispatched rather than
+  Missed.
+
+Because an armed task "succeeds" when the device stores it, not when it
+restarts, the page judges the result from the device's boot time: agents
+1.15.0+ send `bootedAt` on every heartbeat and the server keeps
+`devices.last_boot_at`. Booted after the moment means `Restarted`; online again
+more than 15 minutes after the moment without a new boot means `NotRestarted`.
+
+Cancelling still works, through the device: a queued armed task is withdrawn
+where it sits, and an armed one gets a `CancelRestart` that removes it from the
+device (or aborts the countdown if it has begun). **A device that is offline
+cannot be told**: cancel it and it keeps the restart until it next checks in;
+if that is after the moment, it has already restarted.
+
 ## What is accepted
 
 `POST /admin/v1/restart-schedules`, permission `device.restart`:
@@ -201,8 +239,12 @@ on in the container's environment. Validated on start.
   is a later feature, not a missing option.
 - **The moment is "now plus a delay", not a clock time.** The console turns the
   delay into the time it means and shows it before confirming.
-- **Offline devices are skipped, not caught up.** The rule every group action
-  follows; a device that was off restarts next time, not on its own later.
+- **Offline devices on older agents are skipped, not caught up.** The rule
+  every group action follows. Agents 1.15.0+ are armed in advance instead; see
+  above.
+- **An armed device that is offline cannot be cancelled** until it checks in.
+- **A device switched off for more than 15 minutes past the moment** does not
+  restart late; it is reported `NotRestarted` once it is back.
 - **Cancellation after dispatch needs agent 1.14.0.** Older agents accept a
   restart and cannot be told to abort it; the page says so per device, and the
   Agent page is where to update them.

@@ -58,11 +58,18 @@ public sealed record EnrollResponse(
 /// Agent-local send time; recorded for clock-skew diagnostics, never trusted for
 /// ordering — the server's own clock decides <c>last_seen</c>.
 /// </param>
+/// <param name="BootedAt">
+/// When the machine last started, by the agent's clock; null from agents before
+/// 1.15.0. Lets the server tell whether a restart that was due actually
+/// happened, including one the device carried out while it was offline.
+/// Optional and last so older agents and servers keep working.
+/// </param>
 public sealed record HeartbeatRequest(
     string Hostname,
     string AgentVersion,
     string? OperatingSystem,
-    DateTimeOffset AgentTimestamp);
+    DateTimeOffset AgentTimestamp,
+    DateTimeOffset? BootedAt = null);
 
 /// <summary>Response body for a successful heartbeat.</summary>
 /// <param name="ServerTime">Server time, letting the agent detect its own skew.</param>

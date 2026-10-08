@@ -26,6 +26,19 @@ describe('cancellable tasks', () => {
     expect(isCancellableTask({ type: 'RestartDevice', status: 'Succeeded', resultJson: accepted('2026-10-08T10:04:00Z') }, now)).toBe(true)
   })
 
+  it('treats a restart armed in advance like any other restart the device holds', () => {
+    const armed = (restartAt: string) =>
+      JSON.stringify({ outcome: 'Armed', restartAt, dueAt: restartAt, warningSeconds: 300 })
+    const ahead = { type: 'ScheduleRestart', status: 'Succeeded', resultJson: armed('2026-10-08T10:30:00Z') }
+
+    expect(isCancellableTask({ type: 'ScheduleRestart', status: 'Delivered', resultJson: null }, now)).toBe(true)
+    expect(isCancellableTask(ahead, now)).toBe(true)
+    expect(isCancellableTask({ ...ahead, resultJson: armed('2026-10-08T09:30:00Z') }, now)).toBe(false)
+    expect(restartStage(ahead, now)).toBe('Scheduled')
+    expect(restartResult(ahead)).toEqual({ graceSeconds: 300, restartAt: '2026-10-08T10:30:00Z', outcome: 'Armed' })
+    expect(describeAcceptedRestart(restartResult(ahead)!, now)).toMatch(/^Armed — the device restarts itself at .*even without the network/)
+  })
+
   it('does not offer cancel once the restart has happened, or for other delivered tasks', () => {
     expect(isCancellableTask({ type: 'RestartDevice', status: 'Succeeded', resultJson: accepted('2026-10-08T09:59:00Z') }, now)).toBe(false)
     expect(isCancellableTask({ type: 'RestartDevice', status: 'Failed', resultJson: null }, now)).toBe(false)

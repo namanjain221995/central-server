@@ -208,6 +208,6 @@ public sealed class RestartCancellationService(
         _dbContext.DeviceTasks.AsNoTracking()
             .SingleOrDefaultAsync(
                 t => t.Id == restartTaskId && t.DeviceId == deviceId && t.OrganizationId == organizationId
-                     && t.Type == DeviceTaskType.RestartDevice,
+                     && (t.Type == DeviceTaskType.RestartDevice || t.Type == DeviceTaskType.ScheduleRestart),
                 cancellationToken);
 }

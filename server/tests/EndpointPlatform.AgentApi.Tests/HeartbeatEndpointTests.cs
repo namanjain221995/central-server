@@ -99,6 +99,31 @@ public sealed class HeartbeatEndpointTests(AgentApiPostgresFixture fixture)
         }
     }
 
+    /// <summary>
+    /// The boot time is taken as an uptime -- the agent's two readings of its
+    /// own clock -- and placed on the server's clock, so a device whose clock
+    /// is hours wrong still reports when it booted correctly.
+    /// </summary>
+    [Fact]
+    public async Task A_heartbeat_with_a_boot_time_records_it_on_the_servers_clock_even_from_a_skewed_device()
+    {
+        var (deviceId, credential) = await EnrollDeviceAsync();
+        using var client = _fixture.Factory.CreateClient();
+
+        var deviceClock = DateTimeOffset.UtcNow.AddHours(3);
+        var before = DateTimeOffset.UtcNow;
+        var response = await client.SendAsync(MakeHeartbeat(credential,
+            new HeartbeatRequest("HB-PC", "1.15.0", "Windows 11 Test", deviceClock, deviceClock.AddMinutes(-10))));
+        var after = DateTimeOffset.UtcNow;
+
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        await using var dbContext = _fixture.CreateDbContext();
+        var device = await dbContext.Devices.SingleAsync(d => d.Id == deviceId);
+        device.LastBootAt.ShouldNotBeNull();
+        device.LastBootAt.Value.ShouldBeGreaterThanOrEqualTo(before.AddMinutes(-10).AddSeconds(-1));
+        device.LastBootAt.Value.ShouldBeLessThanOrEqualTo(after.AddMinutes(-10).AddSeconds(1));
+    }
+
     [Fact]
     public async Task An_unauthenticated_heartbeat_is_rejected()
     {

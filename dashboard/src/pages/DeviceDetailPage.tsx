@@ -24,6 +24,7 @@ import {
   RESTART_DELAY_OPTIONS,
   describeRestartTiming,
   isCancellableTask,
+  isRestartTaskType,
   restartStage,
 } from './restartView'
 import { useAuth } from '../auth/AuthContext'
@@ -1353,7 +1354,7 @@ export function DeviceDetailPage() {
                     // than a timer of its own: the badge flips from Scheduled to
                     // Succeeded on the first refresh after Windows was due to
                     // act, which is as prompt as this page is about anything.
-                    const stage = t.type === 'RestartDevice' ? restartStage(t, now) : t.status
+                    const stage = isRestartTaskType(t.type) ? restartStage(t, now) : t.status
                     return (
                     <tr key={t.id}>
                       <td>{t.type}</td>

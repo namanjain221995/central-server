@@ -213,8 +213,17 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.PingTaskExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.RefreshInventoryTaskExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.RestartTaskExecutor>();
-            // The undo of the restart: aborts the countdown Windows is running.
+            // The undo of the restart: aborts the countdown Windows is running,
+            // or removes a scheduled restart that has not started counting yet.
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.CancelRestartTaskExecutor>();
+
+            // Scheduled restarts the device holds itself, so they happen at their
+            // moment with or without the network. Durable across service restarts
+            // and reboots; one loop starts each countdown when it is due.
+            builder.Services.AddSingleton<EndpointAgent.Core.Restarts.IArmedRestartStore, EndpointAgent.Core.Restarts.FileArmedRestartStore>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Restarts.RestartScheduler>();
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<EndpointAgent.Core.Restarts.RestartScheduler>());
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ScheduleRestartTaskExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ShutdownTaskExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.LockTaskExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.SignOutTaskExecutor>();

@@ -170,7 +170,7 @@ public sealed class DeviceTask : AuditableEntity
     /// </summary>
     public bool TryCancelAcceptedRestart(DateTimeOffset now, string? reason)
     {
-        if (Type != DeviceTaskType.RestartDevice
+        if (Type is not (DeviceTaskType.RestartDevice or DeviceTaskType.ScheduleRestart)
             || Status is not (DeviceTaskStatus.Delivered or DeviceTaskStatus.Succeeded))
         {
             return false;

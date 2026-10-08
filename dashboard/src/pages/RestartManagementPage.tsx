@@ -535,6 +535,15 @@ function DeviceRow({
       <td style={{ maxWidth: 420 }}>{detail}</td>
       <td>
         {device.agentVersion || '—'}
+        {device.supportsOfflineRestart ? (
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Offline-safe: restarts on time even without the network
+          </div>
+        ) : (
+          <div className="muted" style={{ fontSize: 11.5 }}>
+            Must be online shortly before the restart; update to 1.15.0 for offline-safe restarts
+          </div>
+        )}
         {!device.supportsCancel && (
           <div className="muted" style={{ fontSize: 11.5 }}>
             Cannot abort a started countdown; update to 1.14.0 or later

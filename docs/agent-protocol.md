@@ -59,7 +59,9 @@ Requires `X-Agent-Credential`. Body: `HeartbeatRequest` (hostname, agent
 version, OS, agent-local timestamp — recorded for skew diagnostics, never
 trusted for ordering). Server updates the device facts and `last_seen` from its
 own clock; online/offline is derived from staleness, so a dead agent cannot
-appear alive. The response returns server time and the interval the server
+appear alive. Agents 1.15.0+ also send `bootedAt` (agent-clock boot time); the
+server stores `now - (agentTimestamp - bootedAt)` as `devices.last_boot_at`, so
+the boot time is on the server's clock whatever the device's clock reads. The response returns server time and the interval the server
 wants agents to use, making cadence centrally tunable.
 
 Heartbeats do not produce per-event audit entries (volume); enrollment and all
@@ -128,7 +130,18 @@ server's UTC deadline. The server never hands out a task past it, so the field
 exists for the agent's own belt-and-braces check on destructive executors:
 `RestartDevice` refuses a task whose `expiresAt` has passed rather than
 restarting a machine nobody is still expecting to go down. Agents that predate
-the field ignore it; it is optional and last.
+the field ignore it; it is optional. `serverTime` follows it: the server's clock
+at claim, so an agent can turn a deadline given in server time into one on its
+own clock without trusting the two to agree.
+
+`ScheduleRestart` (agent 1.15.0+) is a restart handed over in advance. Payload
+`{restartAt, warningSeconds, message}`. The agent stores it durably and starts
+Windows' countdown `warningSeconds` before `restartAt` (placed on its own clock
+through `serverTime`), network or not. Its `resultJson` is
+`{outcome: "Armed", restartAt, dueAt, warningSeconds}`; a task whose
+`restartAt` has passed is refused as `Expired`. If the device was off or asleep
+at the moment, it restarts with the full warning when it is back within 15
+minutes, and drops the restart after that.
 
 ### `POST /agent/v1/tasks/{taskId}/result` — implemented
 Requires `X-Agent-Credential`. Body: `AgentTaskResult` (`succeeded`, `message`,
@@ -145,6 +158,8 @@ accepted: the executor calls `AbortSystemShutdown` and its `resultJson` is
 `{outcome, restartTaskId, code}` with `outcome` one of `Cancelled`,
 `NothingToCancel` (Windows had nothing pending) or `Failed`. On `Cancelled` the
 server marks the named restart task Cancelled, provided it belongs to the same
-device. The server refuses to queue it for an agent below 1.14.0. Unlike
+device. The server refuses to queue it for an agent below 1.14.0. Its
+`restartTaskId` may also name a `ScheduleRestart`: an armed restart whose
+countdown has not begun is removed from the device and reported `Cancelled`. Unlike
 `RestartDevice`, the executor does not refuse an expired task: aborting what is
 still pending is always safe. See [device-restart.md](device-restart.md).

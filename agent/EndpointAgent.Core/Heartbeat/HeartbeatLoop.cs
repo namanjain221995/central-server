@@ -112,11 +112,13 @@ public sealed class HeartbeatLoop(
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                var sentAt = _timeProvider.GetUtcNow();
                 var request = new HeartbeatRequest(
                     _systemInfoProvider.GetHostName(),
                     AgentVersion,
                     await _systemInfoProvider.GetOperatingSystemDescriptionAsync(stoppingToken),
-                    _timeProvider.GetUtcNow());
+                    sentAt,
+                    BootTime(sentAt));
 
                 AgentApiResult<HeartbeatResponse> result;
 
@@ -303,6 +305,17 @@ public sealed class HeartbeatLoop(
             // line of defence so an unexpected failure cannot kill the loop.
             _logger.LogError(ex, "Inventory collection failed; will retry on the next server request.");
         }
+    }
+
+    /// <summary>
+    /// When the machine last started: now minus the system tick count, which
+    /// Windows resets at every boot and keeps counting through sleep. Rounded
+    /// to the second, so it reads the same on every heartbeat of one boot.
+    /// </summary>
+    private static DateTimeOffset BootTime(DateTimeOffset now)
+    {
+        var booted = now - TimeSpan.FromMilliseconds(Environment.TickCount64);
+        return new DateTimeOffset(booted.Ticks - booted.Ticks % TimeSpan.TicksPerSecond, booted.Offset);
     }
 
     private void LogClockSkew(DateTimeOffset agentTime, DateTimeOffset serverTime)

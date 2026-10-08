@@ -110,7 +110,8 @@ export function describeSchedulePlan(
   const dispatchAt = new Date(restartAt.getTime() - warning * 1000)
   const lines = [
     `Restart ${deviceCount} device${deviceCount === 1 ? '' : 's'} in ${describeScheduleDelay(delaySeconds)}, at ${restartAt.toLocaleString()}.`,
-    `Only devices online at that moment are restarted; ${onlineCount} of ${deviceCount} ${onlineCount === 1 ? 'is' : 'are'} online now.`,
+    `Devices on agent 1.15 or later get the restart now and carry it out at that time even if they go offline; ${onlineCount} of ${deviceCount} ${onlineCount === 1 ? 'is' : 'are'} online now.`,
+    'Older agents are restarted only if they are online shortly before that time.',
     `Each device shows a ${describeScheduleDelay(warning)} warning first.`,
   ]
   lines.push(
@@ -143,6 +144,10 @@ export const DEVICE_STATE_LABELS: Record<RestartScheduleDeviceState, string> = {
   SkippedBusy: 'Skipped (busy)',
   SkippedIneligible: 'Skipped',
   SkippedUnauthorized: 'Skipped (not authorised)',
+  SkippedMissed: 'Skipped (server missed it)',
+  AwaitingDevice: 'Waiting for device',
+  Armed: 'Armed on device',
+  NotRestarted: 'Did not restart',
 }
 
 export function deviceStateTone(state: RestartScheduleDeviceState): Tone {
@@ -152,6 +157,8 @@ export function deviceStateTone(state: RestartScheduleDeviceState): Tone {
     case 'Executing':
     case 'Scheduled':
     case 'CancelRequested':
+    case 'AwaitingDevice':
+    case 'Armed':
       // Not done yet -- amber, never green.
       return 'warn'
     case 'Restarted':
@@ -160,12 +167,14 @@ export function deviceStateTone(state: RestartScheduleDeviceState): Tone {
     case 'Expired':
     case 'CancelFailed':
     case 'CancelUnsupported':
+    case 'NotRestarted':
       return 'crit'
     case 'OfflineNow':
     case 'SkippedOffline':
     case 'SkippedBusy':
     case 'SkippedIneligible':
     case 'SkippedUnauthorized':
+    case 'SkippedMissed':
       return 'info'
     case 'Excluded':
     case 'Cancelled':
@@ -185,9 +194,11 @@ export function isCancellable(device: Pick<RestartScheduleDevice, 'state' | 'sup
     case 'WillRestart':
     case 'OfflineNow':
     case 'Queued':
+    case 'AwaitingDevice':
       return true
     case 'Executing':
     case 'Scheduled':
+    case 'Armed':
     case 'CancelFailed':
       return device.supportsCancel
     default:
@@ -206,7 +217,9 @@ export function summarizeDevices(devices: readonly Pick<RestartScheduleDevice, '
 /** Whether any device is still between "sent" and "done": the page polls faster while this is true. */
 export function isInFlight(schedule: Pick<RestartSchedule, 'status' | 'devices'>): boolean {
   if (schedule.status !== 'Dispatched') return false
-  return schedule.devices.some((d) => ['Queued', 'Executing', 'Scheduled', 'CancelRequested'].includes(d.state))
+  return schedule.devices.some((d) =>
+    ['Queued', 'Executing', 'Scheduled', 'CancelRequested', 'AwaitingDevice', 'Armed'].includes(d.state),
+  )
 }
 
 export type ScheduleStage = 'Scheduled' | 'In progress' | 'Done' | 'Cancelled' | 'Missed'

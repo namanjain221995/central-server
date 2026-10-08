@@ -1203,6 +1203,11 @@ export type RestartScheduleDeviceState =
   | 'SkippedBusy'
   | 'SkippedIneligible'
   | 'SkippedUnauthorized'
+  | 'SkippedMissed'
+  // Sent in advance to agents 1.15.0 and later
+  | 'AwaitingDevice'
+  | 'Armed'
+  | 'NotRestarted'
 
 export interface RestartScheduleDevice {
   deviceId: string
@@ -1219,6 +1224,8 @@ export interface RestartScheduleDevice {
   cancelTaskId: string | null
   /** When Windows said it would act, once the device reported. */
   restartAt: string | null
+  /** Whether this device's agent (1.15.0+) holds the restart itself and carries it out without the network. */
+  supportsOfflineRestart: boolean
 }
 
 export interface RestartSchedule {

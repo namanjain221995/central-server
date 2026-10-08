@@ -102,6 +102,14 @@ public sealed class Device : AuditableEntity
     /// <summary>Set on enrollment and on every authenticated heartbeat.</summary>
     public DateTimeOffset? LastSeenAt { get; private set; }
 
+    /// <summary>
+    /// When the machine last started, on the server's clock: the uptime the agent
+    /// reported, subtracted from the heartbeat's receive time. Null until an
+    /// agent that reports it (1.15.0+) checks in. Tells whether a restart that
+    /// was due actually happened, including one carried out while offline.
+    /// </summary>
+    public DateTimeOffset? LastBootAt { get; private set; }
+
     /// <summary>Interactive user reported by the last inventory, e.g. <c>DOMAIN\jsmith</c>.</summary>
     public string? LoggedOnUser { get; private set; }
 
@@ -143,7 +151,12 @@ public sealed class Device : AuditableEntity
     }
 
     /// <summary>Applies an authenticated heartbeat.</summary>
-    public void RecordHeartbeat(string hostname, string agentVersion, string? operatingSystem, DateTimeOffset now)
+    /// <param name="uptime">
+    /// How long the machine had been running when it sent the heartbeat, or null
+    /// when the agent did not say. Measured on the agent alone, so the boot time
+    /// derived from it is on the server's clock whatever the device's clock reads.
+    /// </param>
+    public void RecordHeartbeat(string hostname, string agentVersion, string? operatingSystem, DateTimeOffset now, TimeSpan? uptime = null)
     {
         // A retired device's heartbeats are rejected upstream; guard here too so a
         // coding error cannot quietly resurrect one.
@@ -151,6 +164,11 @@ public sealed class Device : AuditableEntity
         {
             throw new InvalidOperationException(
                 $"Device {Id} is retired and cannot record heartbeats.");
+        }
+
+        if (uptime is { } running && running >= TimeSpan.Zero && running <= TimeSpan.FromDays(400))
+        {
+            LastBootAt = now - running;
         }
 
         Hostname = Guard.NotNullOrWhiteSpace(hostname, nameof(hostname), maxLength: 253);
