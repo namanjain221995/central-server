@@ -67,13 +67,19 @@ file nightly; `restore.sh` rebuilds the server from it on new hardware
 (`docs/runbooks/disaster-recovery.md`). Never decrypt a bundle anywhere but the
 machine being restored, and never commit one.
 
-**Scheduled restarts are held by the server, then sent as ordinary restart
-tasks.** Restart Management (`docs/restart-management.md`) never adds a
-"scheduled restart" task type: the sweeper queues `RestartDevice` per online
-member shortly before the moment, with the lead time as Windows' warning.
-Cancelling after that goes through `CancelRestart` (agent 1.14.0+), which is
-the only thing that can abort a countdown Windows already owns. Keep it that
-way: one way to restart, one way to undo it.
+**Scheduled restarts reach agent 1.15.0+ at schedule time, older agents just
+before the moment.** Restart Management (`docs/restart-management.md`) queues a
+`ScheduleRestart` task to every 1.15.0+ member when the schedule is created,
+online or offline, with the task's lifetime ending at the restart moment. The
+agent stores it (`armed-restarts.json`) and starts Windows' countdown itself, so
+the machine restarts on time even if the network drops after it was armed. This
+replaced the earlier "server holds it, then sends `RestartDevice`" design on
+2026-10-09 at the owner's request. That design still serves agents older than
+1.15.0, and delays no longer than the warning, through the sweeper. Cancelling
+anything already on the device goes through `CancelRestart` (agent 1.14.0+),
+the only thing that can abort an armed restart or a countdown Windows already
+owns. An offline armed device cannot be cancelled until it checks in. Keep one
+way to undo a restart.
 
 None of them may ever reach the **Agent API**, which every managed endpoint can
 talk to. `AgentApiKeyBoundaryGuard` refuses to start that process if any is

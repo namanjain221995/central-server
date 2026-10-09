@@ -200,7 +200,11 @@ public sealed class UpdateAgentExecutor(
         // nobody created fails 1622 and installs nothing, so honouring an
         // override here would turn a working update into a failed one. It is
         // also where an administrator looks when an upgrade goes wrong.
-        var logPath = Path.Combine(AgentPaths.LogDirectory, $"agent-update-{info.Version}.msi.log");
+        //
+        // One log per task, named after the task id the dashboard shows: msiexec
+        // /l*v overwrites, so a shared name left only the last of several
+        // attempts readable -- and the last was the one that had nothing to say.
+        var logPath = Path.Combine(AgentPaths.LogDirectory, $"agent-update-{info.Version}-{task.TaskId:N}.msi.log");
         await launcher.ScheduleInstallAsync(msiPath, logPath, cancellationToken);
 
         logger.LogWarning(

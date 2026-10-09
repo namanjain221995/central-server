@@ -84,8 +84,8 @@ public sealed class UpdateAgentExecutorTests : IDisposable
         var api = new FakeApi(MsiBytes) { Info = Offer() };
         var launcher = new FakeLauncher();
 
-        var result = await Executor(api, launcher).ExecuteAsync(
-            Task_(new { releaseId = ReleaseId, version = NewerVersion, sha256 = MsiSha }));
+        var task = Task_(new { releaseId = ReleaseId, version = NewerVersion, sha256 = MsiSha });
+        var result = await Executor(api, launcher).ExecuteAsync(task);
 
         result.Succeeded.ShouldBeTrue();
         // "Started", never "succeeded": the running process cannot witness the outcome.
@@ -100,7 +100,9 @@ public sealed class UpdateAgentExecutorTests : IDisposable
         // configured state directory. Pinned here because it looks like an
         // oversight: msiexec /l*v fails 1622 against a directory nobody creates,
         // and only the installer and Serilog create that one.
-        Path.GetFileName(launcher.ScheduledLogPath!).ShouldBe($"agent-update-{NewerVersion}.msi.log");
+        // Named per task: msiexec /l*v overwrites, so a shared name kept only
+        // the last of several attempts.
+        Path.GetFileName(launcher.ScheduledLogPath!).ShouldBe($"agent-update-{NewerVersion}-{task.TaskId:N}.msi.log");
         Path.GetDirectoryName(launcher.ScheduledLogPath!).ShouldBe(AgentPaths.LogDirectory);
 
         File.Delete(launcher.ScheduledPath!);
