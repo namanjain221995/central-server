@@ -6,7 +6,7 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>EndpointAgent.SessionNotice</RootNamespace>
     <AssemblyName>EndpointAgent.SessionNotice</AssemblyName>
-    <VersionPrefix>1.16.0</VersionPrefix>
+    <VersionPrefix>1.16.1</VersionPrefix>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
 
     <!--
