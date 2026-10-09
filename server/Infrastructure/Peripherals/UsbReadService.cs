@@ -4,15 +4,26 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EndpointPlatform.Infrastructure.Peripherals;
 
+/// <param name="IsRestrictable">
+/// True when access policy applies: storage or a portable device (phone,
+/// tablet, camera). Everything else is inventory.
+/// </param>
+/// <param name="SupportsReadOnly">
+/// True when a read-only grant can be enforced. Storage only; a phone is
+/// restricted or enabled, nothing between.
+/// </param>
 /// <param name="Policy">
 /// What the console has decided: <c>Restricted</c>, <c>ReadOnly</c> or
 /// <c>Enabled</c>.
 /// </param>
 /// <param name="EnforcementState">
-/// What the endpoint is actually doing about it, as one of <c>Enforced</c>,
-/// <c>Pending</c>, <c>Drifted</c>, <c>Failed</c> or <c>NotApplicable</c>. Kept
-/// distinct from <paramref name="Policy"/> so the UI cannot imply a control that
-/// is not in place — an offline machine shows Pending, not Enforced.
+/// What the endpoint is actually doing about it, as one of <c>Enforced</c>
+/// (applied and verified against Windows), <c>Applied</c> (the agent reported
+/// success but could not, or does not, verify it), <c>Pending</c>,
+/// <c>Drifted</c>, <c>RequiresRestart</c>, <c>Failed</c> or
+/// <c>NotApplicable</c>. Kept distinct from <paramref name="Policy"/> so the UI
+/// cannot imply a control that is not in place — an offline machine shows
+/// Pending, not Enforced.
 /// </param>
 /// <param name="SerialNumber">Null when the device does not expose one. Never fabricated.</param>
 public sealed record UsbDeviceView(
@@ -20,6 +31,9 @@ public sealed record UsbDeviceView(
     string InstanceId,
     string DeviceClass,
     bool IsStorage,
+    bool IsPortableDevice,
+    bool IsRestrictable,
+    bool SupportsReadOnly,
     string? VendorId,
     string? ProductId,
     string? SerialNumber,
@@ -99,6 +113,9 @@ public sealed class UsbReadService(EndpointPlatformDbContext dbContext, TimeProv
             u.InstanceId,
             u.DeviceClass.ToString(),
             u.IsStorage,
+            u.IsPortableDevice,
+            u.IsRestrictable,
+            u.SupportsReadOnly,
             u.VendorId,
             u.ProductId,
             u.SerialNumber,
@@ -175,25 +192,40 @@ public sealed class UsbReadService(EndpointPlatformDbContext dbContext, TimeProv
     }
 
     /// <summary>
-    /// Turns the desired/reported pair into one word an operator can act on.
+    /// Turns the decided/reported pair into one word an operator can act on.
     /// </summary>
     /// <remarks>
-    /// The distinction that matters is <c>Pending</c> versus <c>Drifted</c>.
-    /// Pending means the endpoint has not told us anything yet — it may be
-    /// offline, or the policy may still be in flight. Drifted means it told us
-    /// it is enforcing something other than what was asked, which on a Windows
-    /// box usually means a local administrator re-enabled the device by hand.
-    /// Collapsing both into "not enforced" would hide the one that needs
-    /// investigating.
+    /// <para>
+    /// The distinctions that matter: <c>Pending</c> means the endpoint has not
+    /// told us anything yet — it may be offline, or the policy may still be in
+    /// flight. <c>Drifted</c> means it told us it is enforcing something other
+    /// than what was asked, which on a Windows box usually means a local
+    /// administrator re-enabled the device by hand. <c>RequiresRestart</c>
+    /// means Windows accepted the change for the next boot, so the control is
+    /// not in place yet and a restart is what fixes it. Collapsing any of these
+    /// into "not enforced" would hide the one that needs investigating.
+    /// </para>
+    /// <para>
+    /// <c>Enforced</c> is reserved for a state the endpoint has verified against
+    /// Windows. An agent that reported success without verifying — every agent
+    /// before 1.16.0, or one whose read-back failed — gets <c>Applied</c>, so
+    /// the console never calls a device protected on the strength of a call
+    /// having returned.
+    /// </para>
     /// </remarks>
-    private static string DescribeEnforcement(UsbDevice usb)
+    internal static string DescribeEnforcement(UsbDevice usb)
     {
-        if (!usb.IsStorage)
+        if (!usb.IsRestrictable)
         {
             return "NotApplicable";
         }
 
-        if (usb.EnforcementError is not null)
+        if (usb.EnforcementStatus == UsbEnforcementStatus.RequiresRestart)
+        {
+            return "RequiresRestart";
+        }
+
+        if (usb.HasEnforcementFailure)
         {
             return "Failed";
         }
@@ -203,6 +235,11 @@ public sealed class UsbReadService(EndpointPlatformDbContext dbContext, TimeProv
             return "Pending";
         }
 
-        return usb.EnforcedPolicy == usb.Policy ? "Enforced" : "Drifted";
+        if (usb.EnforcedPolicy != usb.Policy)
+        {
+            return "Drifted";
+        }
+
+        return usb.EnforcementStatus == UsbEnforcementStatus.Verified ? "Enforced" : "Applied";
     }
 }

@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 namespace EndpointAgent.Windows;
 
 /// <summary>
-/// Applies USB storage access state on this machine.
+/// Applies USB access state on this machine, for storage and portable devices.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -17,8 +17,12 @@ namespace EndpointAgent.Windows;
 /// <list type="bullet">
 ///   <item><b>Restricted</b> — the device instance is disabled through SetupAPI
 ///   (<c>DIF_PROPERTYCHANGE</c> / <c>DICS_DISABLE</c>), exactly what Device
-///   Manager's Disable does. No volume is created, so there is no drive letter
-///   and nothing to race against.</item>
+///   Manager's Disable does. For a stick no volume is created, so there is no
+///   drive letter. For a phone the Windows Portable Devices driver is unloaded
+///   and its device interface disappears, so there is nothing for Explorer or
+///   any other MTP client to open — no transfer in either direction. A phone
+///   in "File transfer + USB debugging" mode is a composite device; disabling
+///   its parent takes the MTP and the ADB function down together.</item>
 ///   <item><b>Enabled</b> — the device is enabled and the read-only marking is
 ///   cleared, so Windows behaves exactly as it would unmanaged. Time-boxed
 ///   like every other grant.</item>
@@ -26,14 +30,26 @@ namespace EndpointAgent.Windows;
 ///   beneath it is marked read-only with
 ///   <c>IOCTL_DISK_SET_DISK_ATTRIBUTES</c>. Windows itself then refuses writes,
 ///   creates, renames and deletes; this is not an ACL that an administrator on
-///   the endpoint can edit.</item>
+///   the endpoint can edit. Storage only: a portable device has no disk, and
+///   MTP has no read-only mode, so asking for it restricts the device
+///   again and reports the failure.</item>
 /// </list>
 /// <para>
-/// A class-wide alternative exists — the <c>StorageDevicePolicies\WriteProtect</c>
-/// and removable-storage Group Policy values — and was deliberately not used.
-/// Both are all-or-nothing for every removable device on the machine, so they
-/// cannot express "this one approved stick, read-only, for the next two hours",
-/// which is the entire requirement.
+/// Every state change is <b>read back</b>. A result is verified only when
+/// <c>CM_Get_DevNode_Status</c> reports the devnode in the requested state —
+/// and, for a restriction, when no disk and no portable-device interface is
+/// left beneath it. Windows can accept a disable and defer it until the next
+/// restart (<c>DN_NEED_RESTART</c>, typically because a program is holding the
+/// device open); that is reported as requiring a restart, never as enforced.
+/// </para>
+/// <para>
+/// The class-wide alternatives — <c>StorageDevicePolicies\WriteProtect</c>, the
+/// removable-storage and WPD Group Policy values, and device-installation
+/// restrictions on the WPD setup class — were considered and not used. All are
+/// all-or-nothing for every such device on the machine, so none can express
+/// "this one approved device, for the next two hours"; the policy ones are
+/// overwritten by any domain or MDM policy that manages the same keys; and
+/// none can be verified per device. Per-instance disable can.
 /// </para>
 /// <para>
 /// <b>Limits, stated plainly.</b> The read-only attribute is not persisted to
@@ -70,7 +86,7 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
         {
             _logger.LogError(
                 "Refusing to disable {InstanceId}: it is a USB hub. Disabling a hub would disconnect every "
-                + "device attached to it. This indicates the device was misclassified as storage.",
+                + "device attached to it. This indicates the device was misclassified as restrictable.",
                 instanceId);
 
             return UsbEnforcementResult.Failed(
@@ -79,13 +95,26 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
 
         try
         {
-            if (!SetDeviceEnabled(instanceId, enabled: false, out var error))
+            if (!SetDeviceEnabled(instanceId, enabled: false, out var error, out var present))
             {
                 return UsbEnforcementResult.Failed(error);
             }
 
-            _logger.LogInformation("USB storage device {InstanceId} is restricted (disabled).", instanceId);
-            return UsbEnforcementResult.Ok;
+            if (!present)
+            {
+                return UsbEnforcementResult.Ok;
+            }
+
+            var verification = VerifyRestricted(instanceId);
+
+            if (verification.Succeeded)
+            {
+                _logger.LogInformation(
+                    "USB device {InstanceId} is restricted (disabled); {Status}.",
+                    instanceId, verification.Status);
+            }
+
+            return verification;
         }
         catch (Exception ex)
         {
@@ -99,9 +128,14 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
 
         try
         {
-            if (!SetDeviceEnabled(instanceId, enabled: true, out var error))
+            if (!SetDeviceEnabled(instanceId, enabled: true, out var error, out var present))
             {
                 return UsbEnforcementResult.Failed(error);
+            }
+
+            if (!present)
+            {
+                return UsbEnforcementResult.Ok;
             }
 
             // Enabling is asynchronous: the disk devnode and its interface appear
@@ -111,10 +145,21 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
 
             if (disks.Count == 0)
             {
-                return UsbEnforcementResult.Failed(
-                    "The device was enabled but no disk appeared within "
-                    + $"{DiskArrivalTimeout.TotalSeconds:0} seconds, so read-only could not be applied. "
-                    + "The device has been left restricted.");
+                // No disk means nothing to make read-only, which means the device
+                // must not stay enabled: an enabled device with no read-only
+                // marking is a writable one. A phone lands here by design — MTP
+                // has no read-only mode — and so does a stick whose disk never
+                // enumerated. Either way the only safe outcome is restricted.
+                var portable = WindowsUsbDeviceEnumerator.ClassifyPresentInstance(instanceId)
+                    == UsbClass.PortableDevice;
+
+                SetDeviceEnabled(instanceId, enabled: false, out _, out _);
+
+                return UsbEnforcementResult.Failed(portable
+                    ? UsbEnforcementMessages.ReadOnlyUnavailableForPortableDevices
+                    : "The device was enabled but no disk appeared within "
+                        + $"{DiskArrivalTimeout.TotalSeconds:0} seconds, so read-only could not be applied. "
+                        + "The device has been restricted again.");
             }
 
             foreach (var diskPath in disks)
@@ -129,7 +174,7 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
                         "Could not mark {DiskPath} read-only ({Error}); restricting the device instead.",
                         diskPath, diskError);
 
-                    SetDeviceEnabled(instanceId, enabled: false, out _);
+                    SetDeviceEnabled(instanceId, enabled: false, out _, out _);
 
                     return UsbEnforcementResult.Failed(
                         $"Read-only could not be applied ({diskError}); the device was restricted instead.");
@@ -140,12 +185,14 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
                 "USB storage device {InstanceId} is read-only across {Count} disk(s).",
                 instanceId, disks.Count);
 
+            // The read-only bit was read back disk by disk above, so this is a
+            // measured state, not an assumed one.
             return UsbEnforcementResult.Ok;
         }
         catch (Exception ex)
         {
             // Any unexpected failure ends with the device restricted, never open.
-            SetDeviceEnabled(instanceId, enabled: false, out _);
+            SetDeviceEnabled(instanceId, enabled: false, out _, out _);
             return UsbEnforcementResult.Failed($"Read-only enforcement failed: {ex.Message}");
         }
     }
@@ -159,7 +206,9 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
     /// is not a security failure — the device is merely narrower than the grant
     /// allows, which is the safe direction — so this does not fall back to
     /// restricting. It is still reported as a failure, because the console must
-    /// not show read/write for a device that is actually read-only.
+    /// not show read/write for a device that is actually read-only. For a
+    /// portable device there are no disks; the grant is simply the device
+    /// enabled.
     /// </remarks>
     public UsbEnforcementResult AllowReadWrite(string instanceId)
     {
@@ -167,9 +216,14 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
 
         try
         {
-            if (!SetDeviceEnabled(instanceId, enabled: true, out var error))
+            if (!SetDeviceEnabled(instanceId, enabled: true, out var error, out var present))
             {
                 return UsbEnforcementResult.Failed(error);
+            }
+
+            if (!present)
+            {
+                return UsbEnforcementResult.Ok;
             }
 
             var failures = new List<string>();
@@ -189,10 +243,16 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
                     + $"{failures.Count} disk(s): {string.Join("; ", failures)}.");
             }
 
-            _logger.LogInformation(
-                "USB storage device {InstanceId} is enabled for read/write.", instanceId);
+            var verification = VerifyEnabled(instanceId);
 
-            return UsbEnforcementResult.Ok;
+            if (verification.Succeeded)
+            {
+                _logger.LogInformation(
+                    "USB device {InstanceId} is enabled for read/write; {Status}.",
+                    instanceId, verification.Status);
+            }
+
+            return verification;
         }
         catch (Exception ex)
         {
@@ -229,7 +289,7 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
 
         try
         {
-            if (!SetDeviceEnabled(instanceId, enabled: true, out var error))
+            if (!SetDeviceEnabled(instanceId, enabled: true, out var error, out var present))
             {
                 return UsbEnforcementResult.Failed(error);
             }
@@ -237,6 +297,11 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
             // An absent device enables to nothing and has no disks to clear. That
             // is a complete release: the registry flag is what kept it disabled,
             // and SetDeviceEnabled has already cleared it.
+            if (!present)
+            {
+                return UsbEnforcementResult.Ok;
+            }
+
             var failures = new List<string>();
 
             foreach (var diskPath in WaitForDisks(instanceId))
@@ -256,7 +321,7 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
             }
 
             _logger.LogInformation(
-                "USB storage device {InstanceId} released; it now behaves as on an unmanaged machine.",
+                "USB device {InstanceId} released; it now behaves as on an unmanaged machine.",
                 instanceId);
 
             return UsbEnforcementResult.Ok;
@@ -266,6 +331,103 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
             return UsbEnforcementResult.Failed($"Release failed: {ex.Message}");
         }
     }
+
+    // ---- verification ------------------------------------------------------
+
+    /// <summary>
+    /// Confirms a restriction from what Windows reports, not from the call
+    /// having returned.
+    /// </summary>
+    /// <remarks>
+    /// Disabled means <c>DN_HAS_PROBLEM</c> with <c>CM_PROB_DISABLED</c>, which is
+    /// what Device Manager's grey arrow reads. On top of that the subtree is
+    /// checked for any disk or portable-device interface still present: those
+    /// are the handles through which files move, and a restriction with one
+    /// still exposed is not a restriction. A devnode still running with
+    /// <c>DN_NEED_RESTART</c> set means Windows accepted the change for the next
+    /// boot — reported as such, and never counted as enforced.
+    /// </remarks>
+    private UsbEnforcementResult VerifyRestricted(string instanceId)
+    {
+        if (!TryReadStatus(instanceId, out var status, out var problem, out var configRet))
+        {
+            return configRet == UsbNative.CR_NO_SUCH_DEVINST
+                ? UsbEnforcementResult.Ok
+                : UsbEnforcementResult.Unverified(
+                    $"The device was disabled but its state could not be read back (CONFIGRET 0x{configRet:X}).");
+        }
+
+        if ((status & UsbNative.DN_HAS_PROBLEM) != 0 && problem == UsbNative.CM_PROB_DISABLED)
+        {
+            var exposed = FindInterfaces(instanceId, ref UsbNative.GuidDevInterfaceDisk).Count
+                + FindInterfaces(instanceId, ref UsbNative.GuidDevInterfaceWpd).Count;
+
+            return exposed == 0
+                ? UsbEnforcementResult.Ok
+                : UsbEnforcementResult.Failed(
+                    $"Windows reports the device disabled but it still exposes {exposed} storage or "
+                    + "portable-device interface(s); file transfer may still be possible.");
+        }
+
+        if ((status & UsbNative.DN_NEED_RESTART) != 0)
+        {
+            return UsbEnforcementResult.RestartRequired(
+                "Windows accepted the restriction but the device keeps running until the endpoint restarts, "
+                + "usually because a program is holding it open. The device is NOT blocked yet.");
+        }
+
+        return UsbEnforcementResult.Failed(
+            "The device is still running after the disable call returned success; it is not blocked.");
+    }
+
+    private UsbEnforcementResult VerifyEnabled(string instanceId)
+    {
+        if (!TryReadStatus(instanceId, out var status, out var problem, out var configRet))
+        {
+            return configRet == UsbNative.CR_NO_SUCH_DEVINST
+                ? UsbEnforcementResult.Ok
+                : UsbEnforcementResult.Unverified(
+                    $"The device was enabled but its state could not be read back (CONFIGRET 0x{configRet:X}).");
+        }
+
+        if ((status & UsbNative.DN_HAS_PROBLEM) != 0 && problem == UsbNative.CM_PROB_DISABLED)
+        {
+            return (status & UsbNative.DN_NEED_RESTART) != 0
+                ? UsbEnforcementResult.RestartRequired(
+                    "Windows accepted the enable but the device starts only after the endpoint restarts.")
+                : UsbEnforcementResult.Failed(
+                    "The device is still disabled after the enable call returned success.");
+        }
+
+        return UsbEnforcementResult.Ok;
+    }
+
+    private static bool TryReadStatus(string instanceId, out uint status, out uint problem, out int configRet)
+    {
+        status = 0;
+        problem = 0;
+
+        configRet = UsbNative.CM_Locate_DevNode(out var devInst, instanceId, 0);
+        if (configRet != UsbNative.CR_SUCCESS)
+        {
+            return false;
+        }
+
+        configRet = UsbNative.CM_Get_DevNode_Status(out status, out problem, devInst, 0);
+        return configRet == UsbNative.CR_SUCCESS;
+    }
+
+    private static bool IsPresent(string instanceId) =>
+        UsbNative.CM_Locate_DevNode(out _, instanceId, 0) == UsbNative.CR_SUCCESS;
+
+    /// <summary>
+    /// True once the device has started and Windows has bound it as a portable
+    /// device — at which point no disk will ever appear beneath it.
+    /// </summary>
+    private static bool HasStartedAsPortableDevice(string instanceId) =>
+        TryReadStatus(instanceId, out var status, out _, out _)
+        && (status & UsbNative.DN_STARTED) != 0
+        && WindowsUsbDeviceEnumerator.ClassifyPresentInstance(instanceId) == UsbClass.PortableDevice;
 
     /// <summary>
     /// True when the instance is a USB hub, read from the device itself.
@@ -313,9 +475,16 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
     }
 
     /// <summary>Enables or disables a device instance through SetupAPI.</summary>
-    private bool SetDeviceEnabled(string instanceId, bool enabled, out string error)
+    /// <param name="present">
+    /// False when the instance is not attached. A device that is no longer
+    /// attached cannot be in a wrong state, so an absent device is a no-op
+    /// success rather than an error: reporting failure for an unplugged stick
+    /// would fill the console with alarms about devices that pose no risk.
+    /// </param>
+    private bool SetDeviceEnabled(string instanceId, bool enabled, out string error, out bool present)
     {
         error = "";
+        present = true;
 
         var set = UsbNative.SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
         if (set == IntPtr.Zero || set == new IntPtr(-1))
@@ -333,14 +502,11 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
 
             if (!UsbNative.SetupDiOpenDeviceInfo(set, instanceId, IntPtr.Zero, 0, ref info))
             {
-                // A device that is no longer attached cannot be in a wrong state,
-                // so an absent device is a no-op success rather than an error:
-                // reporting failure for an unplugged stick would fill the console
-                // with alarms about devices that pose no risk.
                 var win32 = Marshal.GetLastWin32Error();
                 if (win32 == UsbNative.ERROR_NO_SUCH_DEVINST || win32 == UsbNative.ERROR_FILE_NOT_FOUND)
                 {
                     _logger.LogDebug("USB device {InstanceId} is not present; nothing to change.", instanceId);
+                    present = false;
                     return true;
                 }
 
@@ -386,11 +552,20 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
 
     /// <summary>Polls for the disk interfaces beneath a USB device after enabling it.</summary>
     /// <remarks>
+    /// <para>
     /// The wall clock is deliberate here, and the one place in this feature that
     /// uses it. Every expiry decision goes through an injected
     /// <see cref="TimeProvider"/> so it can be driven in tests — but this is not
     /// a policy decision, it is a bounded wait for real hardware to enumerate.
     /// A virtual clock would either spin forever or time out instantly.
+    /// </para>
+    /// <para>
+    /// The wait ends early when there is provably nothing to wait for: the
+    /// device has gone, or it has started and Windows has bound it as a
+    /// portable device, which has no disks. Without that, every phone under a
+    /// grant — and every release of one at service stop — would cost the full
+    /// timeout for nothing.
+    /// </para>
     /// </remarks>
     private List<string> WaitForDisks(string instanceId)
     {
@@ -398,10 +573,20 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
 
         while (true)
         {
-            var disks = FindDiskInterfaces(instanceId);
+            if (!IsPresent(instanceId))
+            {
+                return [];
+            }
+
+            var disks = FindInterfaces(instanceId, ref UsbNative.GuidDevInterfaceDisk);
             if (disks.Count > 0 || DateTime.UtcNow >= deadline)
             {
                 return disks;
+            }
+
+            if (HasStartedAsPortableDevice(instanceId))
+            {
+                return [];
             }
 
             Thread.Sleep(DiskPollInterval);
@@ -409,16 +594,17 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
     }
 
     /// <summary>
-    /// Finds the <c>\\?\</c> disk interface paths belonging to one USB device.
+    /// Finds the <c>\\?\</c> interface paths of one class belonging to one USB
+    /// device.
     /// </summary>
     /// <remarks>
     /// Walks the devnode subtree rather than scanning <c>\\.\PHYSICALDRIVEn</c>,
     /// because scanning would require matching disks back to their USB parent by
     /// guesswork. Descending from the instance ID we were asked about means the
-    /// disks we touch provably belong to that device and no other — nobody's
+    /// interfaces we touch provably belong to that device and no other — nobody's
     /// internal drive can be caught by a mismatch.
     /// </remarks>
-    private List<string> FindDiskInterfaces(string instanceId)
+    private static List<string> FindInterfaces(string instanceId, ref Guid interfaceClass)
     {
         var paths = new List<string>();
 
@@ -452,18 +638,18 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
                 continue;
             }
 
-            paths.AddRange(GetDiskInterfaces(deviceId));
+            paths.AddRange(GetInterfaces(deviceId, ref interfaceClass));
         }
 
         return paths;
     }
 
-    private static List<string> GetDiskInterfaces(string deviceId)
+    private static List<string> GetInterfaces(string deviceId, ref Guid interfaceClass)
     {
         var result = new List<string>();
 
         if (UsbNative.CM_Get_Device_Interface_List_Size(
-                out var length, ref UsbNative.GuidDevInterfaceDisk, deviceId,
+                out var length, ref interfaceClass, deviceId,
                 UsbNative.CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != UsbNative.CR_SUCCESS
             || length <= 1)
         {
@@ -472,7 +658,7 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
 
         var buffer = new char[length];
         if (UsbNative.CM_Get_Device_Interface_List(
-                ref UsbNative.GuidDevInterfaceDisk, deviceId, buffer, length,
+                ref interfaceClass, deviceId, buffer, length,
                 UsbNative.CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != UsbNative.CR_SUCCESS)
         {
             return result;

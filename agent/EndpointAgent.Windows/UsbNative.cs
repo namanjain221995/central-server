@@ -5,14 +5,14 @@ using Microsoft.Win32.SafeHandles;
 namespace EndpointAgent.Windows;
 
 /// <summary>
-/// Win32 interop for USB device enumeration and storage access control.
+/// Win32 interop for USB device enumeration and access control.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Everything here is documented public API: SetupAPI and CfgMgr32 for device
-/// enumeration and enable/disable, and the disk IOCTL
-/// <c>IOCTL_DISK_SET_DISK_ATTRIBUTES</c> for read-only. No shell, no PowerShell,
-/// no kernel driver, no undocumented behaviour (ADR-0005).
+/// enumeration, enable/disable, status and PnP notifications, and the disk
+/// IOCTL <c>IOCTL_DISK_SET_DISK_ATTRIBUTES</c> for read-only. No shell, no
+/// PowerShell, no kernel driver, no undocumented behaviour (ADR-0005).
 /// </para>
 /// <para>
 /// Kept in one file so the privileged surface the agent uses for USB control is
@@ -95,10 +95,12 @@ internal static class UsbNative
     internal static readonly DEVPROPKEY DEVPKEY_Device_CompatibleIds = new() { Fmtid = DevPropClassCommon, Pid = 4 };
     internal static readonly DEVPROPKEY DEVPKEY_Device_Service = new() { Fmtid = DevPropClassCommon, Pid = 6 };
     internal static readonly DEVPROPKEY DEVPKEY_Device_Class = new() { Fmtid = DevPropClassCommon, Pid = 9 };
+    internal static readonly DEVPROPKEY DEVPKEY_Device_ClassGuid = new() { Fmtid = DevPropClassCommon, Pid = 10 };
     internal static readonly DEVPROPKEY DEVPKEY_Device_Manufacturer = new() { Fmtid = DevPropClassCommon, Pid = 13 };
     internal static readonly DEVPROPKEY DEVPKEY_Device_FriendlyName = new() { Fmtid = DevPropClassCommon, Pid = 14 };
     internal static readonly DEVPROPKEY DEVPKEY_Device_InstanceId = new() { Fmtid = DevPropClassDevice, Pid = 256 };
 
+    internal const uint DEVPROP_TYPE_GUID = 0x0000000D;
     internal const uint DEVPROP_TYPE_STRING = 0x00000012;
     internal const uint DEVPROP_TYPE_STRING_LIST = 0x00002012;
 
@@ -149,9 +151,18 @@ internal static class UsbNative
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool SetupDiDestroyDeviceInfoList(IntPtr deviceInfoSet);
 
-    // ---- CfgMgr32: devnode tree and interfaces -----------------------------
+    // ---- CfgMgr32: devnode tree, status and interfaces --------------------
 
     internal const int CR_SUCCESS = 0;
+
+    /// <summary>CR_NO_SUCH_DEVINST — the instance is not present (or not known) on this machine.</summary>
+    internal const int CR_NO_SUCH_DEVINST = 0x0000000D;
+
+    /// <summary>DN_STARTED — the devnode's driver stack is running.</summary>
+    internal const uint DN_STARTED = 0x00000008;
+
+    /// <summary>DN_NEED_RESTART — a state change was accepted but takes effect only after a restart.</summary>
+    internal const uint DN_NEED_RESTART = 0x00000100;
 
     /// <summary>DN_HAS_PROBLEM — the devnode is reporting a problem code.</summary>
     internal const uint DN_HAS_PROBLEM = 0x00000400;
@@ -163,6 +174,17 @@ internal static class UsbNative
 
     /// <summary>GUID_DEVINTERFACE_DISK — the interface a physical disk exposes.</summary>
     internal static Guid GuidDevInterfaceDisk = new("53f56307-b6bf-11d0-94f2-00a0c91efb8b");
+
+    /// <summary>
+    /// GUID_DEVINTERFACE_WPD — the interface the Windows Portable Devices stack
+    /// exposes for every MTP/PTP device. Explorer, the Photos app and every
+    /// other MTP client open the device through this; while no such interface
+    /// is present, no file transfer is possible.
+    /// </summary>
+    internal static Guid GuidDevInterfaceWpd = new("6ac27878-a6fa-4155-ba85-f98f491d4f33");
+
+    /// <summary>GUID_DEVINTERFACE_USB_DEVICE — every USB device that is not a hub.</summary>
+    internal static Guid GuidDevInterfaceUsbDevice = new("a5dcbf10-6530-11d2-901f-00c04fb951ed");
 
     [DllImport(CfgMgr, EntryPoint = "CM_Locate_DevNodeW", CharSet = CharSet.Unicode)]
     internal static extern int CM_Locate_DevNode(out uint devInst, string deviceId, uint flags);
@@ -191,6 +213,57 @@ internal static class UsbNative
     [DllImport(CfgMgr, EntryPoint = "CM_Get_Device_Interface_ListW", CharSet = CharSet.Unicode)]
     internal static extern int CM_Get_Device_Interface_List(
         ref Guid interfaceClassGuid, string? deviceId, [Out] char[] buffer, uint bufferLength, uint flags);
+
+    // ---- CfgMgr32: PnP notifications --------------------------------------
+
+    /// <summary>CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE — arrival and removal of a device interface class.</summary>
+    internal const uint CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE = 0;
+
+    internal const uint CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL = 0;
+    internal const uint CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL = 1;
+
+    /// <summary>
+    /// CM_NOTIFY_FILTER from cfgmgr32.h. The union after the fixed header is 400
+    /// bytes (<c>WCHAR InstanceId[MAX_DEVICE_ID_LEN]</c> is its largest member),
+    /// so the whole structure is 416 bytes and <c>cbSize</c> must say so; the
+    /// registration call rejects any other value.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 416)]
+    internal struct CM_NOTIFY_FILTER
+    {
+        [FieldOffset(0)] public uint CbSize;
+        [FieldOffset(4)] public uint Flags;
+        [FieldOffset(8)] public uint FilterType;
+        [FieldOffset(12)] public uint Reserved;
+        [FieldOffset(16)] public Guid ClassGuid;
+
+        public static CM_NOTIFY_FILTER ForDeviceInterface(Guid interfaceClass) => new()
+        {
+            CbSize = 416,
+            Flags = 0,
+            FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
+            Reserved = 0,
+            ClassGuid = interfaceClass,
+        };
+    }
+
+    /// <summary>
+    /// Byte offset of <c>SymbolicLink</c> inside CM_NOTIFY_EVENT_DATA for a
+    /// device-interface event: FilterType (4) + Reserved (4) + ClassGuid (16).
+    /// </summary>
+    internal const int CM_NOTIFY_EVENT_DATA_SYMBOLIC_LINK_OFFSET = 24;
+
+    /// <summary>PCM_NOTIFY_CALLBACK. Returns a Win32 error code; ERROR_SUCCESS keeps the registration alive.</summary>
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    internal delegate uint CM_NOTIFY_CALLBACK(
+        IntPtr notify, IntPtr context, uint action, IntPtr eventData, uint eventDataSize);
+
+    [DllImport(CfgMgr)]
+    internal static extern int CM_Register_Notification(
+        ref CM_NOTIFY_FILTER filter, IntPtr context, CM_NOTIFY_CALLBACK callback, out IntPtr notifyContext);
+
+    [DllImport(CfgMgr)]
+    internal static extern int CM_Unregister_Notification(IntPtr notifyContext);
 
     // ---- Disk attributes ---------------------------------------------------
 

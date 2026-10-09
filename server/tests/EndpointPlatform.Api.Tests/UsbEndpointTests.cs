@@ -369,13 +369,23 @@ public sealed class UsbEndpointTests(AdminApiPostgresFixture fixture)
     {
         var (deviceId, _) = await SeedDeviceAsync("USB-VIEWSTATES");
 
-        var cases = new (string Suffix, UsbStoragePolicy? Enforced, string? Error, string Policy, string State)[]
+        // "Enforced" is reserved for a state the endpoint verified against
+        // Windows. An agent that reported success without a status — every
+        // agent before 1.16.0 — gets "Applied", so the console never calls a
+        // device protected on the strength of a call having returned.
+        var cases = new (string Suffix, UsbStoragePolicy? Enforced, string? Error, UsbEnforcementStatus? Status,
+            string Policy, string State)[]
         {
-            ("PENDING", null, null, "Restricted", "Pending"),
-            ("ENFORCED", UsbStoragePolicy.Restricted, null, "Restricted", "Enforced"),
-            ("DRIFTRO", UsbStoragePolicy.ReadOnly, null, "Restricted", "Drifted"),
-            ("DRIFTRW", UsbStoragePolicy.Enabled, null, "Restricted", "Drifted"),
-            ("FAILED", null, "access denied", "Restricted", "Failed"),
+            ("PENDING", null, null, null, "Restricted", "Pending"),
+            ("APPLIED", UsbStoragePolicy.Restricted, null, null, "Restricted", "Applied"),
+            ("ENFORCED", UsbStoragePolicy.Restricted, null, UsbEnforcementStatus.Verified, "Restricted", "Enforced"),
+            ("UNVERIFIED", UsbStoragePolicy.Restricted, "could not read back", UsbEnforcementStatus.Unverified,
+                "Restricted", "Applied"),
+            ("DRIFTRO", UsbStoragePolicy.ReadOnly, null, UsbEnforcementStatus.Verified, "Restricted", "Drifted"),
+            ("DRIFTRW", UsbStoragePolicy.Enabled, null, null, "Restricted", "Drifted"),
+            ("FAILED", null, "access denied", null, "Restricted", "Failed"),
+            ("FAILED2", UsbStoragePolicy.Restricted, "kept restricted", UsbEnforcementStatus.Failed, "Restricted", "Failed"),
+            ("RESTART", null, "held open", UsbEnforcementStatus.RequiresRestart, "Restricted", "RequiresRestart"),
         };
 
         var ids = new Dictionary<string, Guid>();
@@ -387,7 +397,7 @@ public sealed class UsbEndpointTests(AdminApiPostgresFixture fixture)
 
             await using var db = _fixture.CreateDbContext();
             var usb = await db.UsbDevices.SingleAsync(u => u.Id == usbId);
-            usb.ReportEnforcement(c.Enforced, c.Error, DateTimeOffset.UtcNow);
+            usb.ReportEnforcement(c.Enforced, c.Error, DateTimeOffset.UtcNow, c.Status);
             await db.SaveChangesAsync();
         }
 
@@ -429,7 +439,7 @@ public sealed class UsbEndpointTests(AdminApiPostgresFixture fixture)
         await using (var db = _fixture.CreateDbContext())
         {
             var usb = await db.UsbDevices.SingleAsync(u => u.Id == usbId);
-            usb.ReportEnforcement(UsbStoragePolicy.Restricted, null, DateTimeOffset.UtcNow);
+            usb.ReportEnforcement(UsbStoragePolicy.Restricted, null, DateTimeOffset.UtcNow, UsbEnforcementStatus.Verified);
             await db.SaveChangesAsync();
         }
 
@@ -440,6 +450,8 @@ public sealed class UsbEndpointTests(AdminApiPostgresFixture fixture)
         var row = rows.EnumerateArray().Single(r => r.GetProperty("id").GetGuid() == usbId);
 
         row.GetProperty("isStorage").GetBoolean().ShouldBeTrue();
+        row.GetProperty("isRestrictable").GetBoolean().ShouldBeTrue();
+        row.GetProperty("supportsReadOnly").GetBoolean().ShouldBeTrue();
         row.GetProperty("enforcementState").GetString().ShouldBe("Enforced");
 
         var granted = await client.PostAsync(

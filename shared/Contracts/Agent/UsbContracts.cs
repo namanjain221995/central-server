@@ -40,8 +40,11 @@ public sealed record UsbReport(
 /// identity everything else keys off.
 /// </param>
 /// <param name="DeviceClass">
-/// One of <c>Storage</c>, <c>Keyboard</c>, <c>Mouse</c>, <c>NetworkAdapter</c>,
-/// <c>Hub</c>, <c>Other</c>. Anything else is stored as <c>Unknown</c>.
+/// One of <c>Storage</c>, <c>PortableDevice</c>, <c>Keyboard</c>, <c>Mouse</c>,
+/// <c>NetworkAdapter</c>, <c>Hub</c>, <c>Other</c>. Anything else is stored as
+/// <c>Unknown</c>. <c>PortableDevice</c> — a phone, tablet or camera reached
+/// through MTP/PTP — is sent by agents from 1.16.0; an older server stores it
+/// as <c>Unknown</c>, which is visible but not grantable, the safe direction.
 /// </param>
 /// <param name="SerialNumber">
 /// The device's serial when Windows exposes one, otherwise null. Never
@@ -49,14 +52,22 @@ public sealed record UsbReport(
 /// approved device.
 /// </param>
 /// <param name="EnforcedPolicy">
-/// What the agent currently has applied: <c>Restricted</c>, <c>ReadOnly</c>, or
-/// null when it has not established a state (a non-storage device, or a
-/// storage device it has not managed to act on yet).
+/// What the agent currently has applied: <c>Restricted</c>, <c>ReadOnly</c>,
+/// <c>Enabled</c>, or null when it has not established a state (a device policy
+/// does not apply to, or one it has not managed to act on yet).
 /// </param>
 /// <param name="EnforcementError">
 /// Why enforcement did not take effect, if it did not. Reported rather than
 /// swallowed so the console can show a device as unenforced instead of quietly
 /// implying a control that is not in place.
+/// </param>
+/// <param name="EnforcementStatus">
+/// How far the agent got, from 1.16.0: <c>Verified</c> (Windows reports the
+/// device in the enforced state and no storage or portable-device interface is
+/// exposed), <c>Unverified</c> (applied, but the state could not be read back),
+/// <c>RequiresRestart</c> (Windows accepted the change but applies it only after
+/// a restart) or <c>Failed</c>. Null from older agents, which the server treats
+/// as applied-but-unverified; a server that predates the field ignores it.
 /// </param>
 public sealed record UsbDeviceReport(
     string InstanceId,
@@ -69,7 +80,8 @@ public sealed record UsbDeviceReport(
     string? HardwareIds,
     bool IsConnected,
     string? EnforcedPolicy,
-    string? EnforcementError);
+    string? EnforcementError,
+    string? EnforcementStatus = null);
 
 /// <summary>
 /// Response to a USB report: the authoritative policy for this endpoint.
@@ -82,14 +94,14 @@ public sealed record UsbDeviceReport(
 /// Both channels carry the same whole-state policy and both fail to the same
 /// safe default, so there is one rule to reason about, not two.
 /// </remarks>
-/// <param name="Grants">Every live grant. Any storage device not named here is restricted.</param>
+/// <param name="Grants">Every live grant. Any restrictable device not named here is restricted.</param>
 /// <param name="IssuedAt">When the server built this policy, for last-writer-wins on the agent.</param>
 public sealed record UsbPolicyResponse(
     IReadOnlyList<UsbPolicyGrant> Grants,
     DateTimeOffset IssuedAt);
 
 /// <param name="InstanceId">The exact device this grant covers.</param>
-/// <param name="Policy">Always <c>ReadOnly</c>. No value of this field grants write access.</param>
+/// <param name="Policy"><c>ReadOnly</c> or <c>Enabled</c>. No other value grants anything.</param>
 /// <param name="ExpiresAt">Absolute UTC deadline, enforced by the agent against its own clock.</param>
 public sealed record UsbPolicyGrant(
     string InstanceId,

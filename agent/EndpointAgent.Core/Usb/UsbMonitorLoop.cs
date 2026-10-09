@@ -11,10 +11,10 @@ namespace EndpointAgent.Core.Usb;
 /// <para>
 /// The order inside a cycle is deliberate and is the whole safety argument.
 /// <b>Enforcement runs before reporting, always.</b> A newly attached storage
-/// device is restricted using the policy already on disk before the server is
-/// told anything, so access is never waiting on a network round trip. The report
-/// then goes out and the response — the authoritative grant set — is applied,
-/// which is what turns an approved device read-only.
+/// device or phone is restricted using the policy already on disk before the
+/// server is told anything, so access is never waiting on a network round trip.
+/// The report then goes out and the response — the authoritative grant set — is
+/// applied, which is what turns an approved device read-only or enabled.
 /// </para>
 /// <para>
 /// A device the administrator has already approved therefore goes
@@ -25,8 +25,8 @@ namespace EndpointAgent.Core.Usb;
 /// <para>
 /// The periodic reconcile is not a fallback bolted on — it is what makes grant
 /// expiry work offline. Every tick re-evaluates deadlines against the local
-/// clock, so a grant lapses on schedule on a laptop that has not reached the
-/// server in days.
+/// clock, and the loop wakes for the earliest deadline specifically, so a grant
+/// lapses on schedule on a laptop that has not reached the server in days.
 /// </para>
 /// </remarks>
 public sealed class UsbMonitorLoop(
@@ -38,14 +38,17 @@ public sealed class UsbMonitorLoop(
     ILogger<UsbMonitorLoop> logger)
 {
     /// <summary>
-    /// How often to re-evaluate without an external trigger. Expiry granularity
-    /// on a disconnected machine is bounded by this, so it is minutes rather
-    /// than the inventory cadence.
+    /// How often to re-evaluate without an external trigger. The safety net
+    /// under device notifications: a watcher that never fires still bounds how
+    /// long a newly attached device can go unrestricted to this.
     /// </summary>
     public static readonly TimeSpan ReconcileInterval = TimeSpan.FromMinutes(1);
 
     /// <summary>Debounce window. A single insertion raises several PnP events.</summary>
     public static readonly TimeSpan ChangeDebounce = TimeSpan.FromSeconds(2);
+
+    /// <summary>The shortest wait, so a deadline that has just passed is acted on promptly rather than spun on.</summary>
+    internal static readonly TimeSpan MinimumWait = TimeSpan.FromSeconds(1);
 
     private readonly UsbPolicyManager _policyManager = policyManager
         ?? throw new ArgumentNullException(nameof(policyManager));
@@ -187,8 +190,35 @@ public sealed class UsbMonitorLoop(
     }
 
     /// <summary>
-    /// Waits for the interval or a device change, whichever comes first, then
-    /// settles for the debounce window.
+    /// How long to wait before the next unprompted cycle: the reconcile interval,
+    /// or less when a grant lapses sooner.
+    /// </summary>
+    /// <remarks>
+    /// Waking for the deadline itself is what makes "access ends at 14:00" mean
+    /// 14:00 rather than "some time before 14:01". Clamped below so a deadline
+    /// that has already passed is acted on after a short pause rather than
+    /// spinning the loop.
+    /// </remarks>
+    internal static TimeSpan NextWait(DateTimeOffset? nextGrantExpiry, DateTimeOffset now)
+    {
+        if (nextGrantExpiry is not { } expiry)
+        {
+            return ReconcileInterval;
+        }
+
+        var untilExpiry = expiry - now;
+
+        if (untilExpiry >= ReconcileInterval)
+        {
+            return ReconcileInterval;
+        }
+
+        return untilExpiry < MinimumWait ? MinimumWait : untilExpiry;
+    }
+
+    /// <summary>
+    /// Waits for the interval, the next grant deadline, or a device change,
+    /// whichever comes first, then settles for the debounce window.
     /// </summary>
     /// <remarks>
     /// Plugging one stick in raises creation events for the device, its
@@ -198,7 +228,8 @@ public sealed class UsbMonitorLoop(
     /// </remarks>
     private async Task WaitForNextCycleAsync(CancellationToken cancellationToken)
     {
-        var woken = await _wake.WaitAsync(ReconcileInterval, cancellationToken);
+        var wait = NextWait(_policyManager.NextGrantExpiry, _timeProvider.GetUtcNow());
+        var woken = await _wake.WaitAsync(wait, cancellationToken);
 
         if (woken)
         {

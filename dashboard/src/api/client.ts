@@ -335,19 +335,36 @@ export type UsbGrantablePolicy = Exclude<UsbPolicy, 'Restricted'>
 /**
  * What the endpoint is actually doing, as distinct from what was decided.
  *
- * `Pending` and `Drifted` are deliberately different words. Pending means the
- * machine has not reported back yet — usually because it is offline. Drifted
- * means it reported something other than what was asked, which on Windows
- * generally means a local administrator re-enabled the device by hand. Only one
- * of those needs investigating.
+ * `Enforced` is reserved for a state the endpoint verified against Windows;
+ * `Applied` means the agent reported success without verifying (every agent
+ * before 1.16.0, or one whose read-back failed). `Pending` and `Drifted` are
+ * deliberately different words. Pending means the machine has not reported
+ * back yet — usually because it is offline. Drifted means it reported
+ * something other than what was asked, which on Windows generally means a
+ * local administrator re-enabled the device by hand. `RequiresRestart` means
+ * Windows accepted the change for the next boot, so the control is not in
+ * place yet. Only some of those need investigating, and the words say which.
  */
-export type UsbEnforcementState = 'Enforced' | 'Pending' | 'Drifted' | 'Failed' | 'NotApplicable'
+export type UsbEnforcementState =
+  | 'Enforced'
+  | 'Applied'
+  | 'Pending'
+  | 'Drifted'
+  | 'RequiresRestart'
+  | 'Failed'
+  | 'NotApplicable'
 
 export interface UsbDeviceRow {
   id: string
   instanceId: string
   deviceClass: string
   isStorage: boolean
+  /** A phone, tablet or camera reached through MTP/PTP. Restrictable, never read-only. */
+  isPortableDevice: boolean
+  /** True when access policy applies at all: storage or a portable device. */
+  isRestrictable: boolean
+  /** True when a read-only grant can be enforced. Storage only. */
+  supportsReadOnly: boolean
   vendorId: string | null
   productId: string | null
   /** Null when the device exposes none. Never a placeholder. */
@@ -396,10 +413,11 @@ export function getUsbAccessRequests(liveOnly = false, limit = 100): Promise<Usb
 }
 
 /**
- * Grants temporary read-only access to one USB storage device.
+ * Grants temporary access to one USB storage or portable device.
  *
- * There is no parameter for the level of access, because there is only one:
- * read-only. Write access is not something this API can express.
+ * Read-only is the default, and the narrower level. The server refuses it
+ * for a portable device (a phone has no read-only mode) with a 400 rather
+ * than rounding it to either neighbour.
  */
 export function grantUsbAccess(
   deviceId: string,

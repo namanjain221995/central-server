@@ -504,3 +504,47 @@ publishability — under the Internal release trust mode (T10) an unsigned build
 is publishable, and every release the publish gate produces records a null
 signer. What an unsigned MSI costs is SmartScreen/AppLocker/WDAC standing, not a
 place in the release channel.
+
+## USB portable devices (phones, MTP/PTP) — 2026-10-09
+
+**The gap.** The storage control restricted removable mass storage only. A
+phone in "File transfer" mode is not mass storage — Windows reaches it over MTP
+through the Windows Portable Devices stack, with no drive letter — so the agent
+classified it as `Other`, inventoried it, and let files move in both
+directions. Found on a developer machine with a real phone: Windows had
+recorded it as class `WPD`, service `WUDFWpdMtp`, compatible ID
+`USB\MS_COMP_MTP` in one mode and `USB\MS_COMP_PTP` in the other; none of
+those matched a rule.
+
+**The fix.** Portable devices are a class of their own, recognised from the
+device's descriptors and driver binding (ADR-0015), restricted by default by
+the same per-instance disable as storage, and grantable at read/write only.
+Composite phones (file transfer plus USB debugging) are restricted at the
+composite parent, which takes the MTP and the ADB function down together; a
+restricted composite is still recognised from the interfaces Windows recorded
+for it, so it does not drop out of the policy table once disabled.
+
+**Honesty about enforcement.** Every enforcement result is now read back from
+Windows. A device is "Enforced" in the console only when the endpoint verified
+the devnode state and found no disk or portable-device interface beneath it; a
+change Windows deferred to the next restart is "Restart required"; a report the
+agent could not verify, and every report from an agent older than 1.16.0, is
+"Applied, not verified". The console never calls a device protected on the
+strength of a call having returned.
+
+**Not verified on hardware yet.** The phone that produced the evidence was not
+attached while the change was built, and the development machine runs the
+production agent, which must not be replaced by a test build. Classification
+is covered by tests built from that phone's recorded properties; the real
+block-both-directions acceptance (`docs/usb-control.md`, "Acceptance —
+portable devices") is **NOT VERIFIED** until it is run on a designated test
+endpoint with the phone attached. Until then the security objective is
+implemented, not demonstrated.
+
+**Remaining bypasses, stated.** USB tethering (the phone as a network adapter),
+Bluetooth file transfer, Wi-Fi Direct, cloud sync and e-mail are not USB file
+transfer and are untouched. The first-ever attachment of a given device has a
+window of a few seconds before the agent disables it, as for storage. A local
+administrator can re-enable the device; that is visible as Drifted, not
+prevented. Charging through a restricted connection is not measured and not
+claimed.

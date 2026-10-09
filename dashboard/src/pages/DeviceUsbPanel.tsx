@@ -5,7 +5,6 @@ import {
   reapplyUsbPolicy,
   revokeUsbAccess,
   type UsbDeviceRow,
-  type UsbEnforcementState,
   type UsbGrantablePolicy,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -14,6 +13,15 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useDialogDismiss } from '../components/useDialogDismiss'
 import { TaskProgress } from '../components/TaskProgress'
 import { useTaskTracker } from '../components/useTaskTracker'
+import {
+  ENFORCEMENT,
+  defaultGrantPolicy,
+  describeDevice,
+  describeUsbClass,
+  grantButtonLabel,
+  grantablePolicies,
+  hasLiveGrant,
+} from './usbView'
 
 /** Offered durations. Bounded server-side too; these are the sensible ones. */
 const DURATIONS = [
@@ -23,42 +31,6 @@ const DURATIONS = [
   { minutes: 480, label: '8 hours' },
   { minutes: 1440, label: '24 hours' },
 ]
-
-/**
- * How each enforcement state is presented.
- *
- * `Enforced` is the only one that gets the ok treatment, and only Restricted
- * -and-enforced is genuinely reassuring. Everything else is a warning, because
- * the honest message in those cases is "the control may not be in place", and a
- * neutral grey badge would read as "fine".
- */
-const ENFORCEMENT: Record<UsbEnforcementState, { badge: string; label: string; hint: string }> = {
-  Enforced: {
-    badge: 'ok',
-    label: 'Enforced',
-    hint: 'The endpoint has confirmed it is applying this.',
-  },
-  Pending: {
-    badge: 'warn',
-    label: 'Not confirmed',
-    hint: 'The endpoint has not reported on this device yet — it may be offline, or the policy may still be on its way.',
-  },
-  Drifted: {
-    badge: 'crit',
-    label: 'Drifted',
-    hint: 'The endpoint reports a different state from the one set here. Someone with local administrator rights may have changed it by hand.',
-  },
-  Failed: {
-    badge: 'crit',
-    label: 'Enforcement failed',
-    hint: 'The agent could not apply this policy. The control is NOT in place on this device.',
-  },
-  NotApplicable: {
-    badge: 'neutral',
-    label: '—',
-    hint: 'Access policy applies to USB storage only.',
-  },
-}
 
 function relative(iso: string | null): string {
   if (!iso) return '—'
@@ -82,18 +54,15 @@ function remaining(iso: string | null): string {
   return hours < 24 ? `${hours}h ${minutes % 60}m left` : `${Math.floor(hours / 24)}d ${hours % 24}h left`
 }
 
-function describe(device: UsbDeviceRow): string {
-  return device.product ?? device.manufacturer ?? device.deviceClass
-}
-
 /**
- * Device → USB: the peripheral inventory, and control over removable storage.
+ * Device → USB: the peripheral inventory, and control over removable storage
+ * and portable devices (phones, tablets, cameras).
  *
  * Two things are kept visibly separate throughout. The **policy** column is what
  * an administrator has decided; the **enforcement** column is what the endpoint
- * has confirmed it is actually doing. They usually agree, and when they do not,
- * that difference is the most useful thing on the screen — so it is never
- * collapsed into a single reassuring word.
+ * has confirmed it is actually doing, and how far it got confirming it. They
+ * usually agree, and when they do not, that difference is the most useful
+ * thing on the screen — so it is never collapsed into a single reassuring word.
  */
 export function DeviceUsbPanel({
   deviceId,
@@ -139,7 +108,7 @@ export function DeviceUsbPanel({
       await grantUsbAccess(deviceId, device.id, minutes, justification, policy)
       await load()
     } catch {
-      setError(`Could not grant access to "${describe(device)}".`)
+      setError(`Could not grant access to "${describeDevice(device)}".`)
     } finally {
       setBusy(false)
     }
@@ -155,7 +124,7 @@ export function DeviceUsbPanel({
       await revokeUsbAccess(device.liveRequestId, 'Revoked from the device console.')
       await load()
     } catch {
-      setError(`Could not revoke access to "${describe(device)}".`)
+      setError(`Could not revoke access to "${describeDevice(device)}".`)
     } finally {
       setBusy(false)
     }
@@ -178,8 +147,11 @@ export function DeviceUsbPanel({
     return <p className="muted">Loading USB devices…</p>
   }
 
-  const storage = devices.filter((d) => d.isStorage)
-  const peripherals = devices.filter((d) => !d.isStorage)
+  // Policy applies to storage and portable devices alike; the server says
+  // which rows that is, so a class added later lands in the right table
+  // without the console having to know its name.
+  const restrictable = devices.filter((d) => d.isRestrictable)
+  const peripherals = devices.filter((d) => !d.isRestrictable)
 
   return (
     <>
@@ -194,7 +166,7 @@ export function DeviceUsbPanel({
 
       <div className="card">
         <div className="card-head">
-          <h2>USB storage</h2>
+          <h2>USB storage and portable devices</h2>
           <span className="spacer" />
           {canManage && (
             <button type="button" className="btn-sm" onClick={() => void reapply()} disabled={busy}>
@@ -205,25 +177,28 @@ export function DeviceUsbPanel({
         </div>
 
         {/* Stated once, plainly, where the decisions are made. An operator
-            should not have to read the docs to know what "read-only" buys. */}
+            should not have to read the docs to know what "read-only" buys, or
+            why a phone cannot have it. */}
         <p className="lede">
-          USB storage is <strong>restricted by default</strong>: the agent disables the device so
-          no drive letter appears. Granting access makes the device{' '}
-          <strong>read-only for a fixed period</strong> — files can be copied off it, and Windows
-          refuses writes. Read-only does not scan or block what is on the device, so a file copied
-          from it can still be harmful.
+          USB storage and phones, tablets and cameras are <strong>restricted by default</strong>: the
+          agent disables the device, so a stick gets no drive letter and a phone never appears under
+          This PC — nothing can be copied in either direction. Granting access opens the device{' '}
+          <strong>for a fixed period</strong>. Storage can be opened read-only, so files can be copied
+          off it but not onto it; a phone connects through MTP/PTP, which has no read-only mode, so for
+          a phone access is read/write or nothing. Neither level scans or blocks what is on the device.
         </p>
 
-        {storage.length === 0 && (
-          <p className="muted">No USB storage has been seen on this endpoint.</p>
+        {restrictable.length === 0 && (
+          <p className="muted">No USB storage or portable device has been seen on this endpoint.</p>
         )}
 
-        {storage.length > 0 && (
+        {restrictable.length > 0 && (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
                   <th>Device</th>
+                  <th>Type</th>
                   <th>Serial</th>
                   <th>Policy</th>
                   <th>Enforcement</th>
@@ -232,24 +207,28 @@ export function DeviceUsbPanel({
                 </tr>
               </thead>
               <tbody>
-                {storage.map((device) => {
+                {restrictable.map((device) => {
                   const state = ENFORCEMENT[device.enforcementState]
-                  // Either grantable level counts as live access. Restricted
-                  // is the absence of one, so it is deliberately not here.
-                  const live =
-                    (device.policy === 'ReadOnly' || device.policy === 'Enabled') &&
-                    device.liveRequestId !== null
+                  const live = hasLiveGrant(device)
 
                   return (
                     <tr key={device.id}>
                       <td>
                         <div>
-                          <span>{describe(device)}</span>
+                          <span>{describeDevice(device)}</span>
                           <code className="row-sub mono-sub" title={device.instanceId}>
                             {device.vendorId && device.productId
                               ? `VID_${device.vendorId} PID_${device.productId}`
                               : device.instanceId}
                           </code>
+                        </div>
+                      </td>
+                      <td>
+                        <div>
+                          <span>{describeUsbClass(device.deviceClass)}</span>
+                          {device.manufacturer && device.product && (
+                            <span className="row-sub">{device.manufacturer}</span>
+                          )}
                         </div>
                       </td>
                       <td>
@@ -287,13 +266,18 @@ export function DeviceUsbPanel({
                         {device.enforcementError && (
                           <div className="row-sub">{device.enforcementError}</div>
                         )}
+                        {device.enforcedAt && (
+                          <div className="row-sub" title={device.enforcedAt}>
+                            Reported {relative(device.enforcedAt)}
+                          </div>
+                        )}
                       </td>
                       <td>
                         <div>
                           <span title={device.lastSeenAt}>{relative(device.lastSeenAt)}</span>
-                          {!device.isConnected && (
-                            <span className="row-sub">Not attached</span>
-                          )}
+                          <span className="row-sub">
+                            {device.isConnected ? 'Attached' : 'Not attached'}
+                          </span>
                         </div>
                       </td>
                       <td style={{ textAlign: 'right' }}>
@@ -331,8 +315,10 @@ export function DeviceUsbPanel({
       <div className="card">
         <h2>Other peripherals</h2>
         <p className="lede">
-          Inventory only. Keyboards, mice, hubs and other peripherals are never restricted —
-          disabling an input device would lock the user out of their own machine.
+          Inventory only. Keyboards, mice, hubs, webcams, audio and other peripherals are never
+          restricted — disabling an input device would lock the user out of their own machine. A
+          phone that appears here was reported by an agent older than 1.16.0, which cannot classify
+          or restrict it; update the agent.
         </p>
 
         {peripherals.length === 0 && <p className="muted">No other USB peripherals reported.</p>}
@@ -352,8 +338,8 @@ export function DeviceUsbPanel({
               <tbody>
                 {peripherals.map((device) => (
                   <tr key={device.id}>
-                    <td>{describe(device)}</td>
-                    <td>{device.deviceClass}</td>
+                    <td>{describeDevice(device)}</td>
+                    <td>{describeUsbClass(device.deviceClass)}</td>
                     <td>
                       <code className="row-sub mono-sub">
                         {device.vendorId && device.productId
@@ -389,16 +375,16 @@ export function DeviceUsbPanel({
 
       {revoking && (
         <ConfirmDialog
-          title={`Revoke access to ${describe(revoking)}?`}
+          title={`Revoke access to ${describeDevice(revoking)}?`}
           confirmLabel="Yes, revoke access"
           onCancel={() => setRevoking(null)}
           onConfirm={() => void revoke(revoking)}
         >
           <>
-            <strong className="secondary">{describe(revoking)}</strong> will be restricted again
-            on this endpoint and any drive letter it currently has will disappear. Files already
-            copied from it are unaffected — revoking closes the path, it does not undo what was
-            read.
+            <strong className="secondary">{describeDevice(revoking)}</strong> will be restricted again
+            on this endpoint: a stick loses its drive letter, a phone disappears from This PC. Files
+            already copied are unaffected — revoking closes the path, it does not undo what was
+            transferred.
           </>
         </ConfirmDialog>
       )}
@@ -427,10 +413,12 @@ function GrantDialog({
   const [minutes, setMinutes] = useState(DURATIONS[1].minutes)
   const [justification, setJustification] = useState('')
 
-  // Read-only is preselected. The narrower level is the default so that
-  // read/write is something an administrator chooses, never something they
-  // arrive at by leaving a control alone.
-  const [policy, setPolicy] = useState<UsbGrantablePolicy>('ReadOnly')
+  // The narrowest available level is preselected, so that read/write is
+  // something an administrator chooses, never something they arrive at by
+  // leaving a control alone. For a phone the only level is read/write, and
+  // the dialog says why.
+  const levels = grantablePolicies(device)
+  const [policy, setPolicy] = useState<UsbGrantablePolicy>(defaultGrantPolicy(device))
 
   const trimmed = justification.trim()
   const ready = trimmed.length >= 3
@@ -452,7 +440,9 @@ function GrantDialog({
         <div className="dialog-body">
           <dl className="kv">
             <dt>Device</dt>
-            <dd>{describe(device)}</dd>
+            <dd>{describeDevice(device)}</dd>
+            <dt>Type</dt>
+            <dd>{describeUsbClass(device.deviceClass)}</dd>
             <dt>Instance</dt>
             <dd>
               <code className="row-sub mono-sub">{device.instanceId}</code>
@@ -469,33 +459,40 @@ function GrantDialog({
 
           <div className="form-section">Access level</div>
 
-          {/* Radios rather than a dropdown, deliberately. Both levels stay on
-              screen at once, so choosing read/write is a visible decision
-              rather than the result of not opening a menu. */}
-          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-            <label className="check-row">
-              <input
-                type="radio"
-                name="usb-grant-policy"
-                checked={policy === 'ReadOnly'}
-                onChange={() => setPolicy('ReadOnly')}
-              />
-              Read-only
-            </label>
-            <label className="check-row">
-              <input
-                type="radio"
-                name="usb-grant-policy"
-                checked={policy === 'Enabled'}
-                onChange={() => setPolicy('Enabled')}
-              />
-              Read/write
-            </label>
-          </div>
+          {levels.length > 1 ? (
+            // Radios rather than a dropdown, deliberately. Both levels stay on
+            // screen at once, so choosing read/write is a visible decision
+            // rather than the result of not opening a menu.
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+              <label className="check-row">
+                <input
+                  type="radio"
+                  name="usb-grant-policy"
+                  checked={policy === 'ReadOnly'}
+                  onChange={() => setPolicy('ReadOnly')}
+                />
+                Read-only
+              </label>
+              <label className="check-row">
+                <input
+                  type="radio"
+                  name="usb-grant-policy"
+                  checked={policy === 'Enabled'}
+                  onChange={() => setPolicy('Enabled')}
+                />
+                Read/write
+              </label>
+            </div>
+          ) : (
+            <div className="field-hint">
+              A phone, tablet or camera connects through MTP/PTP, which has no read-only mode.
+              Access to it is read/write or nothing.
+            </div>
+          )}
 
           <div className="field-hint">
             {policy === 'Enabled'
-              ? 'Ordinary Windows access, including writing to the device.'
+              ? 'Ordinary Windows access, including copying files onto the device.'
               : 'Files can be opened and copied off the device. Windows itself refuses writes, renames and deletes.'}
           </div>
 
@@ -540,7 +537,7 @@ function GrantDialog({
               autoFocus
               placeholder={
                 policy === 'Enabled'
-                  ? 'Why does this user need to write to this device?'
+                  ? 'Why does this user need to transfer files to and from this device?'
                   : 'Why does this user need to read this device?'
               }
               onChange={(e) => setJustification(e.target.value)}
@@ -557,7 +554,7 @@ function GrantDialog({
             Cancel
           </button>
           <button type="submit" className="btn-primary" disabled={!ready}>
-            Grant read-only access
+            {grantButtonLabel(policy)}
           </button>
         </div>
       </form>

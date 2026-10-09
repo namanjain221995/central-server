@@ -1,23 +1,24 @@
 # USB and peripheral control
 
-How removable storage is restricted on managed endpoints, how temporary access
-is granted, and — set out plainly — what this control does and does not
-actually prevent.
+How removable storage and portable devices (phones, tablets, cameras) are
+restricted on managed endpoints, how temporary access is granted, and — set out
+plainly — what this control does and does not actually prevent.
 
 ## The rule
 
-**A USB storage device with no live grant is restricted.** Not "restricted once
-the server says so": restricted by default, including on a machine that has
-never enrolled, cannot reach the network, or has just booted with a stick
-already in the port. Access is the exception, and it requires a positive,
-unexpired, administrator-issued grant naming that exact device.
+**A USB storage device or portable device with no live grant is restricted.**
+Not "restricted once the server says so": restricted by default, including on
+a machine that has never enrolled, cannot reach the network, or has just booted
+with a stick or a phone already in the port. Access is the exception, and it
+requires a positive, unexpired, administrator-issued grant naming that exact
+device.
 
 There are exactly three states, and only two of them can be granted:
 
 | State | What the user gets | How it is reached |
 | --- | --- | --- |
-| **Restricted** | Nothing. The device instance is disabled, so no drive letter appears. | The default. Also where revoke and expiry land. |
-| **Read-only** | Files can be opened and copied *off* the device. Windows refuses writes, creates, renames and deletes. | An explicit grant. |
+| **Restricted** | Nothing. The device instance is disabled: a stick gets no drive letter, a phone never appears under This PC, no MTP/PTP session can be opened. | The default. Also where revoke and expiry land. |
+| **Read-only** | Files can be opened and copied *off* the device. Windows refuses writes, creates, renames and deletes. **Storage only** — see below. | An explicit grant. |
 | **Enabled** | Ordinary Windows read/write access. | An explicit grant, named as such. |
 
 **Restricted is not grantable.** It is the absence of a grant, reached by
@@ -42,9 +43,55 @@ Access, when granted, is always:
   audited as `usb.access.enable` rather than `usb.access.grant`, so the widest
   decisions can be reported on separately from the narrow ones.
 
-Non-storage peripherals — keyboards, mice, hubs, cameras, network adapters —
-are inventoried and never restricted. Disabling an input device would lock the
-user out of their own machine.
+Other peripherals — keyboards, mice, hubs, webcams, audio, printers, network
+adapters — are inventoried and never restricted. Disabling an input device
+would lock the user out of their own machine.
+
+## Phones, tablets and cameras (portable devices)
+
+A phone plugged into a PC in "File transfer" mode is a writable disk in
+everything but name: Explorer lists it under This PC and copies files both
+ways. It is not *mass storage*, though — Windows reaches it over **MTP**
+through the Windows Portable Devices stack, with no drive letter — and the
+original control, which recognised storage by its disk driver and drive
+letter, let it straight through. The same holds for "Transfer photos" (PTP),
+for a digital camera, for an iPhone's photo access, and for an Android device
+with USB debugging on, through which `adb push`/`adb pull` move files just as
+well.
+
+Since agent **1.16.0** these are a class of their own, `PortableDevice`, and
+the rule above applies to them unchanged. Recognition uses the same kind of
+evidence that identifies a stick, never the friendly name:
+
+| Evidence | Where it comes from | Means |
+|---|---|---|
+| `USB\MS_COMP_MTP`, `USB\MS_COMP_PTP` in the compatible IDs | Microsoft OS descriptor the device itself reports | MTP / PTP |
+| `USB\Class_06…` (still-image class) in the compatible IDs | The device's interface descriptor | PTP (Android "Transfer photos", cameras, iPhone) |
+| `USB\Class_FF&SubClass_42&Prot_01` in the compatible IDs | The device's interface descriptor | Android ADB |
+| Setup class `WPD` (`{EEC5AD98-…}`) or driver `WUDFWpdMtp` | What Windows bound the device to | Windows treats it as a portable device |
+
+Compatible IDs survive the device being disabled, so a restricted phone stays
+recognised — the lesson of Milestone 11a, applied again. A phone with USB
+debugging on is a *composite* device whose functions sit on interface children
+(`&MI_00` for MTP, `&MI_01` for ADB) and whose own compatible IDs say only
+"composite"; it is classified from those functions, and when it is disabled
+and they are gone, from the interfaces Windows has recorded for that
+vendor/product. Interface children are folded into their parent, so one phone
+is one row and one disable.
+
+Three things differ from storage, and the console says so:
+
+- **There is no read-only.** Read-only is a disk attribute; an MTP/PTP device
+  has no disk. A portable device is restricted or enabled, nothing between.
+  The console offers only read/write for it, the API refuses read-only with
+  `400`, the domain throws, and an agent that is nonetheless handed a
+  read-only grant for one keeps it restricted and reports why, rather than
+  widening to read/write or pretending.
+- **Switching USB mode is a new device.** MTP, PTP and ADB modes carry
+  different product IDs, so each is a separate instance, restricted on its
+  own and granted on its own.
+- **Storage wins.** A phone in the old USB-mass-storage mode, or a composite
+  device that carries both a disk and an MTP function, is storage.
 
 ## How it is enforced on Windows
 
@@ -53,9 +100,9 @@ Per-device, documented public API, no shell command and no kernel driver
 
 | State | Mechanism | Effect |
 |---|---|---|
-| Restricted | SetupAPI `DIF_PROPERTYCHANGE` / `DICS_DISABLE` on the device instance | The device does not start. No volume, no drive letter, nothing to open. |
-| Read-only | Device enabled, then `IOCTL_DISK_SET_DISK_ATTRIBUTES` with `DISK_ATTRIBUTE_READ_ONLY` on each disk beneath it | Windows itself refuses writes, creates, renames and deletes. |
-| Enabled | Device enabled, then the same IOCTL with the read-only bit *cleared* | Ordinary Windows behaviour. |
+| Restricted | SetupAPI `DIF_PROPERTYCHANGE` / `DICS_DISABLE` on the device instance (the composite parent, for a phone with several functions) | The device does not start. A stick: no volume, no drive letter. A phone: the portable-device driver is unloaded and its device interface disappears, so there is nothing for Explorer or any other MTP/PTP client — or ADB — to open. |
+| Read-only (storage) | Device enabled, then `IOCTL_DISK_SET_DISK_ATTRIBUTES` with `DISK_ATTRIBUTE_READ_ONLY` on each disk beneath it | Windows itself refuses writes, creates, renames and deletes. |
+| Enabled | Device enabled, then the same IOCTL with the read-only bit *cleared* (no disks for a phone: enabled is the grant) | Ordinary Windows behaviour. |
 
 The attribute mask is limited to the read-only bit in both directions, so
 nothing else Windows tracks on the disk — the OFFLINE bit in particular — is
@@ -66,14 +113,31 @@ set with `Persist = false`, so it governs this endpoint only and does not follow
 the stick to other machines — altering someone's hardware is not the platform's
 business.
 
-The class-wide alternatives (`StorageDevicePolicies\WriteProtect`, the
-removable-storage Group Policy settings) were considered and rejected: both are
-all-or-nothing for every removable device on the machine, so neither can express
-"this one approved stick, read-only, for the next two hours", which is the
-entire requirement.
+The class-wide alternatives — `StorageDevicePolicies\WriteProtect`, the
+removable-storage and "WPD Devices: Deny read/write access" Group Policy values,
+and device-installation restrictions on the WPD setup class — were considered
+and not used (ADR-0015 weighs each). All are all-or-nothing for every such
+device on the machine, so none can express "this one approved device, for the
+next two hours"; the policy keys are overwritten by any domain or MDM policy
+that manages them; and none can be verified per device. Disabling `USBSTOR`
+does not touch MTP at all.
 
-After setting the attribute the agent **reads it back** and treats the operation
-as failed unless the disk reports the state that was asked for.
+### Verified, not assumed
+
+A SetupAPI call returning success is not proof that a device is blocked, and
+since 1.16.0 the agent does not treat it as one. After every state change it
+**reads the device back** and reports one of four outcomes:
+
+| Outcome | What the agent found |
+|---|---|
+| **Verified** | `CM_Get_DevNode_Status` reports the devnode in the requested state — disabled (`CM_PROB_DISABLED`) for a restriction, running for a grant — and, for a restriction, no disk interface and no portable-device interface remains anywhere beneath the device. Those interfaces are the handles files move through; with none present, no transfer is possible. For read-only, each disk's attribute is read back as before. |
+| **Unverified** | The call succeeded but the state could not be read back. Reported with the reason; never promoted to verified. |
+| **Requires restart** | Windows accepted the change but set `DN_NEED_RESTART`: the device keeps running until the endpoint restarts, usually because a program was holding it open. **The control is not in place.** |
+| **Failed** | The state could not be applied, or the read-back contradicts it. |
+
+The console calls a device *Enforced* only for a verified outcome. A report
+from an agent older than 1.16.0, which verified only read-only, is shown as
+*Applied, not verified*.
 
 The two grant paths fail in opposite directions, deliberately. If read-only
 cannot be applied, the device is **restricted** instead — never left enabled and
@@ -90,7 +154,7 @@ administrator grants access (usb.manage, level, justification, duration)
         ↓ audited; device marked ReadOnly or Enabled with an absolute deadline
 ApplyUsbPolicy task queued, carrying the endpoint's COMPLETE grant set
         ↓
-agent replaces its cached policy and reconciles every attached storage device
+agent replaces its cached policy and reconciles every attached storage and portable device
         ↓
 enforcement result reported back on the next USB report
 ```
@@ -109,11 +173,16 @@ or the task expired — gets the right answer the moment the user next plugs
 something in. Both channels are built by the same function, so they cannot
 disagree, and both fail to the same safe default.
 
-The agent reports on device arrival and removal (WMI PnP notifications) rather
-than only on the inventory cycle, so a stick appearing in the console takes
-seconds rather than up to a quarter of an hour. Notification is a latency
-optimisation, not the mechanism: a periodic reconcile runs regardless, so a
-watcher that fails to start delays enforcement rather than losing it.
+The agent reports on device arrival and removal rather than only on the
+inventory cycle, so a stick or a phone appearing in the console takes seconds
+rather than up to a quarter of an hour. Since 1.16.0 the notification is a
+kernel push (`CM_Register_Notification` for the USB device interface class,
+which every USB device exposes the moment it enumerates, before any driver
+loads); the original WMI subscription — which had WMI sweep every PnP entity
+on the machine once a second — is kept only as a fallback. Notification is a
+latency optimisation, not the mechanism: a reconcile runs every minute
+regardless, and sooner when a grant is about to lapse, so a watcher that fails
+to start delays enforcement rather than losing it.
 
 ## Ordering, and the gap it closes
 
@@ -157,6 +226,9 @@ Every path lands on Restricted.
 | grant cached by an older agent, with no level recorded | read as read-only, never as read/write |
 | stale policy arrives after a newer one | ignored (issued-at wins), so a late task cannot reinstate revoked access |
 | read-only cannot be applied | device restricted, task reported failed |
+| read-only grant names a portable device | device kept restricted, reported failed with the reason; never widened to read/write |
+| Windows defers a disable to the next restart | reported *Restart required*; the control is not claimed to be in place |
+| device state cannot be read back after a change | reported *Applied, not verified*; never shown as enforced |
 | device enumeration fails | nothing evaluated; already-restricted devices stay disabled |
 | agent lacks privilege | enforcement fails loudly and is reported unenforced — never silently skipped |
 
@@ -169,15 +241,18 @@ The console shows two different facts side by side and never collapses them:
 
 | Shown | Means |
 |---|---|
-| Enforced | The endpoint confirmed it is applying the policy. |
+| Enforced | The endpoint applied the policy **and verified it** against Windows: the devnode is in that state and no storage or portable-device interface is exposed. |
+| Applied, not verified | The agent reported success but did not verify the result — every agent before 1.16.0, or a newer one whose read-back failed (the reason is shown). |
 | Not confirmed | No report yet — the machine may be offline, or the policy may still be in flight. |
 | Drifted | The endpoint reports a different state from the one set. Usually a local administrator changing it by hand. |
-| Enforcement failed | The agent could not apply it. **The control is not in place.** |
+| Restart required | Windows accepted the change for the next restart. **The control is not in place yet.** |
+| Enforcement failed | The agent could not apply it. The reason is shown; unless it says the device was kept restricted, **the control is not in place.** |
 
 A console that rendered the desired state as though it were the enforced state
 would show a reassuring "Restricted" for a machine that has never been told
 anything. The distinction between *Not confirmed* and *Drifted* is kept for the
-same reason: only one of them needs investigating.
+same reason: only one of them needs investigating. *Applied* and *Enforced* are
+kept apart because a call returning is not the same as a device being blocked.
 
 The agent reports enforcement on **every** USB report, not only after a policy
 task, so drift surfaces on the next report rather than never.
@@ -187,7 +262,7 @@ task, so drift surfaces on the next report rather than never.
 | Permission | Grants | Held by |
 |---|---|---|
 | `usb.view` | See the peripheral inventory and access states | Super Administrator, IT Administrator, Helpdesk, Auditor |
-| `usb.manage` | Grant, revoke and re-apply USB storage access | Super Administrator, IT Administrator |
+| `usb.manage` | Grant, revoke and re-apply USB storage and portable-device access | Super Administrator, IT Administrator |
 
 Split deliberately. Seeing which stick is in which laptop is support
 information — half of every "my drive isn't showing up" call — while opening a
@@ -218,9 +293,9 @@ how the control behaves in practice: **the product controls USB only while the
 agent is running.** Stop the agent and the machine goes back to being an
 ordinary Windows PC.
 
-| Agent state | USB storage behaviour |
+| Agent state | USB storage and portable-device behaviour |
 | --- | --- |
-| **Running** | Restricted by default. Read-only only where an administrator has granted it, and only until the grant expires. Enforced locally, with no dependency on the server being reachable. |
+| **Running** | Restricted by default. Read-only or read/write only where an administrator has granted it, and only until the grant expires. Enforced locally, with no dependency on the server being reachable. |
 | **Stopped** | Not enforced. Devices already attached become usable again; newly inserted devices behave normally. |
 | **Restarted** | The persisted policy is reloaded and enforcement is re-established, with no server contact required. A grant that expired during the downtime is not restored. |
 | **Uninstalled** | Not enforced, permanently. Nothing this product installed continues to restrict USB. |
@@ -302,6 +377,22 @@ one that is absent.
 - **It does not cover non-USB paths.** Optical drives, SD readers on a
   non-USB bus, network shares, cloud sync clients and personal email are all
   untouched by this feature.
+- **It does not cover a phone's other radios and modes.** USB tethering (the
+  phone presenting itself as a network adapter), Bluetooth file transfer,
+  Wi-Fi Direct and the phone's own cloud sync are not USB file transfer and
+  are not touched. A phone that is restricted over USB can still be used as
+  a hotspot.
+- **The first attachment of a device has a window.** Windows starts a device
+  before the agent hears of it; the agent disables it within a few seconds of
+  the arrival notification. A user who begins a copy inside that window may
+  move a small file. From then on the device instance stays disabled — across
+  reconnects, across reboots while the agent is installed — so the window
+  exists once per device instance, and switching USB mode on a phone opens it
+  once more for the new instance. Closing it entirely would need the
+  class-wide installation restriction ADR-0015 rejects.
+- **Charging is not measured.** A disabled data connection does not cut power
+  to the port, but the current a given phone negotiates through it has not
+  been measured and is not claimed either way.
 - **There is a sub-second window when access is granted.** Read-only is applied
   after the device is enabled and its disk appears, because the disk does not
   exist while the device is disabled. The agent polls at 100 ms and forces a
@@ -328,6 +419,24 @@ instance-ID shape and uniqueness, hex vendor/product ids, repeatability, and the
 parsing rule that a Windows-synthesised port-path segment is reported as *no
 serial* rather than passed off as one — because a grant keyed to a port would
 follow the port rather than the approved device.
+
+Portable-device classification is pinned by `WindowsUsbPortableDeviceTests`,
+built from the properties Windows recorded for a real phone in each of its
+USB modes (MTP and PTP), plus synthetic composite trees for a phone with USB
+debugging on and for an iPhone: a restricted phone still classifies by its
+compatible IDs; a webcam, printer, audio device, fingerprint reader, keyboard,
+mouse and network adapter do not; a hub with a phone plugged in is still a
+hub; storage wins over portable; conflicting metadata resolves towards the
+control; and interface children fold into their parent. The same file
+registers and withdraws the kernel PnP notification on the machine it runs on,
+which exercises the filter structure cfgmgr32 checks on registration.
+`UsbPortableDeviceTests` (agent) pins the policy manager — restricted by
+default, read-only refused and reported, read/write granted and lapsing, the
+restart-required and unverified outcomes reaching the report, release and
+restart — and `UsbPortableDeviceTests` (domain), `UsbEnforcementStateTests`,
+`UsbPortableDeviceReportTests` and `UsbPortableDeviceEndpointTests` pin the
+server side: the class, the refusal of read-only, the audit event, the status
+as reported, and the console states.
 
 The agent lifecycle — running, stopped, restarted, uninstalled — is covered by
 `UsbAgentLifecycleTests`, which drives one simulated machine across several agent
@@ -356,6 +465,55 @@ acceptance script for the lifecycle is:
 4. **Uninstalled** — remove the MSI; confirm both sticks mount and write
    normally, and that `usb-restricted-devices.json` is gone with the state
    directory.
+
+## Acceptance — portable devices: NOT VERIFIED
+
+The portable-device control (agent 1.16.0) has **not yet been exercised on
+hardware**. The phone whose recorded properties the tests are built from was
+not attached while the change was made, and the only Windows machine available
+runs the production agent, which is not replaced with test builds. The
+classification, the enforcement path, the reporting and the console are
+covered by the automated suites above; the claim that a phone is blocked in
+both directions is **not demonstrated** until the script below has been run on
+a designated test endpoint and its evidence recorded here, as Milestone 11a's
+was. Until then the security objective is implemented, not verified.
+
+The script, to be run with a data-capable cable, the agent on 1.16.0 and the
+server on a build that includes `PortableDevice`:
+
+1. **Windows path** — connect the phone in "File transfer" mode; confirm with
+   `Get-PnpDevice -Class WPD -PresentOnly` that Windows exposes it as a WPD
+   device and that it appears under This PC.
+2. **Detection** — within ten seconds the console lists the phone in the
+   *USB storage and portable devices* table as *Phone / portable device*,
+   Restricted, Enforced, and the phone has disappeared from This PC.
+3. **Blocked both ways** — attempt to copy a file from the PC to the phone
+   and from the phone to the PC. Both must be impossible: there is no device
+   to copy to or from. Record how each attempt fails.
+4. **Grant** — grant read/write for 30 minutes; confirm the phone reappears,
+   both copies succeed, and the console shows Read/write, Enforced.
+5. **Revoke** — revoke; confirm the phone disappears again and a copy in
+   progress is cut off.
+6. **Reconnect** — unplug and replug; confirm the phone does not reappear
+   (the instance stays disabled) and the console shows it attached and
+   Restricted.
+7. **Mode switch** — switch the phone to "Transfer photos"; confirm it is
+   detected as a new instance, restricted within seconds, and listed
+   separately. Switch USB debugging on with file transfer; confirm one row
+   for the composite device and that `adb devices` on the PC shows nothing.
+8. **Agent restart** — `Restart-Service EndpointPlatformAgent` with the phone
+   attached; confirm it is briefly released and restricted again within
+   seconds of the service starting, with no server contact needed.
+9. **Reboot** — reboot with the phone attached; confirm it is restricted
+   again once the agent starts, and note how long the phone was reachable
+   between sign-in and that moment.
+10. **Collateral** — keyboard, mouse, webcam and network remain working
+    throughout; a USB stick keeps its own policy.
+11. **Restart required** — with a file copy running under a grant, revoke;
+    if Windows defers the disable, the console must show *Restart required*,
+    not Enforced.
+12. **Charging** — note whether the phone reports charging while restricted,
+    and at what rate if it shows one. This is observation, not a claim.
 
 ## Acceptance — Milestone 11a, closed 2026-08-27
 

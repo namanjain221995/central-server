@@ -110,6 +110,25 @@ server sweep (every 15 minutes) raises the same flag for any active device whose
 snapshot is older than `Inventory:RefreshAfterHours` (24 by default), so
 inventory ages out without an administrator having to ask.
 
+### `POST /agent/v1/usb` — implemented
+Requires `X-Agent-Credential`. Body: `UsbReport` — every USB device currently
+attached, whole-state, with what the agent is enforcing on each. Sent on
+device arrival and removal and on the agent's periodic reconcile, not only on
+the inventory cycle. The response is `UsbPolicyResponse`: every live grant for
+the endpoint, computed from administrator decisions alone — nothing in the
+report can widen the endpoint's own access. See
+[usb-control.md](usb-control.md).
+
+Each `UsbDeviceReport` carries `deviceClass` (`Storage`, `PortableDevice`,
+`Keyboard`, `Mouse`, `NetworkAdapter`, `Hub`, `Other`; anything else is stored
+as `Unknown`), `enforcedPolicy` (`Restricted`, `ReadOnly`, `Enabled` or null),
+`enforcementError`, and — from agent 1.16.0 — `enforcementStatus`:
+`Verified`, `Unverified`, `RequiresRestart` or `Failed`. Both additions are
+backward compatible in both directions: an older server stores
+`PortableDevice` as `Unknown` (visible, not grantable) and ignores the status
+field; an older agent sends neither, and the server shows its reports as
+applied-but-unverified rather than enforced.
+
 ## Error handling
 
 Errors are RFC 7807 problem-details with a `correlationId` extension. The

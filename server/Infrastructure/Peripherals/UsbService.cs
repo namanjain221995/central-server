@@ -19,12 +19,18 @@ public enum UsbGrantOutcome
     DeviceNotFound,
     /// <summary>No such USB device on that endpoint.</summary>
     UsbDeviceNotFound,
-    /// <summary>The target is not storage. Policy does not apply to a keyboard.</summary>
+    /// <summary>The target is neither storage nor a portable device. Policy does not apply to a keyboard.</summary>
     NotStorage,
     /// <summary>Asked-for duration is outside the permitted window.</summary>
     InvalidDuration,
     /// <summary>The requested access level is not one the platform grants.</summary>
     InvalidPolicy,
+    /// <summary>
+    /// Read-only was asked for on a device that has no read-only mode — a
+    /// phone or camera. The endpoint could not enforce it, so it is refused here
+    /// rather than recorded and then reported as failed.
+    /// </summary>
+    ReadOnlyUnsupported,
     /// <summary>A live grant already covers this device.</summary>
     AlreadyGranted,
 }
@@ -39,23 +45,24 @@ public enum UsbRevokeOutcome
 
 /// <summary>
 /// Everything the platform does with USB peripherals: ingesting what endpoints
-/// report, granting and revoking temporary storage access, and expiring grants.
+/// report, granting and revoking temporary access to storage and portable
+/// devices, and expiring grants.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The security model in one paragraph. USB storage is <b>restricted by
-/// default</b> — not by a policy that has to be pushed, but because the agent
-/// restricts anything it has no live grant for, including on a machine that has
-/// never reached the server. Access is granted per exact device instance, always
-/// read-only, always with an absolute deadline, and always by an administrator
-/// holding <c>usb.manage</c>. Every grant, revocation and expiry is audited.
+/// The security model in one paragraph. USB storage and portable devices
+/// (phones, tablets, cameras) are <b>restricted by default</b> — not by a policy
+/// that has to be pushed, but because the agent restricts anything it has no
+/// live grant for, including on a machine that has never reached the server.
+/// Access is granted per exact device instance, always with an absolute
+/// deadline, and always by an administrator holding <c>usb.manage</c>. Every
+/// grant, revocation and expiry is audited.
 /// </para>
 /// <para>
 /// Policy is delivered as whole state through two channels — a pushed
 /// <c>ApplyUsbPolicy</c> task for immediacy, and the response to the agent's own
 /// USB report for convergence — which carry identical content built by
-/// <see cref="BuildPolicyAsync"/>. Neither channel can express write access, and
-/// losing both leaves the endpoint restricted.
+/// <see cref="BuildPolicyAsync"/>. Losing both leaves the endpoint restricted.
 /// </para>
 /// </remarks>
 public sealed class UsbService(
@@ -131,6 +138,7 @@ public sealed class UsbService(
         var byInstance = known.ToDictionary(d => d.InstanceId, StringComparer.OrdinalIgnoreCase);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var newStorage = 0;
+        var newPortable = 0;
 
         foreach (var entry in reported)
         {
@@ -188,6 +196,10 @@ public sealed class UsbService(
                 {
                     newStorage++;
                 }
+                else if (created.IsPortableDevice)
+                {
+                    newPortable++;
+                }
             }
         }
 
@@ -199,8 +211,11 @@ public sealed class UsbService(
             absent.Disconnected(now);
         }
 
-        // First sighting of removable storage on a managed endpoint is a security
-        // event in its own right, whatever happens to it afterwards.
+        // First sighting of removable storage, or of a phone, on a managed
+        // endpoint is a security event in its own right, whatever happens to it
+        // afterwards. Two actions rather than one so the two can be reported on
+        // separately: "who plugged in a stick" and "who plugged in a phone" are
+        // different questions.
         if (newStorage > 0)
         {
             _auditWriter.Stage(
@@ -213,6 +228,20 @@ public sealed class UsbService(
                 audit => audit
                     .OnDevice(device.Id, device.Hostname)
                     .OnTarget("usb_device", device.Id.ToString(), $"{newStorage} new storage device(s)"));
+        }
+
+        if (newPortable > 0)
+        {
+            _auditWriter.Stage(
+                device.OrganizationId,
+                AuditActorType.Agent,
+                device.Id,
+                device.Hostname,
+                action: "usb.portable_device.connected",
+                AuditResult.Success,
+                audit => audit
+                    .OnDevice(device.Id, device.Hostname)
+                    .OnTarget("usb_device", device.Id.ToString(), $"{newPortable} new portable device(s)"));
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -257,15 +286,16 @@ public sealed class UsbService(
     // ---- administrator-facing ---------------------------------------------
 
     /// <summary>
-    /// Grants temporary access to one USB storage device at the requested level
-    /// and pushes the new policy to the endpoint.
+    /// Grants temporary access to one USB storage or portable device at the
+    /// requested level and pushes the new policy to the endpoint.
     /// </summary>
     /// <remarks>
     /// The caller's <c>usb.manage</c> permission has already been enforced at the
     /// endpoint. This method still re-checks everything about the target that
-    /// matters — that it exists, that it belongs to this organization, that it is
-    /// storage, that the duration is inside the permitted window — because a
-    /// permission check answers "may this person act", not "is this action sane".
+    /// matters — that it exists, that it belongs to this organization, that
+    /// policy applies to it, that the level can be enforced on it, that the
+    /// duration is inside the permitted window — because a permission check
+    /// answers "may this person act", not "is this action sane".
     /// </remarks>
     public async Task<(UsbGrantOutcome Outcome, UsbAccessRequest? Request)> GrantAsync(
         Guid organizationId,
@@ -307,9 +337,18 @@ public sealed class UsbService(
             return (UsbGrantOutcome.UsbDeviceNotFound, null);
         }
 
-        if (!usb.IsStorage)
+        if (!usb.IsRestrictable)
         {
             return (UsbGrantOutcome.NotStorage, null);
+        }
+
+        // Refused rather than rounded. Rounding up would hand out write access
+        // the administrator did not ask for; rounding down to Restricted would
+        // record a grant the endpoint then reports as failed. Neither is what
+        // was decided, so nothing is recorded.
+        if (policy == UsbStoragePolicy.ReadOnly && !usb.SupportsReadOnly)
+        {
+            return (UsbGrantOutcome.ReadOnlyUnsupported, null);
         }
 
         var now = _timeProvider.GetUtcNow();
@@ -355,6 +394,7 @@ public sealed class UsbService(
                     {
                         policy = policy.ToString(),
                         instanceId = usb.InstanceId,
+                        deviceClass = usb.DeviceClass.ToString(),
                         expiresAt = request.ExpiresAt,
                         justification,
                     })));
@@ -362,8 +402,8 @@ public sealed class UsbService(
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
-            "{Policy} USB access granted on {DeviceId} for {InstanceId} until {ExpiresAt} by {Actor}.",
-            policy, deviceId, usb.InstanceId, request.ExpiresAt, actorDisplay);
+            "{Policy} USB access granted on {DeviceId} for {InstanceId} ({Class}) until {ExpiresAt} by {Actor}.",
+            policy, deviceId, usb.InstanceId, usb.DeviceClass, request.ExpiresAt, actorDisplay);
 
         await PushPolicyAsync(organizationId, deviceId, actorId, actorDisplay, now, cancellationToken);
 
@@ -579,8 +619,28 @@ public sealed class UsbService(
             _ => null,
         };
 
-        usb.ReportEnforcement(enforced, Truncate(entry.EnforcementError, 512), now);
+        usb.ReportEnforcement(enforced, Truncate(entry.EnforcementError, 512), now, ParseStatus(entry.EnforcementStatus));
     }
+
+    /// <summary>
+    /// Maps the wire status onto the enum by exact name. Anything else — an
+    /// older agent sending nothing, or a value this server does not know — is
+    /// null, which the read side renders as applied-but-unverified. A status
+    /// can never be promoted to <see cref="UsbEnforcementStatus.Verified"/> by
+    /// being unrecognised.
+    /// </summary>
+    private static UsbEnforcementStatus? ParseStatus(string? value) => value switch
+    {
+        var s when string.Equals(s, nameof(UsbEnforcementStatus.Verified), StringComparison.OrdinalIgnoreCase)
+            => UsbEnforcementStatus.Verified,
+        var s when string.Equals(s, nameof(UsbEnforcementStatus.Unverified), StringComparison.OrdinalIgnoreCase)
+            => UsbEnforcementStatus.Unverified,
+        var s when string.Equals(s, nameof(UsbEnforcementStatus.RequiresRestart), StringComparison.OrdinalIgnoreCase)
+            => UsbEnforcementStatus.RequiresRestart,
+        var s when string.Equals(s, nameof(UsbEnforcementStatus.Failed), StringComparison.OrdinalIgnoreCase)
+            => UsbEnforcementStatus.Failed,
+        _ => null,
+    };
 
     private static string Describe(UsbDevice usb) =>
         usb.Product is { Length: > 0 } product
@@ -592,13 +652,16 @@ public sealed class UsbService(
     /// <see cref="UsbDeviceClass.Unknown"/> for anything unrecognised.
     /// </summary>
     /// <remarks>
-    /// Unknown is safe here: only <see cref="UsbDeviceClass.Storage"/> can be
-    /// granted access, so a class the server does not recognise can never be
-    /// mistaken for something grantable. A future agent reporting a new class
-    /// degrades to "shown but not grantable" rather than to an error.
+    /// Unknown is safe here: only storage and portable devices can be granted
+    /// access, so a class the server does not recognise can never be mistaken
+    /// for something grantable. A future agent reporting a new class degrades to
+    /// "shown but not grantable" rather than to an error. Matched by name only:
+    /// a bare number on the wire is not a class.
     /// </remarks>
     private static UsbDeviceClass ParseClass(string? value) =>
-        Enum.TryParse<UsbDeviceClass>(value, ignoreCase: true, out var parsed)
+        value is { Length: > 0 }
+            && !char.IsDigit(value[0])
+            && Enum.TryParse<UsbDeviceClass>(value, ignoreCase: true, out var parsed)
             && Enum.IsDefined(parsed)
                 ? parsed
                 : UsbDeviceClass.Unknown;

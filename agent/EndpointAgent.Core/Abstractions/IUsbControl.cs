@@ -10,15 +10,60 @@ public enum UsbClass
     NetworkAdapter = 4,
     Hub = 5,
     Other = 6,
+
+    /// <summary>
+    /// A phone, tablet, camera or media player reached through MTP or PTP — the
+    /// Windows Portable Devices stack — or an Android device exposing its ADB
+    /// debugging interface.
+    /// </summary>
+    /// <remarks>
+    /// Subject to access policy exactly like <see cref="Storage"/>, because a
+    /// phone in "File transfer" mode is a writable disk for every practical
+    /// purpose even though Windows never gives it a drive letter: Explorer
+    /// shows it under This PC and copies files both ways. It is a class of its
+    /// own rather than being folded into Storage because enforcement differs in
+    /// one way an administrator has to know about — there is no read-only mode.
+    /// </remarks>
+    PortableDevice = 7,
 }
 
-/// <summary>What the agent is enforcing on a storage device.</summary>
+public static class UsbClassExtensions
+{
+    /// <summary>True for the classes access policy applies to.</summary>
+    public static bool IsRestrictable(this UsbClass usbClass) =>
+        usbClass is UsbClass.Storage or UsbClass.PortableDevice;
+
+    /// <summary>
+    /// True when a read-only grant can actually be enforced on the class.
+    /// </summary>
+    /// <remarks>
+    /// Only mass storage: read-only is a disk attribute, and an MTP/PTP device
+    /// has no disk to carry one. A portable device is either restricted or
+    /// enabled, nothing in between.
+    /// </remarks>
+    public static bool SupportsReadOnly(this UsbClass usbClass) => usbClass == UsbClass.Storage;
+}
+
+/// <summary>Wording shared by the enforcer and the policy manager, so the console sees one message.</summary>
+public static class UsbEnforcementMessages
+{
+    /// <summary>
+    /// Why a read-only grant on a portable device ends in Restricted rather than
+    /// in access. Reported verbatim so the console can show the reason beside
+    /// the device.
+    /// </summary>
+    public const string ReadOnlyUnavailableForPortableDevices =
+        "Read-only is not available for a phone, camera or other portable device: MTP and PTP have no "
+        + "read-only mode. The device has been kept restricted; grant read/write access if the user needs it.";
+}
+
+/// <summary>What the agent is enforcing on a restrictable device.</summary>
 public enum UsbEnforcedState
 {
-    /// <summary>Device instance disabled: no volume, no drive letter, no access.</summary>
+    /// <summary>Device instance disabled: no volume, no drive letter, no MTP session, no access.</summary>
     Restricted = 0,
 
-    /// <summary>Device enabled with the disk marked read-only by Windows.</summary>
+    /// <summary>Device enabled with the disk marked read-only by Windows. Storage only.</summary>
     ReadOnly = 1,
 
     /// <summary>
@@ -59,17 +104,60 @@ public sealed record UsbDeviceInfo(
     string? HardwareIds,
     bool IsEnabled);
 
+/// <summary>
+/// How far an enforcement attempt got — beyond "the API call returned".
+/// </summary>
+/// <remarks>
+/// A successful SetupAPI call is not proof that a device is blocked: Windows
+/// can accept a disable and defer it to the next restart, and a status read can
+/// itself fail. The console must be able to tell those apart from a device it
+/// has actually confirmed is in the requested state, so the distinction is
+/// carried from the enforcer all the way to the report.
+/// </remarks>
+public enum UsbEnforcementStatus
+{
+    /// <summary>The call succeeded but the resulting device state could not be read back.</summary>
+    Unverified = 0,
+
+    /// <summary>Windows reports the device in the requested state.</summary>
+    Verified = 1,
+
+    /// <summary>Windows accepted the change but applies it only after the endpoint restarts.</summary>
+    RequiresRestart = 2,
+
+    /// <summary>The state could not be applied.</summary>
+    Failed = 3,
+}
+
 /// <summary>Outcome of one enforcement attempt.</summary>
 /// <param name="Succeeded">
 /// True only when the state was actually applied. A failure is reported to the
 /// server rather than swallowed, so the console can show the device as
 /// unenforced instead of implying a control that is not in place.
 /// </param>
-public sealed record UsbEnforcementResult(bool Succeeded, string? Error)
+/// <param name="Error">
+/// Why it failed, why it needs a restart, or — for <see cref="UsbEnforcementStatus.Unverified"/>
+/// — why the result could not be confirmed. Null when the state was applied and
+/// read back.
+/// </param>
+public sealed record UsbEnforcementResult(bool Succeeded, string? Error, UsbEnforcementStatus Status)
 {
-    public static readonly UsbEnforcementResult Ok = new(true, null);
+    /// <summary>Applied, and Windows reports the device in the requested state.</summary>
+    public static readonly UsbEnforcementResult Ok = new(true, null, UsbEnforcementStatus.Verified);
 
-    public static UsbEnforcementResult Failed(string error) => new(false, error);
+    public static UsbEnforcementResult Failed(string error) =>
+        new(false, error, UsbEnforcementStatus.Failed);
+
+    /// <summary>
+    /// Windows accepted the change but it is not in force until the endpoint
+    /// restarts. Not a success: the control is not in place yet.
+    /// </summary>
+    public static UsbEnforcementResult RestartRequired(string reason) =>
+        new(false, reason, UsbEnforcementStatus.RequiresRestart);
+
+    /// <summary>The call succeeded but the device state could not be read back.</summary>
+    public static UsbEnforcementResult Unverified(string reason) =>
+        new(true, reason, UsbEnforcementStatus.Unverified);
 }
 
 /// <summary>Enumerates the USB devices attached to this machine.</summary>
@@ -79,7 +167,8 @@ public interface IUsbDeviceEnumerator
 }
 
 /// <summary>
-/// Applies USB storage access state on this machine.
+/// Applies USB access state on this machine, for storage and for portable
+/// devices (phones, cameras) alike.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -95,13 +184,26 @@ public interface IUsbDeviceEnumerator
 /// an unreachable server, an unreadable cache — resolves to
 /// <see cref="Restrict"/> rather than to access.
 /// </para>
+/// <para>
+/// Every method reads the device state back after acting and reports what it
+/// found; a result is <see cref="UsbEnforcementStatus.Verified"/> only when
+/// Windows itself says the device is in the requested state.
+/// </para>
 /// </remarks>
 public interface IUsbPolicyEnforcer
 {
-    /// <summary>Disables the device instance so nothing mounts. Idempotent.</summary>
+    /// <summary>
+    /// Disables the device instance so nothing mounts and no MTP/PTP session can
+    /// be opened. Idempotent.
+    /// </summary>
     UsbEnforcementResult Restrict(string instanceId);
 
-    /// <summary>Enables the device and marks its disks read-only. Idempotent.</summary>
+    /// <summary>
+    /// Enables the device and marks its disks read-only. Idempotent. Storage
+    /// only: a portable device has no disk to mark, and the Windows
+    /// implementation restricts it again and reports failure rather than leave
+    /// it open.
+    /// </summary>
     UsbEnforcementResult AllowReadOnly(string instanceId);
 
     /// <summary>

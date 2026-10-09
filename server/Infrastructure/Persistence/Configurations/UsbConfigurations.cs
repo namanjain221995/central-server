@@ -28,6 +28,7 @@ internal sealed class UsbDeviceConfiguration : IEntityTypeConfiguration<UsbDevic
         builder.Property(d => d.DeviceClass).HasConversion<string>().HasMaxLength(32).IsRequired();
         builder.Property(d => d.Policy).HasConversion<string>().HasMaxLength(16).IsRequired();
         builder.Property(d => d.EnforcedPolicy).HasConversion<string>().HasMaxLength(16);
+        builder.Property(d => d.EnforcementStatus).HasConversion<string>().HasMaxLength(16);
 
         builder.Property(d => d.CreatedAt).IsRequired();
         builder.Property(d => d.UpdatedAt).IsRequired();

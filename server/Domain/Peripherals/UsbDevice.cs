@@ -3,21 +3,22 @@ using EndpointPlatform.Domain.Common;
 namespace EndpointPlatform.Domain.Peripherals;
 
 /// <summary>
-/// How the platform classifies a USB device. Only <see cref="Storage"/> is
-/// subject to access policy; everything else is inventory-only.
+/// How the platform classifies a USB device. <see cref="Storage"/> and
+/// <see cref="PortableDevice"/> are subject to access policy; everything else is
+/// inventory-only.
 /// </summary>
 /// <remarks>
-/// Applying storage policy to a keyboard would lock an administrator out of
-/// their own machine, so the classes are kept explicitly separate and the
-/// policy path checks <see cref="UsbDevice.IsStorage"/> rather than inferring
-/// from a name.
+/// Applying policy to a keyboard would lock an administrator out of their own
+/// machine, so the classes are kept explicitly separate and the policy path
+/// checks <see cref="UsbDevice.IsRestrictable"/> rather than inferring from a
+/// name.
 /// </remarks>
 public enum UsbDeviceClass
 {
     /// <summary>Windows reported a class the platform does not model.</summary>
     Unknown = 0,
 
-    /// <summary>Removable mass storage. The only class policy applies to.</summary>
+    /// <summary>Removable mass storage. Policy applies; read-only is available.</summary>
     Storage = 1,
 
     Keyboard = 2,
@@ -28,23 +29,36 @@ public enum UsbDeviceClass
 
     Hub = 5,
 
-    /// <summary>Audio, imaging, biometric, printers and anything else present.</summary>
+    /// <summary>Audio, video, biometric, printers and anything else present.</summary>
     Other = 6,
+
+    /// <summary>
+    /// A phone, tablet, camera or media player reached through MTP or PTP, or
+    /// an Android device exposing its ADB interface. Policy applies; read-only
+    /// is not available, because MTP/PTP has no read-only mode.
+    /// </summary>
+    /// <remarks>
+    /// Reported by agents from 1.16.0. An older agent never sends it, so a phone
+    /// on such an endpoint keeps arriving as <see cref="Other"/> until the agent
+    /// is updated — visible, and visibly unprotected.
+    /// </remarks>
+    PortableDevice = 7,
 }
 
-/// <summary>Access state for a USB storage device on one endpoint.</summary>
+/// <summary>Access state for a restrictable USB device on one endpoint.</summary>
 public enum UsbStoragePolicy
 {
     /// <summary>
     /// The default and the safe state: no file access. The device instance is
-    /// disabled on the endpoint, so no drive letter appears.
+    /// disabled on the endpoint, so no drive letter appears and no MTP session
+    /// can be opened.
     /// </summary>
     Restricted = 0,
 
     /// <summary>
     /// Temporary administrator-granted read access. Files can be read and
     /// copied off the device; writes, creates, renames and deletes are refused
-    /// by Windows itself.
+    /// by Windows itself. Storage only.
     /// </summary>
     ReadOnly = 1,
 
@@ -60,6 +74,30 @@ public enum UsbStoragePolicy
     /// grant lapses or is revoked.
     /// </remarks>
     Enabled = 2,
+}
+
+/// <summary>
+/// How far the endpoint got in applying its enforced policy, as it reported.
+/// </summary>
+/// <remarks>
+/// A successful API call on the endpoint is not proof that a device is blocked.
+/// Windows can accept a disable and defer it to the next restart, and the
+/// state read-back can itself fail. Agents from 1.16.0 report which of these
+/// happened; the console must not render any of them as a confirmed control.
+/// </remarks>
+public enum UsbEnforcementStatus
+{
+    /// <summary>The call succeeded but the endpoint could not read the device state back.</summary>
+    Unverified = 0,
+
+    /// <summary>Windows on the endpoint reports the device in the enforced state.</summary>
+    Verified = 1,
+
+    /// <summary>Windows accepted the change but applies it only after the endpoint restarts.</summary>
+    RequiresRestart = 2,
+
+    /// <summary>The policy could not be applied.</summary>
+    Failed = 3,
 }
 
 /// <summary>
@@ -112,8 +150,9 @@ public sealed class UsbDevice : AuditableEntity
         LastSeenAt = now;
         IsConnected = true;
 
-        // Storage starts Restricted, always. Nothing in the constructor can
-        // produce a device that is accessible before an administrator says so.
+        // Restrictable devices start Restricted, always. Nothing in the
+        // constructor can produce a device that is accessible before an
+        // administrator says so.
         Policy = UsbStoragePolicy.Restricted;
     }
 
@@ -149,7 +188,7 @@ public sealed class UsbDevice : AuditableEntity
 
     public DateTimeOffset? DisconnectedAt { get; private set; }
 
-    /// <summary>Current access state. Meaningful only when <see cref="IsStorage"/>.</summary>
+    /// <summary>Current access state. Meaningful only when <see cref="IsRestrictable"/>.</summary>
     public UsbStoragePolicy Policy { get; private set; }
 
     /// <summary>When a temporary grant lapses. Null whenever Restricted.</summary>
@@ -172,14 +211,49 @@ public sealed class UsbDevice : AuditableEntity
 
     public DateTimeOffset? EnforcedAt { get; private set; }
 
-    /// <summary>What went wrong the last time the agent tried to enforce. Null when it worked.</summary>
+    /// <summary>
+    /// What went wrong the last time the agent tried to enforce, or — for an
+    /// <see cref="UsbEnforcementStatus.Unverified"/> report — why it could not
+    /// confirm the result. Null when it worked and was confirmed.
+    /// </summary>
     public string? EnforcementError { get; private set; }
 
+    /// <summary>
+    /// How far the agent got, as it reported. Null from agents older than
+    /// 1.16.0, which report only success or an error.
+    /// </summary>
+    public UsbEnforcementStatus? EnforcementStatus { get; private set; }
+
+    /// <summary>
+    /// True when the last report says the policy is not in force: the agent
+    /// failed, Windows deferred the change to a restart, or (from an older
+    /// agent, which has no status) any error was reported.
+    /// </summary>
+    public bool HasEnforcementFailure =>
+        EnforcementStatus is UsbEnforcementStatus.Failed or UsbEnforcementStatus.RequiresRestart
+        || (EnforcementStatus is null && EnforcementError is not null);
+
     /// <summary>True when the endpoint has confirmed it is enforcing what was asked.</summary>
-    public bool IsPolicyEnforced => EnforcedPolicy == Policy && EnforcementError is null;
+    public bool IsPolicyEnforced => EnforcedPolicy == Policy && !HasEnforcementFailure;
+
+    /// <summary>True when the endpoint has verified the enforced state against Windows, not merely applied it.</summary>
+    public bool IsEnforcementVerified => IsPolicyEnforced && EnforcementStatus == UsbEnforcementStatus.Verified;
+
+    /// <summary>True for removable mass storage.</summary>
+    public bool IsStorage => DeviceClass == UsbDeviceClass.Storage;
+
+    /// <summary>True for a phone, tablet, camera or other MTP/PTP device.</summary>
+    public bool IsPortableDevice => DeviceClass == UsbDeviceClass.PortableDevice;
 
     /// <summary>True when access policy applies to this device at all.</summary>
-    public bool IsStorage => DeviceClass == UsbDeviceClass.Storage;
+    public bool IsRestrictable => IsStorage || IsPortableDevice;
+
+    /// <summary>
+    /// True when a read-only grant can be enforced on this device. Only
+    /// storage: read-only is a disk attribute, and a portable device has no
+    /// disk to carry one.
+    /// </summary>
+    public bool SupportsReadOnly => IsStorage;
 
     /// <summary>
     /// True when a grant of any kind is currently live. Expiry is evaluated
@@ -215,20 +289,23 @@ public sealed class UsbDevice : AuditableEntity
         DisconnectedAt = now;
     }
 
-    /// <summary>Grants temporary access at the given level. Storage only.</summary>
+    /// <summary>Grants temporary access at the given level. Restrictable devices only.</summary>
     /// <param name="policy">
     /// <see cref="UsbStoragePolicy.ReadOnly"/> or <see cref="UsbStoragePolicy.Enabled"/>.
     /// Passing <see cref="UsbStoragePolicy.Restricted"/> throws: restricting is
     /// the absence of a grant, expressed through <see cref="Restrict"/>, and
     /// letting it in here would make "grant" a verb that can also take access
-    /// away — with an expiry attached to a state that has none.
+    /// away — with an expiry attached to a state that has none. Read-only on a
+    /// device that does not support it throws too, rather than being rounded
+    /// to either neighbour: up would hand out write access nobody asked for,
+    /// down would record a grant the endpoint will never honour.
     /// </param>
     public void Grant(UsbStoragePolicy policy, DateTimeOffset expiresAt, DateTimeOffset now)
     {
-        if (!IsStorage)
+        if (!IsRestrictable)
         {
             throw new InvalidOperationException(
-                $"Access policy applies to storage devices only; {InstanceId} is {DeviceClass}.");
+                $"Access policy applies to storage and portable devices only; {InstanceId} is {DeviceClass}.");
         }
 
         if (policy == UsbStoragePolicy.Restricted)
@@ -240,6 +317,13 @@ public sealed class UsbDevice : AuditableEntity
         if (!Enum.IsDefined(policy))
         {
             throw new ArgumentOutOfRangeException(nameof(policy), $"Unknown USB storage policy {policy}.");
+        }
+
+        if (policy == UsbStoragePolicy.ReadOnly && !SupportsReadOnly)
+        {
+            throw new InvalidOperationException(
+                $"Read-only cannot be granted to {InstanceId}: a {DeviceClass} has no read-only mode. "
+                + "Grant Enabled, or nothing.");
         }
 
         if (expiresAt <= now)
@@ -264,10 +348,19 @@ public sealed class UsbDevice : AuditableEntity
     /// a local administrator re-enabling the device by hand — surfaces on the
     /// next report instead of never.
     /// </summary>
-    public void ReportEnforcement(UsbStoragePolicy? enforced, string? error, DateTimeOffset now)
+    /// <param name="status">
+    /// How far the agent got. Null from agents that predate the field, for
+    /// which <paramref name="error"/> alone says whether it worked.
+    /// </param>
+    public void ReportEnforcement(
+        UsbStoragePolicy? enforced,
+        string? error,
+        DateTimeOffset now,
+        UsbEnforcementStatus? status = null)
     {
         EnforcedPolicy = enforced;
         EnforcementError = Guard.OptionalMaxLength(error, 512);
+        EnforcementStatus = status;
         EnforcedAt = now;
     }
 }

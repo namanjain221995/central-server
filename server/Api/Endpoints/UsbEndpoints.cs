@@ -148,9 +148,19 @@ public static class UsbEndpoints
             UsbGrantOutcome.DeviceNotFound or UsbGrantOutcome.UsbDeviceNotFound => Results.NotFound(),
 
             UsbGrantOutcome.NotStorage => Results.Problem(
-                "Access policy applies to USB storage only. Other peripherals are inventoried but never "
-                + "restricted — disabling a keyboard or mouse would lock the user out of their own machine.",
+                "Access policy applies to USB storage and portable devices (phones, tablets, cameras) only. "
+                + "Other peripherals are inventoried but never restricted — disabling a keyboard or mouse would "
+                + "lock the user out of their own machine.",
                 statusCode: StatusCodes.Status409Conflict),
+
+            // 400 rather than 409: the request is malformed for this device, not
+            // in conflict with its state. Nothing is recorded — rounding read-only
+            // up would hand out write access, rounding it down would record a
+            // grant the endpoint then reports as failed.
+            UsbGrantOutcome.ReadOnlyUnsupported => Results.Problem(
+                "Read-only is not available for a phone, camera or other portable device: MTP and PTP have no "
+                + "read-only mode. Grant read/write access (Enabled), or leave the device restricted.",
+                statusCode: StatusCodes.Status400BadRequest),
 
             UsbGrantOutcome.AlreadyGranted => Results.Problem(
                 "This device already has a live grant. Revoke it before issuing another, so that the "

@@ -6,29 +6,32 @@ using Microsoft.Extensions.Logging;
 namespace EndpointAgent.Core.Usb;
 
 /// <summary>
-/// Keeps this machine's USB storage in the state the platform says it should be
-/// in, and tells the server what it actually managed to do.
+/// Keeps this machine's USB storage and portable devices in the state the
+/// platform says they should be in, and tells the server what it actually
+/// managed to do.
 /// </summary>
 /// <remarks>
 /// <para>
-/// One rule governs everything here: <b>a storage device with no live grant is
-/// restricted.</b> Not "restricted once the server says so" — restricted by
+/// One rule governs everything here: <b>a restrictable device with no live grant
+/// is restricted.</b> Not "restricted once the server says so" — restricted by
 /// default, including on a machine that has never enrolled, cannot reach the
-/// network, or has just booted with a stick already in the port. Access is the
-/// exception that requires a positive, unexpired, administrator-issued grant for
-/// that exact device instance ID.
+/// network, or has just booted with a stick or a phone already in the port.
+/// Access is the exception that requires a positive, unexpired,
+/// administrator-issued grant for that exact device instance ID.
 /// </para>
 /// <para>
 /// Every failure path therefore lands on Restricted. An unreadable grant store,
 /// an unreachable server, an expired cache, a task that never arrived, a
 /// malformed payload: all of them mean "no live grant", which means restricted.
-/// The only way to widen access is for <see cref="ApplyPolicy"/> to receive a
-/// grant that is genuinely still in date.
+/// The only way to widen access is for <see cref="ApplyPolicyAsync"/> to receive
+/// a grant that is genuinely still in date.
 /// </para>
 /// <para>
-/// Non-storage devices are inventoried and never touched. Disabling a USB
-/// keyboard or mouse would lock the user out of their own machine, and no
-/// security benefit would justify it.
+/// Restrictable means <see cref="UsbClass.Storage"/> or
+/// <see cref="UsbClass.PortableDevice"/> — a phone in file-transfer mode is a
+/// writable disk in everything but name. Every other class is inventoried and
+/// never touched. Disabling a USB keyboard or mouse would lock the user out of
+/// their own machine, and no security benefit would justify it.
 /// </para>
 /// </remarks>
 public sealed class UsbPolicyManager(
@@ -39,6 +42,14 @@ public sealed class UsbPolicyManager(
     TimeProvider timeProvider,
     ILogger<UsbPolicyManager> logger)
 {
+    /// <summary>
+    /// Why a read-only grant on a portable device ends in Restricted rather than
+    /// in access. Reported verbatim so the console can show the reason beside
+    /// the device.
+    /// </summary>
+    public const string ReadOnlyUnavailableForPortableDevices =
+        UsbEnforcementMessages.ReadOnlyUnavailableForPortableDevices;
+
     private readonly IUsbDeviceEnumerator _enumerator = enumerator
         ?? throw new ArgumentNullException(nameof(enumerator));
 
@@ -86,7 +97,7 @@ public sealed class UsbPolicyManager(
     /// an in-flight enforcement, which can spend seconds waiting for a disk to
     /// appear.
     /// </remarks>
-    private readonly ConcurrentDictionary<string, UsbEnforcementResult> _lastResult =
+    private readonly ConcurrentDictionary<string, UsbEnforcementRecord> _lastResult =
         new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -94,6 +105,30 @@ public sealed class UsbPolicyManager(
     /// persisted ledger.
     /// </summary>
     private readonly HashSet<string> _touched = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The earliest deadline among live grants, or null when none is live. The
+    /// monitor loop wakes for it, so a grant lapses on time rather than at the
+    /// next scheduled sweep.
+    /// </summary>
+    public DateTimeOffset? NextGrantExpiry
+    {
+        get
+        {
+            var now = _timeProvider.GetUtcNow();
+            DateTimeOffset? next = null;
+
+            foreach (var grant in _grants.Grants)
+            {
+                if (grant.ExpiresAt > now && (next is null || grant.ExpiresAt < next))
+                {
+                    next = grant.ExpiresAt;
+                }
+            }
+
+            return next;
+        }
+    }
 
     /// <summary>
     /// Releases every device this agent has applied state to, leaving the machine
@@ -258,7 +293,7 @@ public sealed class UsbPolicyManager(
     }
 
     /// <summary>
-    /// Brings every attached storage device into line with the cached policy.
+    /// Brings every attached restrictable device into line with the cached policy.
     /// </summary>
     /// <remarks>
     /// Safe and cheap to call as often as needed — on device arrival, on a timer,
@@ -281,8 +316,14 @@ public sealed class UsbPolicyManager(
 
     /// <summary>
     /// Builds the report for the server: every attached device, plus what this
-    /// agent is actually enforcing on each.
+    /// agent has actually done about each.
     /// </summary>
+    /// <remarks>
+    /// Reports the state last <em>applied</em>, with how far the enforcer got in
+    /// verifying it — never the state the policy asks for. A restrictable device
+    /// that has not been through a reconcile yet reports no state at all, so the
+    /// console shows it as not yet confirmed rather than as protected.
+    /// </remarks>
     public UsbReport BuildReport()
     {
         var now = _timeProvider.GetUtcNow();
@@ -292,20 +333,13 @@ public sealed class UsbPolicyManager(
         {
             string? enforced = null;
             string? error = null;
+            string? status = null;
 
-            if (device.Class == UsbClass.Storage)
+            if (device.Class.IsRestrictable() && _lastResult.TryGetValue(device.InstanceId, out var record))
             {
-                // Report the state we last succeeded in applying, not the state we
-                // asked for. If enforcement failed, the server hears about the
-                // failure and the console shows the device as unenforced.
-                if (_lastResult.TryGetValue(device.InstanceId, out var result) && !result.Succeeded)
-                {
-                    error = result.Error;
-                }
-                else
-                {
-                    enforced = Desired(device.InstanceId, now).ToString();
-                }
+                enforced = record.Applied?.ToString();
+                error = record.Error;
+                status = record.Status.ToString();
             }
 
             return new UsbDeviceReport(
@@ -319,7 +353,8 @@ public sealed class UsbPolicyManager(
                 device.HardwareIds,
                 IsConnected: true,
                 enforced,
-                error);
+                error,
+                status);
         }).ToList();
 
         return new UsbReport(entries, now);
@@ -341,7 +376,7 @@ public sealed class UsbPolicyManager(
             // Fail closed and say so. An unreadable cache is not a reason to let
             // everything through; it is a reason to restrict everything.
             _logger.LogError(
-                ex, "Could not load the cached USB policy. Treating every storage device as restricted.");
+                ex, "Could not load the cached USB policy. Treating every storage and portable device as restricted.");
             _grants = UsbGrantSet.Empty;
         }
 
@@ -368,17 +403,24 @@ public sealed class UsbPolicyManager(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (device.Class != UsbClass.Storage)
+            if (!device.Class.IsRestrictable())
             {
                 continue;
             }
 
             var desired = Desired(device.InstanceId, now);
 
+            // A read-only grant on a device that cannot be read-only is not
+            // widened to read/write and not honoured as read-only: it is treated
+            // as no grant. The device stays restricted and the gap is reported,
+            // so the administrator sees why their decision is not in force.
+            var readOnlyUnavailable = desired == UsbEnforcedState.ReadOnly && !device.Class.SupportsReadOnly();
+            var target = readOnlyUnavailable ? UsbEnforcedState.Restricted : desired;
+
             UsbEnforcementResult result;
             try
             {
-                result = desired switch
+                result = target switch
                 {
                     UsbEnforcedState.Enabled => _enforcer.AllowReadWrite(device.InstanceId),
                     UsbEnforcedState.ReadOnly => _enforcer.AllowReadOnly(device.InstanceId),
@@ -393,8 +435,6 @@ public sealed class UsbPolicyManager(
                 result = UsbEnforcementResult.Failed(ex.Message);
             }
 
-            _lastResult[device.InstanceId] = result;
-
             // Recorded on the attempt, not on success. A Restrict that reports
             // failure may still have partially applied — and a device wrongly on
             // the release list costs one redundant re-enable, while a device
@@ -403,14 +443,29 @@ public sealed class UsbPolicyManager(
 
             if (!result.Succeeded)
             {
+                _lastResult[device.InstanceId] = new UsbEnforcementRecord(null, result.Error, result.Status);
                 failed++;
                 _logger.LogError(
-                    "Could not apply {Desired} to USB device {InstanceId}: {Error}",
-                    desired, device.InstanceId, result.Error);
+                    "Could not apply {Target} to USB device {InstanceId} ({Status}): {Error}",
+                    target, device.InstanceId, result.Status, result.Error);
                 continue;
             }
 
-            switch (desired)
+            if (readOnlyUnavailable)
+            {
+                _lastResult[device.InstanceId] = new UsbEnforcementRecord(
+                    UsbEnforcedState.Restricted, ReadOnlyUnavailableForPortableDevices, UsbEnforcementStatus.Failed);
+                failed++;
+                _logger.LogWarning(
+                    "A read-only grant names {InstanceId}, which is a {Class} and cannot be read-only; it stays "
+                    + "restricted.",
+                    device.InstanceId, device.Class);
+                continue;
+            }
+
+            _lastResult[device.InstanceId] = new UsbEnforcementRecord(target, result.Error, result.Status);
+
+            switch (target)
             {
                 case UsbEnforcedState.ReadOnly:
                     readOnly++;
@@ -492,6 +547,13 @@ public sealed class UsbPolicyManager(
             return [];
         }
     }
+
+    /// <summary>What one reconcile left a device in, as reported to the server.</summary>
+    /// <param name="Applied">
+    /// The state in force on the device, or null when the attempt failed and the
+    /// state is therefore unknown.
+    /// </param>
+    private sealed record UsbEnforcementRecord(UsbEnforcedState? Applied, string? Error, UsbEnforcementStatus Status);
 }
 
 /// <param name="Failed">Devices whose desired state could not be applied. Never hidden from the server.</param>
