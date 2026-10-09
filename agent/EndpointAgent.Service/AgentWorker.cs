@@ -94,9 +94,13 @@ public sealed class AgentWorker(
     /// stop, a restart, a reboot, an upgrade, or an uninstall. It cannot run if
     /// the process is killed outright, bugchecks, or loses power — Windows offers
     /// no way to make a SetupAPI disable revert when a user-mode process dies. In
-    /// that case devices stay restricted until the service next starts, which
-    /// releases them and then reapplies the current policy. The uninstaller reads
-    /// the same release list as a backstop.
+    /// that case devices stay restricted, and stay on the release list, until the
+    /// next orderly stop releases them; a start in between reapplies the current
+    /// policy to them. The installer runs no release of its own: an uninstall or an
+    /// upgrade releases devices only because it stops this service, so removing the
+    /// product while the service is not running leaves them disabled, with the
+    /// release list kept in the state directory. The manual way back is in
+    /// docs/runbooks/usb-portable-devices-rollout.md.
     /// </para>
     /// <para>
     /// A fresh token, because the shutdown token is already cancelled by the time

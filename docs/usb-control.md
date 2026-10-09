@@ -447,7 +447,15 @@ from local state alone; a grant that expired during downtime is *not* restored;
 a device that fails to release is kept for the next attempt rather than
 re-restricted; uninstall releases a device even when it is no longer plugged in;
 and release touches only devices this agent applied state to, leaving alone any
-that an administrator disabled by hand.
+that an administrator disabled by hand. "Uninstall" there is the service stop the
+installer performs: the installer runs no release of its own, so a product removed
+while its service is not running leaves restricted devices disabled. The release
+list stays in the state directory, and the manual way back is in
+[runbooks/usb-portable-devices-rollout.md](runbooks/usb-portable-devices-rollout.md).
+`UsbRecoveryTests` adds the portable-device paths: a crash followed by an unplug, a
+disable Windows deferred to a restart, a release Windows refused, no server at all,
+and a release list naming a device the running version no longer restricts — which
+is what a downgrade looks like from inside.
 
 Enforcement itself changes real hardware state and is verified on a designated
 test endpoint, never on a developer machine or a CI runner. The manual
@@ -514,6 +522,54 @@ server on a build that includes `PortableDevice`:
     not Enforced.
 12. **Charging** — note whether the phone reports charging while restricted,
     and at what rate if it shows one. This is observation, not a claim.
+
+### Running it
+
+`scripts/Invoke-UsbPortableAcceptance.ps1` drives steps 1–12 above on the test
+endpoint and step 9 as a second invocation after the reboot. It observes the
+phone through the same Windows facilities the agent enforces with — the device
+node's status (`CM_Get_DevNode_Status`), the portable-device and disk
+interfaces beneath it (`CM_Get_Device_Interface_List`), Explorer's *This PC* —
+plus the agent's ledger and log, and, given console credentials, the console's
+own row through the Admin API. Every sample is timestamped into an evidence
+folder with a `report.md`. It reports **PASS only for behaviour it observed**;
+a scenario it did not see is NOT RUN and the result INCOMPLETE, and anything
+the operator typed is labelled operator-reported. It never enables or disables
+a device itself: the agent under test does that. The only state changes are
+the read/write grant and its revoke, one stop and start of the agent service,
+and an opt-in write probe, each announced as a mutating step.
+
+```powershell
+# elevated PowerShell on the test endpoint, from the repository root
+.\scripts\Invoke-UsbPortableAcceptance.ps1 -ExpectedHostname <TEST-PC> -IAmOnTheDesignatedTestEndpoint `
+    -ServerBaseUrl https://<server> -AdminEmail <console account> -GrantViaApi
+# ... reboot with the phone attached, sign in, then:
+.\scripts\Invoke-UsbPortableAcceptance.ps1 -ExpectedHostname <TEST-PC> -IAmOnTheDesignatedTestEndpoint -Phase AfterReboot
+```
+
+`-SelfTest` exercises only the read-only helpers on any machine and makes no
+acceptance claim.
+
+**What it needs.** A test endpoint that is not a production PC — and, if the
+server is a staging stack rather than production, one that has never been
+enrolled in production ([runbooks/agent-pilot-safety.md](runbooks/agent-pilot-safety.md)).
+A server build that includes migration `20261009153245_UsbPortableDevices`;
+the compose migration job applies it before either API starts. An agent MSI of
+1.16.0 or newer built for **that server's URL** — through the release workflow
+or `agent/EndpointAgent.Installer/build-msi.ps1 -ServerBaseUrl https://<server>` —
+never a localhost build, which the runner refuses. If the server runs a local CA
+rather than a publicly trusted certificate, `scripts/Install-AgentCaRoot.ps1`
+first, or the agent never enrols. A data-capable cable and an unlocked phone.
+
+**If a phone stays disabled.** Grant read/write in the console: the agent
+enables it within seconds. Or stop the agent service: on stop it releases every
+device it restricted. With the agent gone, `pnputil /enable-device "<instance id>"`
+as an administrator, the ids being listed in
+`C:\ProgramData\EndpointPlatformAgent\usb-restricted-devices.json`, or Device
+Manager → the device → *Enable device*.
+
+**Recording the result here.** Quote `report.md` with the phone's serial — part
+of its instance id — redacted; the evidence folder is not for the repository.
 
 ## Acceptance — Milestone 11a, closed 2026-08-27
 
