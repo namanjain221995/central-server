@@ -274,6 +274,7 @@ public sealed class Program
             app.MapTaskEndpoints();
             app.MapAgentReleaseEndpoints();
             app.MapUsbEndpoints();
+            app.MapAuditEndpoints();
 
             app.MapGet("/", () => new ServiceInfoResponse(
                     Service: "admin-api",

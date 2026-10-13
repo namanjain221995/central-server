@@ -20,6 +20,7 @@ import { PlaceholderPage } from './pages/PlaceholderPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { TasksPage } from './pages/TasksPage'
 import { AgentReleasesPage } from './pages/AgentReleasesPage'
+import { AuditLogPage } from './pages/AuditLogPage'
 
 export default function App() {
   return (
@@ -95,10 +96,7 @@ function AuthGate() {
           <Route path="security" element={<SecurityPage />} />
           <Route path="usb-access" element={<UsbAccessPage />} />
           <Route path="tasks" element={<TasksPage />} />
-          <Route
-            path="audit"
-            element={<PlaceholderPage title="Audit Logs" phase="Phase 3 (authentication, RBAC and audit)" />}
-          />
+          <Route path="audit" element={<AuditLogPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route
             path="*"

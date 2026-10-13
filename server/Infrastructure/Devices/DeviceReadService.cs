@@ -33,10 +33,15 @@ public sealed class DeviceReadService(
         int pageSize,
         string? search,
         Domain.Devices.DeviceStatus? status = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool? online = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 200);
+
+        var now = _timeProvider.GetUtcNow();
+        var staleAfter = TimeSpan.FromSeconds(_options.OfflineAfterSeconds);
+        var onlineThreshold = now - staleAfter;
 
         var query = _dbContext.Devices
             .AsNoTracking()
@@ -48,6 +53,23 @@ public sealed class DeviceReadService(
         if (status is { } wanted)
         {
             query = query.Where(d => d.Status == wanted);
+        }
+
+        // Online and offline exactly as CountsAsync counts them, so the dashboard's
+        // "Online 2" tile opens a list of two. Both describe Active devices only: a
+        // retired machine is neither.
+        if (online is true)
+        {
+            query = query.Where(d =>
+                d.Status == Domain.Devices.DeviceStatus.Active
+                && d.LastSeenAt != null
+                && d.LastSeenAt >= onlineThreshold);
+        }
+        else if (online is false)
+        {
+            query = query.Where(d =>
+                d.Status == Domain.Devices.DeviceStatus.Active
+                && (d.LastSeenAt == null || d.LastSeenAt < onlineThreshold));
         }
 
         if (!string.IsNullOrWhiteSpace(search))
@@ -66,10 +88,6 @@ public sealed class DeviceReadService(
         }
 
         var totalCount = await query.CountAsync(cancellationToken);
-
-        var now = _timeProvider.GetUtcNow();
-        var staleAfter = TimeSpan.FromSeconds(_options.OfflineAfterSeconds);
-        var onlineThreshold = now - staleAfter;
 
         // One lookup serves every row. Every enrolled device is windows/x64 by
         // construction (the MSI refuses anything else), so the latest published

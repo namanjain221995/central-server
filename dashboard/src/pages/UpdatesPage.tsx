@@ -1,11 +1,38 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { getUpdateOverview, type UpdateOverview } from '../api/client'
+import { Link, useSearchParams } from 'react-router-dom'
+import { getUpdateOverview, type DeviceUpdateSummaryRow, type UpdateOverview } from '../api/client'
 import { Icon } from '../components/Icon'
+
+/** The summary's counts as filters (?show=), so each tile opens the devices it counts. */
+type UpdateFilter = '' | 'reboot' | 'failed'
+
+const UPDATE_FILTERS: { value: UpdateFilter; label: string }[] = [
+  { value: '', label: 'All devices' },
+  { value: 'reboot', label: 'Reboot pending' },
+  { value: 'failed', label: 'With failed updates' },
+]
+
+function updateFilterFrom(value: string | null): UpdateFilter {
+  return UPDATE_FILTERS.find((f) => f.value !== '' && f.value === value)?.value ?? ''
+}
+
+function matchesUpdateFilter(device: DeviceUpdateSummaryRow, filter: UpdateFilter): boolean {
+  switch (filter) {
+    case 'reboot':
+      return device.rebootRequired
+    case 'failed':
+      return device.failedUpdateCount > 0
+    default:
+      return true
+  }
+}
 
 export function UpdatesPage() {
   const [data, setData] = useState<UpdateOverview | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const filter = updateFilterFrom(searchParams.get('show'))
+  const showOnly = (next: UpdateFilter) => setSearchParams(next ? { show: next } : {}, { replace: true })
 
   useEffect(() => {
     getUpdateOverview()
@@ -23,7 +50,8 @@ export function UpdatesPage() {
   }
   if (!data) return <div className="loading">Loading update status…</div>
 
-  const { summary, devices } = data
+  const { summary } = data
+  const devices = data.devices.filter((d) => matchesUpdateFilter(d, filter))
 
   return (
     <>
@@ -36,27 +64,59 @@ export function UpdatesPage() {
       </div>
 
       <div className="stat-grid">
-        <div className="card stat-card">
+        <Link to="/updates" className="card stat-card" replace>
           <div className="stat-label">Devices reporting</div>
           <div className="stat-value">{summary.devicesReporting}</div>
-        </div>
-        <div className={`card stat-card${summary.rebootPending > 0 ? ' tone-warn' : ''}`}>
+        </Link>
+        <Link
+          to="/updates?show=reboot"
+          className={`card stat-card${summary.rebootPending > 0 ? ' tone-warn' : ''}`}
+          replace
+        >
           <div className="stat-label">Reboot pending</div>
           <div className="stat-value">{summary.rebootPending}</div>
-        </div>
-        <div className={`card stat-card${summary.withFailedUpdates > 0 ? ' tone-crit' : ''}`}>
+        </Link>
+        <Link
+          to="/updates?show=failed"
+          className={`card stat-card${summary.withFailedUpdates > 0 ? ' tone-crit' : ''}`}
+          replace
+        >
           <div className="stat-label">With failed updates</div>
           <div className="stat-value">{summary.withFailedUpdates}</div>
-        </div>
+        </Link>
       </div>
 
       <div className="card">
-        <h2>Per-device status</h2>
-        {devices.length === 0 && (
+        <div className="section-head">
+          <h2>Per-device status</h2>
+          <select
+            aria-label="Filter devices by update state"
+            style={{ width: 'auto', minWidth: 170 }}
+            value={filter}
+            onChange={(e) => showOnly(e.target.value as UpdateFilter)}
+          >
+            {UPDATE_FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {data.devices.length === 0 && (
           <div className="empty-state">
             <Icon name="updates" size={40} strokeWidth={1.25} className="icon" />
             <div className="title">No update data yet</div>
             <div>Devices report Windows Update history on their next inventory cycle.</div>
+          </div>
+        )}
+        {data.devices.length > 0 && devices.length === 0 && (
+          <div className="empty-state">
+            <div className="title">No devices match this filter</div>
+            <div>
+              <button type="button" className="link-button" onClick={() => showOnly('')}>
+                Show all devices
+              </button>
+            </div>
           </div>
         )}
         {devices.length > 0 && (

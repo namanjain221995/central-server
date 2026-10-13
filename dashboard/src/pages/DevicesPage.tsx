@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   deviceName,
   getAgentReleases,
@@ -11,9 +11,12 @@ import {
 } from '../api/client'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import {
-  defaultDeviceListView,
+  connectivityFilters,
+  connectivityFromParam,
   deviceListViews,
   statusFilterFor,
+  viewFromParam,
+  type ConnectivityFilter,
   type DeviceListView,
 } from './deviceListView'
 import { Icon } from '../components/Icon'
@@ -49,8 +52,13 @@ export function DevicesPage() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   // Active is the working view; removed devices keep their history under
-  // Retired instead of padding the day-to-day estate list.
-  const [view, setView] = useState<DeviceListView>(defaultDeviceListView)
+  // Retired instead of padding the day-to-day estate list. A dashboard tile
+  // opens the page with its own filter (?view=, ?connectivity=).
+  const [searchParams] = useSearchParams()
+  const [view, setView] = useState<DeviceListView>(() => viewFromParam(searchParams.get('view')))
+  const [connectivity, setConnectivity] = useState<ConnectivityFilter>(() =>
+    connectivityFromParam(searchParams.get('connectivity')),
+  )
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -70,14 +78,14 @@ export function DevicesPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setData(await getDevices(page, PAGE_SIZE, search, statusFilterFor(view)))
+      setData(await getDevices(page, PAGE_SIZE, search, statusFilterFor(view), connectivity || undefined))
       setError(null)
     } catch {
       setError('Could not load devices from the Admin API.')
     } finally {
       setLoading(false)
     }
-  }, [page, search, view])
+  }, [page, search, view, connectivity])
 
   useEffect(() => {
     void load()
@@ -101,7 +109,7 @@ export function DevicesPage() {
     setSelected([])
     setOutcome(null)
     setRefusals([])
-  }, [page, search, view])
+  }, [page, search, view, connectivity])
 
   const targets = useMemo(() => publishedReleases(releases), [releases])
   const target = targets.find((r) => r.id === targetReleaseId) ?? targets[0] ?? null
@@ -198,6 +206,21 @@ export function DevicesPage() {
             {deviceListViews.map((v) => (
               <option key={v} value={v}>
                 {v}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter devices by online or offline"
+            style={{ width: 'auto', minWidth: 150 }}
+            value={connectivity}
+            onChange={(e) => {
+              setPage(1)
+              setConnectivity(e.target.value as ConnectivityFilter)
+            }}
+          >
+            {connectivityFilters.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
               </option>
             ))}
           </select>

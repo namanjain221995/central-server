@@ -4,6 +4,8 @@ import {
   deviceListViews,
   describeDeviceCount,
   statusFilterFor,
+  connectivityFromParam,
+  viewFromParam,
   type DeviceListView,
 } from '../../pages/deviceListView'
 
@@ -72,5 +74,24 @@ describe('type safety', () => {
   it('accepts only the three views', () => {
     const views: DeviceListView[] = ['Active', 'Retired', 'All']
     expect(views.every((v) => deviceListViews.includes(v))).toBe(true)
+  })
+})
+
+describe('filters from a link', () => {
+  it('opens the view a dashboard tile asked for, in any case', () => {
+    expect(viewFromParam('Retired')).toBe('Retired')
+    expect(viewFromParam('all')).toBe('All')
+  })
+
+  it('opens the normal list for a missing or mistyped view, never an empty one', () => {
+    expect(viewFromParam(null)).toBe(defaultDeviceListView)
+    expect(viewFromParam('Deleted')).toBe(defaultDeviceListView)
+  })
+
+  it('reads online and offline, and nothing else', () => {
+    expect(connectivityFromParam('online')).toBe('online')
+    expect(connectivityFromParam('OFFLINE')).toBe('offline')
+    expect(connectivityFromParam('sometimes')).toBe('')
+    expect(connectivityFromParam(null)).toBe('')
   })
 })

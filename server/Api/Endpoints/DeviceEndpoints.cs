@@ -551,9 +551,28 @@ public static class DeviceEndpoints
         CancellationToken cancellationToken,
         int page = 1,
         int pageSize = 50,
-        string? status = null)
+        string? status = null,
+        string? connectivity = null)
     {
         var organizationId = AdminActor.Required(httpContext.User).OrganizationId;
+
+        bool? online = null;
+        if (!string.IsNullOrWhiteSpace(connectivity))
+        {
+            online = connectivity.Trim().ToLowerInvariant() switch
+            {
+                "online" => true,
+                "offline" => false,
+                _ => null,
+            };
+
+            if (online is null)
+            {
+                return Results.Problem(
+                    title: $"Unknown connectivity '{connectivity}'; expected 'online' or 'offline'.",
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+        }
 
         Domain.Devices.DeviceStatus? statusFilter = null;
         if (!string.IsNullOrWhiteSpace(status))
@@ -576,7 +595,8 @@ public static class DeviceEndpoints
             pageSize,
             search,
             statusFilter,
-            cancellationToken);
+            cancellationToken,
+            online);
 
         return Results.Ok(result);
     }

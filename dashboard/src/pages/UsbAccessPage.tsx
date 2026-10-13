@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   getUsbAccessRequests,
   revokeUsbAccess,
@@ -8,6 +8,7 @@ import {
 import { useAuth } from '../auth/AuthContext'
 import { Icon } from '../components/Icon'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { ConnectedUsbPanel, type ConnectedUsbFilter } from './ConnectedUsbPanel'
 
 const STATUS_BADGE: Record<UsbAccessRequestRow['status'], string> = {
   Approved: 'warn',
@@ -40,6 +41,11 @@ function remaining(iso: string | null): string {
 export function UsbAccessPage() {
   const { hasPermission } = useAuth()
   const canManage = hasPermission('usb.manage')
+
+  // The dashboard's USB tiles open this page at ?show=connected or ?show=phones.
+  const [searchParams] = useSearchParams()
+  const show = searchParams.get('show')
+  const connectedFilter: ConnectedUsbFilter = show === 'phones' ? 'phones' : show === 'storage' ? 'storage' : 'all'
 
   const [liveOnly, setLiveOnly] = useState(true)
   const [rows, setRows] = useState<UsbAccessRequestRow[] | null>(null)
@@ -76,9 +82,9 @@ export function UsbAccessPage() {
     <>
       <div className="page-header">
         <div className="lede">
-          Every grant of temporary read-only access to USB storage, across the fleet. Access is
-          always read-only and always time-boxed; a device with no live grant here is restricted
-          on its endpoint.
+          USB storage and phones plugged in across the fleet, and every grant of temporary access
+          to them. Access is always time-boxed; a device with no live grant is restricted on its
+          endpoint.
         </div>
         <button type="button" onClick={() => void load()}>
           <Icon name="refresh" size={14} />
@@ -86,6 +92,9 @@ export function UsbAccessPage() {
         </button>
       </div>
 
+      <ConnectedUsbPanel key={connectedFilter} initialFilter={connectedFilter} />
+
+      <h2 style={{ margin: '8px 0 10px' }}>Access grants</h2>
       <div className="toolbar">
         <label htmlFor="usb-access-filter">Show</label>
         <select

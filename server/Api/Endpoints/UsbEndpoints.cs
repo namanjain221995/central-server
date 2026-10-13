@@ -33,6 +33,10 @@ public static class UsbEndpoints
             .WithName("ListDeviceUsbDevices")
             .RequirePermission(Permissions.Usb.View);
 
+        endpoints.MapGet("/admin/v1/usb-devices/connected", ListConnectedAsync)
+            .WithName("ListConnectedUsbDevices")
+            .RequirePermission(Permissions.Usb.View);
+
         endpoints.MapGet("/admin/v1/usb-access-requests", ListRequestsAsync)
             .WithName("ListUsbAccessRequests")
             .RequirePermission(Permissions.Usb.View);
@@ -76,6 +80,15 @@ public static class UsbEndpoints
             actor.OrganizationId, deviceId, cancellationToken);
 
         return Results.Ok(devices);
+    }
+
+    private static async Task<IResult> ListConnectedAsync(
+        HttpContext httpContext,
+        UsbReadService readService,
+        CancellationToken cancellationToken)
+    {
+        var actor = AdminActor.Required(httpContext.User);
+        return Results.Ok(await readService.ListConnectedAsync(actor.OrganizationId, cancellationToken));
     }
 
     private static async Task<IResult> ListRequestsAsync(

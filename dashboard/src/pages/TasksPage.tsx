@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   ApiError,
   cancelDeviceTask,
@@ -29,7 +29,12 @@ const STATUS_FILTERS = ['', 'Queued', 'Delivered', 'Succeeded', 'Failed', 'Expir
 export function TasksPage() {
   const [data, setData] = useState<FleetTaskPage | null>(null)
   const [page, setPage] = useState(1)
-  const [status, setStatus] = useState('')
+  // A dashboard tile opens this page filtered (?status=Failed); anything the
+  // filter does not offer falls back to every status.
+  const [searchParams] = useSearchParams()
+  const [status, setStatus] = useState<string>(
+    () => STATUS_FILTERS.find((s) => s !== '' && s.toLowerCase() === searchParams.get('status')?.toLowerCase()) ?? '',
+  )
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)

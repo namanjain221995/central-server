@@ -1,7 +1,39 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { getSecurityOverview, type SecurityOverview } from '../api/client'
+import { Link, useSearchParams } from 'react-router-dom'
+import { getSecurityOverview, type DeviceSecuritySummary, type SecurityOverview } from '../api/client'
 import { Icon } from '../components/Icon'
+
+/**
+ * The bands the summary counts, as filters (?show=). "attention" is everything
+ * below healthy — needs attention and critical together — which is what the
+ * dashboard's Needs Attention tile adds up.
+ */
+type PostureFilter = '' | 'healthy' | 'attention' | 'critical'
+
+const POSTURE_FILTERS: { value: PostureFilter; label: string }[] = [
+  { value: '', label: 'All devices' },
+  { value: 'attention', label: 'Needs attention (<80%)' },
+  { value: 'critical', label: 'Critical (<50%)' },
+  { value: 'healthy', label: 'Healthy (≥80%)' },
+]
+
+function postureFilterFrom(value: string | null): PostureFilter {
+  return POSTURE_FILTERS.find((f) => f.value !== '' && f.value === value)?.value ?? ''
+}
+
+function matchesPosture(device: DeviceSecuritySummary, filter: PostureFilter): boolean {
+  const score = device.complianceScore
+  switch (filter) {
+    case 'healthy':
+      return score != null && score >= 80
+    case 'attention':
+      return score != null && score < 80
+    case 'critical':
+      return score != null && score < 50
+    default:
+      return true
+  }
+}
 
 function scoreBadge(score: number | null) {
   if (score == null) return <span className="badge neutral">Unknown</span>
@@ -18,6 +50,9 @@ function checkCell(value: boolean | null) {
 export function SecurityPage() {
   const [data, setData] = useState<SecurityOverview | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const filter = postureFilterFrom(searchParams.get('show'))
+  const showOnly = (next: PostureFilter) => setSearchParams(next ? { show: next } : {}, { replace: true })
 
   useEffect(() => {
     getSecurityOverview()
@@ -36,36 +71,65 @@ export function SecurityPage() {
   if (!data) return <div className="loading">Loading security overview…</div>
 
   const s = data.summary
+  const devices = data.devices.filter((d) => matchesPosture(d, filter))
 
   return (
     <>
       <div className="stat-grid">
-        <div className="card stat-card">
+        <Link to="/security" className="card stat-card" replace>
           <div className="stat-label">Devices reporting</div>
           <div className="stat-value">{s.devicesReporting}</div>
-        </div>
-        <div className="card stat-card">
+        </Link>
+        <Link to="/security" className="card stat-card" replace>
           <div className="stat-label">Average score</div>
           <div className={`stat-value${s.averageScore == null ? ' unknown' : ''}`}>
             {s.averageScore == null ? '—' : `${s.averageScore}%`}
           </div>
-        </div>
-        <div className={`card stat-card${s.healthy > 0 ? ' tone-ok' : ''}`}>
+        </Link>
+        <Link to="/security?show=healthy" className={`card stat-card${s.healthy > 0 ? ' tone-ok' : ''}`} replace>
           <div className="stat-label">Healthy (≥80%)</div>
           <div className="stat-value">{s.healthy}</div>
-        </div>
-        <div className={`card stat-card${s.needsAttention > 0 ? ' tone-warn' : ''}`}>
+        </Link>
+        <Link
+          to="/security?show=attention"
+          className={`card stat-card${s.needsAttention > 0 ? ' tone-warn' : ''}`}
+          replace
+        >
           <div className="stat-label">Needs attention</div>
           <div className="stat-value">{s.needsAttention}</div>
-        </div>
-        <div className={`card stat-card${s.critical > 0 ? ' tone-crit' : ''}`}>
+        </Link>
+        <Link to="/security?show=critical" className={`card stat-card${s.critical > 0 ? ' tone-crit' : ''}`} replace>
           <div className="stat-label">Critical (&lt;50%)</div>
           <div className="stat-value">{s.critical}</div>
-        </div>
+        </Link>
       </div>
 
       <div className="card">
-        <h2>Device compliance</h2>
+        <div className="section-head">
+          <h2>Device compliance</h2>
+          <select
+            aria-label="Filter devices by security score"
+            style={{ width: 'auto', minWidth: 190 }}
+            value={filter}
+            onChange={(e) => showOnly(e.target.value as PostureFilter)}
+          >
+            {POSTURE_FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {data.devices.length > 0 && devices.length === 0 && (
+          <div className="empty-state">
+            <div className="title">No devices in this band</div>
+            <div>
+              <button type="button" className="link-button" onClick={() => showOnly('')}>
+                Show all devices
+              </button>
+            </div>
+          </div>
+        )}
         {data.devices.length === 0 && (
           <div className="empty-state">
             <Icon name="security" size={40} strokeWidth={1.25} className="icon" />
@@ -73,7 +137,7 @@ export function SecurityPage() {
             <div>Security posture appears once devices report an inventory that includes it.</div>
           </div>
         )}
-        {data.devices.length > 0 && (
+        {devices.length > 0 && (
           <div className="table-wrap">
             <table className="table">
               <thead>
@@ -89,7 +153,7 @@ export function SecurityPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.devices.map((d) => (
+                {devices.map((d) => (
                   <tr key={d.deviceId}>
                     <td>
                       <Link to={`/devices/${d.deviceId}`}>{d.hostname}</Link>

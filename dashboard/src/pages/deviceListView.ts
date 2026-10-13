@@ -29,6 +29,29 @@ export function statusFilterFor(view: DeviceListView): DeviceStatusFilter {
   return view === 'All' ? undefined : view
 }
 
+/**
+ * The view a link asked for (`/devices?view=Retired`), or the default for
+ * anything missing or unrecognised — a mistyped link opens the normal list,
+ * never an empty one.
+ */
+export function viewFromParam(value: string | null): DeviceListView {
+  return deviceListViews.find((v) => v.toLowerCase() === value?.toLowerCase()) ?? defaultDeviceListView
+}
+
+/** Online or offline, as the dashboard counts them; '' is "either". */
+export type ConnectivityFilter = '' | 'online' | 'offline'
+
+export const connectivityFilters: readonly { value: ConnectivityFilter; label: string }[] = [
+  { value: '', label: 'Online or offline' },
+  { value: 'online', label: 'Online' },
+  { value: 'offline', label: 'Offline' },
+]
+
+export function connectivityFromParam(value: string | null): ConnectivityFilter {
+  const wanted = value?.toLowerCase()
+  return wanted === 'online' || wanted === 'offline' ? wanted : ''
+}
+
 /** Label for the count line under the table, e.g. "3 active devices". */
 export function describeDeviceCount(view: DeviceListView, total: number): string {
   const noun = total === 1 ? 'device' : 'devices'

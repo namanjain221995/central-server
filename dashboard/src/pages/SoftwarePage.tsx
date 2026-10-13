@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { PackagesPanel } from './PackagesPanel'
 import { DeploymentsPanel } from './DeploymentsPanel'
 import {
@@ -37,7 +37,11 @@ const SECTIONS: { key: Section; label: string }[] = [
 ]
 
 export function SoftwarePage() {
-  const [section, setSection] = useState<Section>('installed')
+  // ?section=packages opens a section directly (the dashboard's Active packages tile).
+  const [searchParams] = useSearchParams()
+  const [section, setSection] = useState<Section>(
+    () => SECTIONS.find((s) => s.key === searchParams.get('section'))?.key ?? 'installed',
+  )
   const [focusDeployment, setFocusDeployment] = useState<string | null>(null)
   const [data, setData] = useState<SoftwareTitlePage | null>(null)
   const [publishers, setPublishers] = useState<string[]>([])

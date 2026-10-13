@@ -71,6 +71,23 @@ public sealed record UsbAccessRequestView(
     string? DecisionNote,
     bool IsLive);
 
+/// <summary>A USB storage device or phone currently plugged into an active endpoint.</summary>
+public sealed record ConnectedUsbDeviceView(
+    Guid Id,
+    Guid DeviceId,
+    string DeviceName,
+    DateTimeOffset? DeviceLastSeenAt,
+    string DeviceClass,
+    bool IsStorage,
+    bool IsPortableDevice,
+    string? Manufacturer,
+    string? Product,
+    string? VendorId,
+    string? ProductId,
+    DateTimeOffset LastSeenAt,
+    string Policy,
+    string EnforcementState);
+
 /// <summary>
 /// Read-side projections for the peripheral console. Query-only: nothing here
 /// changes policy, so a view can never be the thing that grants access.
@@ -188,6 +205,52 @@ public sealed class UsbReadService(EndpointPlatformDbContext dbContext, TimeProv
             x.Request.ExpiresAt,
             x.Request.DecisionNote,
             x.Request.IsLive(now)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Every USB device the active endpoints last reported as plugged in, across
+    /// the fleet: what the dashboard's USB and phone tiles count and open.
+    /// </summary>
+    /// <remarks>
+    /// "Connected" is the endpoint's latest report, so a machine that went offline
+    /// with a stick in it still lists the stick; <see cref="ConnectedUsbDeviceView.DeviceLastSeenAt"/>
+    /// lets the page say how old that report is. Retired machines are left out.
+    /// Only peripheral classes are listed — hubs, keyboards and other inventory a
+    /// USB control does not act on are not what "connected devices" means here.
+    /// </remarks>
+    public async Task<IReadOnlyList<ConnectedUsbDeviceView>> ListConnectedAsync(
+        Guid organizationId,
+        CancellationToken cancellationToken = default)
+    {
+        var rows = await (
+                from u in _dbContext.UsbDevices.AsNoTracking()
+                join d in _dbContext.Devices.AsNoTracking() on u.DeviceId equals d.Id
+                where u.OrganizationId == organizationId
+                    && u.IsConnected
+                    && d.Status == Domain.Devices.DeviceStatus.Active
+                select new { Usb = u, d.Hostname, d.DisplayName, d.LastSeenAt })
+            .ToListAsync(cancellationToken);
+
+        return rows
+            .Where(x => x.Usb.IsRestrictable)
+            .OrderBy(x => x.DisplayName ?? x.Hostname, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Usb.DeviceClass)
+            .Select(x => new ConnectedUsbDeviceView(
+                x.Usb.Id,
+                x.Usb.DeviceId,
+                x.DisplayName ?? x.Hostname,
+                x.LastSeenAt,
+                x.Usb.DeviceClass.ToString(),
+                x.Usb.IsStorage,
+                x.Usb.IsPortableDevice,
+                x.Usb.Manufacturer,
+                x.Usb.Product,
+                x.Usb.VendorId,
+                x.Usb.ProductId,
+                x.Usb.LastSeenAt,
+                x.Usb.Policy.ToString(),
+                DescribeEnforcement(x.Usb)))
             .ToList();
     }
 

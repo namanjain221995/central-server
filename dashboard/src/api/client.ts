@@ -154,6 +154,7 @@ export function getDevices(
   pageSize: number,
   search: string,
   status?: 'Active' | 'Retired',
+  connectivity?: DeviceConnectivity,
 ): Promise<DevicePage> {
   const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
   if (search.trim().length > 0) {
@@ -162,7 +163,57 @@ export function getDevices(
   if (status) {
     params.set('status', status)
   }
+  if (connectivity) {
+    params.set('connectivity', connectivity)
+  }
   return request<DevicePage>(`/admin/v1/devices?${params}`)
+}
+
+/** Online or offline as the device counts define them; both mean active devices only. */
+export type DeviceConnectivity = 'online' | 'offline'
+
+/** A USB storage device or phone an active endpoint last reported as plugged in. */
+export interface ConnectedUsbDevice {
+  id: string
+  deviceId: string
+  deviceName: string
+  deviceLastSeenAt: string | null
+  deviceClass: string
+  isStorage: boolean
+  isPortableDevice: boolean
+  manufacturer: string | null
+  product: string | null
+  vendorId: string | null
+  productId: string | null
+  lastSeenAt: string
+  policy: string
+  enforcementState: string
+}
+
+export function getConnectedUsbDevices(): Promise<ConnectedUsbDevice[]> {
+  return request<ConnectedUsbDevice[]>('/admin/v1/usb-devices/connected')
+}
+
+export interface AuditLogEntry {
+  id: string
+  occurredAt: string
+  actorType: string
+  actorDisplay: string
+  action: string
+  result: string
+  deviceId: string | null
+  deviceDisplay: string | null
+  targetType: string | null
+  targetDisplay: string | null
+  failureReason: string | null
+}
+
+/** Newest first. `before` is the `occurredAt` of the last entry already shown. */
+export function getAuditLog(limit = 50, before?: string, deviceId?: string): Promise<AuditLogEntry[]> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (before) params.set('before', before)
+  if (deviceId) params.set('deviceId', deviceId)
+  return request<AuditLogEntry[]>(`/admin/v1/audit-log?${params}`)
 }
 
 export function getDeviceCounts(): Promise<DeviceCounts> {
