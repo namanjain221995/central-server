@@ -53,9 +53,16 @@ namespace EndpointAgent.Windows;
 /// tested: under a test host that property is the test output folder, and a guard
 /// that only works in production is a guard nobody has checked.
 /// </param>
+/// <param name="componentBudget">
+/// How long one collection may spend indexing components; defaults to
+/// <see cref="DefaultComponentBudget"/>. Tests that compare two collections raise
+/// it: on a machine where indexing outlasts the budget, each collection stops at
+/// a different component and resolves a different set of locations.
+/// </param>
 public sealed class WindowsInstallLocationResolver(
     ILogger<WindowsInstallLocationResolver> logger,
-    string? agentDirectory = null)
+    string? agentDirectory = null,
+    TimeSpan? componentBudget = null)
 {
     private readonly ILogger<WindowsInstallLocationResolver> _logger = logger;
     private readonly string _agentDirectory = (agentDirectory ?? AppContext.BaseDirectory).TrimEnd('\\');
@@ -66,7 +73,9 @@ public sealed class WindowsInstallLocationResolver(
     /// an unusual machine; exceeding it means resolution is skipped, not that
     /// inventory fails.
     /// </summary>
-    private static readonly TimeSpan ComponentBudget = TimeSpan.FromSeconds(20);
+    internal static readonly TimeSpan DefaultComponentBudget = TimeSpan.FromSeconds(20);
+
+    private readonly TimeSpan _componentBudget = componentBudget ?? DefaultComponentBudget;
 
     /// <summary>INSTALLSTATE_LOCAL — the component's key file is on this machine.</summary>
     private const int InstallStateLocal = 3;
@@ -270,7 +279,7 @@ public sealed class WindowsInstallLocationResolver(
             var component = new StringBuilder(40);
             for (var i = 0u; ; i++)
             {
-                if (stopwatch.Elapsed > ComponentBudget)
+                if (stopwatch.Elapsed > _componentBudget)
                 {
                     _logger.LogInformation(
                         "Install-location resolution stopped after {Elapsed}; {Count} product(s) indexed.",

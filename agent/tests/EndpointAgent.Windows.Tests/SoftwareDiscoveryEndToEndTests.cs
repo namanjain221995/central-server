@@ -32,7 +32,12 @@ public sealed class SoftwareDiscoveryEndToEndTests
         var processes = new WindowsServiceProcessProvider(NullLogger<WindowsServiceProcessProvider>.Instance);
         var registry = new WindowsSoftwareCollector(
             NullLogger<WindowsSoftwareCollector>.Instance,
-            new WindowsInstallLocationResolver(NullLogger<WindowsInstallLocationResolver>.Instance),
+            // Unbounded in practice: these tests compare one collection with another,
+            // and a budget that runs out at a different component each time (the CI
+            // runner holds far more MSI components than a workstation) would make the
+            // two disagree about locations for a reason that is not the one under test.
+            new WindowsInstallLocationResolver(
+                NullLogger<WindowsInstallLocationResolver>.Instance, componentBudget: TimeSpan.FromMinutes(10)),
             new WindowsUpgradeCodeIndex(NullLogger<WindowsUpgradeCodeIndex>.Instance));
         var packages = new WindowsPackageRegistrationEvidenceSource(NullLogger<WindowsPackageRegistrationEvidenceSource>.Instance);
 
