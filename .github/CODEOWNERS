@@ -1,0 +1,5 @@
+# Every change to this repository needs the owner's approval before it can
+# reach main -- and so before it can be deployed, because the server only ever
+# deploys main. Paired with branch protection on main ("Require review from
+# Code Owners", no bypass). See CLAUDE.md.
+* @parasthind-netizen

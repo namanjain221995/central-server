@@ -44,6 +44,7 @@ keys. Do not re-enable it without asking.
 | **Cloudflare is DNS only — never proxied, never Tunnel** | Cloudflare terminates TLS at their edge. Revealed BitLocker keys, admin session tokens, agent credentials and provisioned passwords all cross in cleartext. `setup-tls-cloudflare.sh` forces `proxied:false` for this reason. |
 | **No secrets and no site-specific identifiers in the repo** | It is a **public** repository. No hostnames, internal IPs, account names or personal e-mail addresses. Removed once already in `d8ced1a`. |
 | **Manual deploy, not deploy-on-push** | See above. |
+| **Nothing reaches `main` without the owner's approval** | Never push to `main` directly. Every change goes through a pull request whose description says what the feature is and what will be deployed; the code owner (`.github/CODEOWNERS`) approves it, then it is merged. The server deploys only `main`, and only after that approval. A new agent version is part of the pull request too, so the owner sees it before it is uploaded. |
 
 ---
 
