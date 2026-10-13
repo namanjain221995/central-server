@@ -107,6 +107,16 @@ mark before each sign-in. Do not weaken the guard itself — it is pinned by
 **Migrations are forward-only.** A rollback restores binaries, not schema. A
 destructive migration needs a dump first and a compensating migration.
 
+**A bad agent release uninstalls the agent; it does not leave the old one.** If
+the new service fails to start, the MSI rolls back and the machine is left with
+no agent at all, out of reach of the dashboard. That happened to every device a
+localhost development build (`*.LOCALHOST-DO-NOT-INSTALL.msi`) reached when it was
+published as 1.16.0. So: never upload a `LOCALHOST` build, check the MSI contains
+the self-contained runtime (`hostpolicy.dll`, `coreclr.dll`) before uploading, and
+queue `UpdateAgent` to **2-3 test devices first**. Push to the rest only after
+those report the new version and stay Active. A version number, once uploaded,
+can never be reused, even after it is revoked; fix forward with the next patch.
+
 ---
 
 ## Running the tests
