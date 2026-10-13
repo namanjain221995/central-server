@@ -178,6 +178,16 @@ not a restore. `backup.sh` does that nightly into one encrypted bundle, and
 sudo ./backup.sh --init && sudo ./backup.sh && sudo ./backup.sh --install-timer
 ```
 
+Docker marks a hung container "unhealthy" and then leaves it hung: the restart
+policy only reacts to a process that exits. `watchdog.sh` restarts an unhealthy
+API or `web` container (never postgres or redis), logging its last lines first.
+Install it once:
+
+```bash
+sudo ./watchdog.sh --install-timer   # checks every minute
+journalctl -t epp-watchdog           # every restart it made, and why
+```
+
 Rotating a database or Redis password means updating `.env` **and** telling the
 server about it; the init script only runs on an empty data volume. The command
 for PostgreSQL is in the header of `postgres/init/10-setup-database.sh`.
