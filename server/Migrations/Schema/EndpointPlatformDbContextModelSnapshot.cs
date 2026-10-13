@@ -3352,6 +3352,180 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("restart_schedule_exclusions", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Software.CatalogApp", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Category")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("category");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreatedByDisplay")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("created_by_display");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("display_name");
+
+                    b.Property<byte[]>("Icon")
+                        .HasColumnType("bytea")
+                        .HasColumnName("icon");
+
+                    b.Property<bool>("IsPublished")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_published");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("organization_id");
+
+                    b.Property<Guid>("PackageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("package_id");
+
+                    b.Property<string>("PublishedByDisplay")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("published_by_display");
+
+                    b.Property<Guid>("PublishedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("published_by_user_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("Visibility")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("visibility");
+
+                    b.HasKey("Id")
+                        .HasName("pk_catalog_apps");
+
+                    b.HasIndex("PackageId")
+                        .HasDatabaseName("ix_catalog_apps_package_id");
+
+                    b.HasIndex("OrganizationId", "PackageId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_catalog_apps_organization_id_package_id");
+
+                    b.ToTable("catalog_apps", "endpoint_platform");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Software.CatalogAppGroup", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CatalogAppId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("catalog_app_id");
+
+                    b.Property<Guid>("DeviceGroupId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_group_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_catalog_app_groups");
+
+                    b.HasIndex("DeviceGroupId")
+                        .HasDatabaseName("ix_catalog_app_groups_device_group_id");
+
+                    b.HasIndex("CatalogAppId", "DeviceGroupId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_catalog_app_groups_app_id_group_id");
+
+                    b.ToTable("catalog_app_groups", "endpoint_platform");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Software.CatalogInstallRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AppName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("app_name");
+
+                    b.Property<Guid>("CatalogAppId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("catalog_app_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("organization_id");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("RequestedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("requested_by");
+
+                    b.Property<Guid?>("TaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("task_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_catalog_install_requests");
+
+                    b.HasIndex("DeviceId")
+                        .HasDatabaseName("ix_catalog_install_requests_device_id");
+
+                    b.HasIndex("OrganizationId", "CreatedAt")
+                        .HasDatabaseName("ix_catalog_install_requests_org_created");
+
+                    b.ToTable("catalog_install_requests", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Software.SoftwareDeployment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4185,6 +4359,43 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_restart_schedule_exclusions_restart_schedules_schedule_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Software.CatalogApp", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Software.SoftwarePackage", null)
+                        .WithMany()
+                        .HasForeignKey("PackageId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_catalog_apps_software_packages_package_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Software.CatalogAppGroup", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Software.CatalogApp", null)
+                        .WithMany()
+                        .HasForeignKey("CatalogAppId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_catalog_app_groups_catalog_apps_catalog_app_id");
+
+                    b.HasOne("EndpointPlatform.Domain.Groups.DeviceGroup", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceGroupId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_catalog_app_groups_device_groups_device_group_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Software.CatalogInstallRequest", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_catalog_install_requests_devices_device_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Software.SoftwareDeploymentTarget", b =>

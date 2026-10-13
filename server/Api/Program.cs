@@ -264,6 +264,7 @@ public sealed class Program
             app.MapSoftwareEndpoints();
             app.MapPackageEndpoints();
             app.MapDeploymentEndpoints();
+            app.MapCatalogEndpoints();
             app.MapSecurityEndpoints();
             app.MapUpdateEndpoints();
             app.MapChromeEndpoints();

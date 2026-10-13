@@ -45,8 +45,20 @@ export type IconName =
   | 'download'
   | 'chrome'
   | 'restart'
+  | 'portal'
 
 const PATHS: Record<IconName, ReactNode> = {
+  // A storefront: scalloped awning over a doorway. The Company Portal is where
+  // employees pick approved software for themselves, and the glyph says
+  // "shop" without borrowing anyone's logo.
+  portal: (
+    <>
+      <path d="M3 10 5 4h14l2 6" />
+      <path d="M3 10a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0" />
+      <path d="M5 13v8h14v-8" />
+      <path d="M10 21v-5h4v5" />
+    </>
+  ),
   // The power symbol: a broken ring with a bar through the gap.
   restart: (
     <>

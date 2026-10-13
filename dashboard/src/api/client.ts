@@ -2753,3 +2753,120 @@ export function resetEscrowAttempts(attemptId: string): Promise<{ status: string
     { method: 'POST' },
   )
 }
+
+// ------------------------------------------------------------ company portal
+
+/** Who may see a catalogue app in the Company Portal. */
+export type CatalogVisibility = 'AllDevices' | 'SelectedGroups'
+
+/**
+ * A package as the Company Portal offers it: an approved MSI with the name,
+ * description and icon an employee sees. `packageWithdrawn` is read off the
+ * package itself, because disabling a package does not touch the catalogue.
+ */
+export interface CatalogAppRow {
+  id: string
+  packageId: string
+  packageName: string
+  packageVersion: string
+  packageWithdrawn: boolean
+  displayName: string
+  description: string | null
+  category: string | null
+  hasIcon: boolean
+  visibility: CatalogVisibility
+  groupIds: string[]
+  isPublished: boolean
+  createdByDisplay: string
+  publishedByDisplay: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CatalogAppInput {
+  packageId: string
+  displayName: string
+  description?: string
+  category?: string
+  visibility: CatalogVisibility
+  groupIds?: string[]
+  /** Create only; an update leaves the published state alone. */
+  publish?: boolean
+}
+
+export function getCatalogApps(): Promise<CatalogAppRow[]> {
+  return request<CatalogAppRow[]>('/admin/v1/catalog/')
+}
+
+export function createCatalogApp(input: CatalogAppInput): Promise<{ id: string }> {
+  return request<{ id: string }>('/admin/v1/catalog/', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function updateCatalogApp(id: string, input: CatalogAppInput): Promise<void> {
+  return request<void>(`/admin/v1/catalog/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}
+
+export function deleteCatalogApp(id: string): Promise<void> {
+  return request<void>(`/admin/v1/catalog/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export function publishCatalogApp(id: string): Promise<void> {
+  return request<void>(`/admin/v1/catalog/${encodeURIComponent(id)}/publish`, { method: 'POST' })
+}
+
+export function unpublishCatalogApp(id: string): Promise<void> {
+  return request<void>(`/admin/v1/catalog/${encodeURIComponent(id)}/unpublish`, { method: 'POST' })
+}
+
+/**
+ * Replaces the app's icon. PNG only, 64 KB at most; the server answers 400 with
+ * the reason otherwise. Multipart through request(): the helper leaves a
+ * FormData body's content type to the browser, which has to set the boundary.
+ */
+export function setCatalogAppIcon(id: string, file: File): Promise<void> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  return request<void>(`/admin/v1/catalog/${encodeURIComponent(id)}/icon`, {
+    method: 'PUT',
+    body: form,
+  })
+}
+
+export function clearCatalogAppIcon(id: string): Promise<void> {
+  return request<void>(`/admin/v1/catalog/${encodeURIComponent(id)}/icon`, { method: 'DELETE' })
+}
+
+/** What the server did with one employee's install request from the Company Portal. */
+export type InstallRequestOutcome = 'Queued' | 'AlreadyInstalled' | 'AlreadyInProgress' | 'Refused'
+
+export interface InstallRequestRow {
+  id: string
+  deviceId: string
+  hostname: string
+  catalogAppId: string
+  appName: string
+  requestedBy: string | null
+  outcome: InstallRequestOutcome
+  taskId: string | null
+  /** The queued install task's own status (Queued, Delivered, Succeeded, Failed, Expired, Cancelled), or null. */
+  taskStatus: string | null
+  requestedAt: string
+}
+
+export interface InstallRequestPage {
+  items: InstallRequestRow[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export function getCatalogInstalls(page: number, pageSize: number): Promise<InstallRequestPage> {
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+  return request<InstallRequestPage>(`/admin/v1/catalog/installs?${params}`)
+}

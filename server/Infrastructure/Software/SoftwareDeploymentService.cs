@@ -117,7 +117,7 @@ public sealed class SoftwareDeploymentService(
             organizationId, package.Id, package.Name, package.Version, targetType, actorId, actorDisplay);
         _dbContext.SoftwareDeployments.Add(deployment);
 
-        var (queued, skipped) = await WriteTargetsAsync(
+        var (queued, skipped, _) = await WriteTargetsAsync(
             deployment, package, decisions, attempt: 1, actorId, actorDisplay, cancellationToken);
 
         var summary = JsonSerializer.Serialize(new
@@ -137,6 +137,70 @@ public sealed class SoftwareDeploymentService(
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return new DeploymentResult(deployment.Id, decisions.Count, queued, skipped);
+    }
+
+    /// <summary>
+    /// Queues an install that a user asked for through the Company Portal.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The same decision and the same queueing as an administrator's deployment,
+    /// for one device, so a self-service install can never do something a
+    /// deployment could not: eligibility, the retired rule, the minimum agent
+    /// version and the package's hash and signer pins all apply unchanged.
+    /// </para>
+    /// <para>
+    /// Attributed to <paramref name="approverId"/>, the administrator who
+    /// published the app in the catalog. Publishing is the approval the install
+    /// rests on, and every task row and audit entry needs a platform user to
+    /// answer "who authorised this". The requesting user is carried in the
+    /// display text and in the catalog's own request record, never as the actor:
+    /// a name the portal reports is not an authenticated identity.
+    /// </para>
+    /// <para>
+    /// The task service saves the task as it queues it, so by the time this
+    /// returns the install is committed unless the caller holds a transaction.
+    /// <see cref="SelfServiceCatalogService"/> does, around this call and its
+    /// own request record: a queued install with no record of who asked for it
+    /// is exactly what the record exists to prevent.
+    /// </para>
+    /// </remarks>
+    public async Task<SelfServiceInstallResult?> CreateSelfServiceAsync(
+        Guid organizationId,
+        SoftwarePackage package,
+        Guid deviceId,
+        Guid approverId,
+        string actorDisplay,
+        CancellationToken cancellationToken = default)
+    {
+        var decisions = await DecideAsync(
+            organizationId, package, [deviceId], [], scopedDeviceIds: null, cancellationToken);
+
+        if (decisions.Count == 0)
+        {
+            return null;
+        }
+
+        var decision = decisions[0];
+        if (!decision.Eligibility.NeedsInstall())
+        {
+            return new SelfServiceInstallResult(decision.Eligibility, null, null);
+        }
+
+        var deployment = new SoftwareDeployment(
+            organizationId, package.Id, package.Name, package.Version,
+            DeploymentTargetType.Devices, approverId, actorDisplay);
+        _dbContext.SoftwareDeployments.Add(deployment);
+
+        var (_, _, targets) = await WriteTargetsAsync(
+            deployment, package, decisions, attempt: 1, approverId, actorDisplay, cancellationToken);
+
+        var target = targets[0];
+        var eligibility = target.State == DeploymentTargetState.Queued
+            ? decision.Eligibility
+            : target.Reason;
+
+        return new SelfServiceInstallResult(eligibility, deployment.Id, target.TaskId);
     }
 
     /// <summary>
@@ -229,7 +293,7 @@ public sealed class SoftwareDeploymentService(
         var decisions = await DecideAsync(
             organizationId, package, retryable, [], scopedDeviceIds, cancellationToken);
 
-        var (queued, skipped) = await WriteTargetsAsync(
+        var (queued, skipped, _) = await WriteTargetsAsync(
             deployment, package, decisions, nextAttempt, actorId, actorDisplay, cancellationToken);
 
         _auditWriter.Stage(organizationId, AuditActorType.PlatformUser, actorId, actorDisplay,
@@ -321,7 +385,7 @@ public sealed class SoftwareDeploymentService(
     /// -- the rule about what gets a task, and what gets recorded as skipped, is
     /// written once.
     /// </remarks>
-    private async Task<(int Queued, int Skipped)> WriteTargetsAsync(
+    private async Task<(int Queued, int Skipped, IReadOnlyList<SoftwareDeploymentTarget> Targets)> WriteTargetsAsync(
         SoftwareDeployment deployment,
         SoftwarePackage package,
         IReadOnlyList<DeploymentDecision> decisions,
@@ -336,6 +400,7 @@ public sealed class SoftwareDeploymentService(
 
         var queued = 0;
         var skipped = 0;
+        var written = new List<SoftwareDeploymentTarget>(decisions.Count);
 
         foreach (var decision in decisions)
         {
@@ -364,8 +429,10 @@ public sealed class SoftwareDeploymentService(
                 ? SoftwareEligibility.Retired
                 : decision.Eligibility;
 
-            _dbContext.SoftwareDeploymentTargets.Add(new SoftwareDeploymentTarget(
-                deployment.Id, decision.DeviceId, state, reason, taskId, decision.ObservedVersion, attempt));
+            var target = new SoftwareDeploymentTarget(
+                deployment.Id, decision.DeviceId, state, reason, taskId, decision.ObservedVersion, attempt);
+            _dbContext.SoftwareDeploymentTargets.Add(target);
+            written.Add(target);
 
             if (state == DeploymentTargetState.Queued)
             {
@@ -377,7 +444,7 @@ public sealed class SoftwareDeploymentService(
             }
         }
 
-        return (queued, skipped);
+        return (queued, skipped, written);
     }
 
     /// <summary>
@@ -458,19 +525,9 @@ public sealed class SoftwareDeploymentService(
         // query, not one per device. This is what makes a double-clicked Deploy,
         // a browser retry or a client retry after a timeout safe: the second
         // request resolves the same devices and finds the work already queued.
-        var inFlight = await (
-            from target in _dbContext.SoftwareDeploymentTargets.AsNoTracking()
-            join deployment in _dbContext.SoftwareDeployments.AsNoTracking()
-                on target.DeploymentId equals deployment.Id
-            join task in _dbContext.DeviceTasks.AsNoTracking() on target.TaskId equals task.Id
-            where deployment.PackageId == package.Id
-                && deviceIdSet.Contains(target.DeviceId)
-                && (task.Status == DeviceTaskStatus.Queued || task.Status == DeviceTaskStatus.Delivered)
-            select target.DeviceId)
-            .Distinct()
-            .ToListAsync(cancellationToken);
-
-        var outstanding = inFlight.ToHashSet();
+        var outstanding = (await OutstandingInstallsAsync(deviceIdSet, package.Id, cancellationToken))
+            .Select(o => o.DeviceId)
+            .ToHashSet();
 
         var deployable = new DeployableSoftware(
             package.Name, package.Version, package.Publisher, package.MsiProductCode);
@@ -504,6 +561,37 @@ public sealed class SoftwareDeploymentService(
         }
 
         return decisions;
+    }
+
+    /// <summary>
+    /// Installs queued or running right now, per device and package.
+    /// </summary>
+    /// <remarks>
+    /// The one definition of "outstanding". The planner uses it to skip a device
+    /// that is already getting the package, and the Company Portal uses it to
+    /// show "Installing"; written twice, a tile would one day say one thing and
+    /// the request behind it be answered with another.
+    /// </remarks>
+    internal async Task<IReadOnlyList<OutstandingInstall>> OutstandingInstallsAsync(
+        IReadOnlyCollection<Guid> deviceIds, Guid? packageId, CancellationToken cancellationToken)
+    {
+        var ids = deviceIds.ToList();
+        var query =
+            from target in _dbContext.SoftwareDeploymentTargets.AsNoTracking()
+            join deployment in _dbContext.SoftwareDeployments.AsNoTracking()
+                on target.DeploymentId equals deployment.Id
+            join task in _dbContext.DeviceTasks.AsNoTracking() on target.TaskId equals task.Id
+            where ids.Contains(target.DeviceId)
+                && (task.Status == DeviceTaskStatus.Queued || task.Status == DeviceTaskStatus.Delivered)
+            select new { target.DeviceId, deployment.PackageId };
+
+        if (packageId is { } wanted)
+        {
+            query = query.Where(x => x.PackageId == wanted);
+        }
+
+        var rows = await query.Distinct().ToListAsync(cancellationToken);
+        return rows.Select(r => new OutstandingInstall(r.DeviceId, r.PackageId)).ToList();
     }
 
     /// <summary>The version actually seen on the device, for the audit trail.</summary>
@@ -564,3 +652,12 @@ public sealed record DeploymentResult(Guid DeploymentId, int Targeted, int Queue
 /// correctly left alone.
 /// </param>
 public sealed record DeploymentCancelResult(Guid DeploymentId, int Considered, int Cancelled);
+
+/// <summary>
+/// What a self-service request came to. <see cref="TaskId"/> is set only when an
+/// install was actually queued; <see cref="Eligibility"/> says why otherwise.
+/// </summary>
+public sealed record SelfServiceInstallResult(SoftwareEligibility Eligibility, Guid? DeploymentId, Guid? TaskId);
+
+/// <summary>An install queued or running on a device.</summary>
+internal sealed record OutstandingInstall(Guid DeviceId, Guid PackageId);

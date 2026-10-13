@@ -128,7 +128,7 @@ DB-backed suites need a **CREATEDB** role. `POSTGRES_SUPERUSER` in `infra/.env` 
 RESTRICT` raises `23001` on 18 and `23503` on 17, and two tests depend on it.
 
 ```
-ENDPOINTPLATFORM_TEST_POSTGRES = Host=localhost;Port=5433;Username=endpoint_test;Password=...
+ENDPOINTPLATFORM_TEST_POSTGRES = Host=localhost;Port=5434;Username=endpoint_test;Password=...   # the port is POSTGRES_TEST_PORT in infra/.env
 ENDPOINTPLATFORM_TEST_REDIS    = localhost:6379,password=...
 ```
 

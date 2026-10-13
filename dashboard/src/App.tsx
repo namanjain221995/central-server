@@ -12,6 +12,7 @@ import { PoliciesPage } from './pages/PoliciesPage'
 import { ChromePage } from './pages/ChromePage'
 import { RestartManagementPage } from './pages/RestartManagementPage'
 import { SoftwarePage } from './pages/SoftwarePage'
+import { CompanyAppsPage } from './pages/CompanyAppsPage'
 import { UpdatesPage } from './pages/UpdatesPage'
 import { LoginPage } from './pages/LoginPage'
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage'
@@ -88,6 +89,7 @@ function AuthGate() {
           />
           <Route path="groups" element={<GroupsPage />} />
           <Route path="software" element={<SoftwarePage />} />
+          <Route path="company-apps" element={<CompanyAppsPage />} />
           <Route path="policies" element={<PoliciesPage />} />
           <Route path="chrome" element={<ChromePage />} />
           <Route path="restart-management" element={<RestartManagementPage />} />
