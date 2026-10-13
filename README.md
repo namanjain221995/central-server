@@ -4,8 +4,9 @@ Internal enterprise endpoint management for organization-owned Windows
 computers: central management backend, web administrator dashboard, and a
 Windows endpoint agent.
 
-**Status: Phases 0–3 complete** (foundation; secure enrollment + heartbeat;
-device inventory; authentication + RBAC + audit). See
+**Status: Phases 0–16 complete and deployed** (inventory, software, local
+users, policies, Windows Update, security posture, USB storage and phone
+control, BitLocker escrow, Chrome visibility, scheduled restarts). See
 [docs/architecture.md](docs/architecture.md) for the design and
 [docs/adr/](docs/adr/) for the decisions behind it.
 
