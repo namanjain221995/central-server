@@ -32,12 +32,26 @@
 
     <!--
       Same UpgradeCode across versions, so installing 1.1.0 over 1.0.0 is an
-      upgrade rather than a second copy. AfterInstallValidate schedules the
-      removal of the old version before the new files are laid down, which keeps
-      the service from being registered twice.
+      upgrade rather than a second copy.
+
+      The old version is removed AFTER the new one is installed (afterInstallExecute),
+      not before. Costing runs before either placement, and it skips every component
+      whose file on disk has a higher version than the one in this package. With the
+      removal scheduled first, those files were then deleted along with the old
+      version and never put back: an upgrade built with an older .NET runtime patch
+      (10.0.11 over 10.0.12) installed 68 of ~253 files, the service could not start
+      (hostpolicy.dll missing) and the failed upgrade left no agent at all. Removed
+      last, a component both versions share is kept by reference counting, so a
+      skipped file stays where it is.
+
+      This depends on component GUIDs being stable, which they are: the service
+      executable and the state components carry fixed GUIDs, and the <Files> glob
+      derives each GUID from the file's path. For the same reason the service is
+      registered once - its component is shared, so the old version's removal does
+      not delete it.
     -->
     <MajorUpgrade
-      Schedule="afterInstallValidate"
+      Schedule="afterInstallExecute"
       AllowSameVersionUpgrades="yes"
       DowngradeErrorMessage="A newer version of the Endpoint Platform Agent is already installed." />
 
@@ -201,6 +215,22 @@
       -->
       <Component Id="AgentMachineConfig" Directory="STATEFOLDER" Bitness="always64" Guid="4a9e7f21-8b36-4c94-a5d2-0e7f1b3c6d85">
         <File Id="AgentConfigJson" Name="agent.config.json" Source="agent.config.json" KeyPath="yes" />
+      </Component>
+
+      <!--
+        The server URL this install was given: the baked default, or SERVERBASEURL on
+        the command line. The agent reads it after agent.config.json, so it wins over
+        the baked file. Self-update passes the URL the running agent already uses, so
+        against. Rewritten by every install and upgrade: Windows Installer's default
+        reinstall mode ("m") rewrites a component's HKLM values, so a shared
+        component does not keep an older version's URL.
+
+        Before this value existed, SERVERBASEURL was declared but read by nothing:
+        the documented command-line override had no effect.
+      -->
+      <Component Id="AgentServerUrl" Directory="STATEFOLDER" Bitness="always64" Guid="c3e8a5d1-6f42-4b97-8e20-9d1a7b4f2c63">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\EndpointPlatform\Agent"
+                       Name="ServerBaseUrl" Type="string" Value="[SERVERBASEURL]" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

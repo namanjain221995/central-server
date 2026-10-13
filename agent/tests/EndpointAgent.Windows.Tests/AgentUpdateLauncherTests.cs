@@ -74,6 +74,34 @@ public sealed class AgentUpdateLauncherTests
         }
     }
 
+    [Fact]
+    public void The_update_carries_the_running_agents_server_url_into_the_installer()
+    {
+        var arguments = WindowsAgentUpdateLauncher.BuildArguments(
+            @"C:\ProgramData\EndpointPlatformAgent\agent-update-1.16.1.msi",
+            @"C:\ProgramData\EndpointPlatformAgent\Logs\agent-update-1.16.1.msi.log",
+            "https://endpoint.example.com");
+
+        arguments.ShouldBe(
+            "/i \"C:\\ProgramData\\EndpointPlatformAgent\\agent-update-1.16.1.msi\" /qn REBOOT=ReallySuppress "
+            + "/l*v \"C:\\ProgramData\\EndpointPlatformAgent\\Logs\\agent-update-1.16.1.msi.log\" "
+            + "SERVERBASEURL=\"https://endpoint.example.com\"");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not a url")]
+    [InlineData("file:///C:/Windows")]
+    [InlineData("https://endpoint.example.com\" /x \"C:\\other.msi")]
+    [InlineData("https://endpoint.example.com/ REBOOT=Force")]
+    public void A_server_url_that_is_not_a_plain_http_url_is_left_off_the_command_line(string? serverBaseUrl)
+    {
+        var arguments = WindowsAgentUpdateLauncher.BuildArguments(@"C:\a.msi", @"C:\a.log", serverBaseUrl);
+
+        arguments.ShouldBe("/i \"C:\\a.msi\" /qn REBOOT=ReallySuppress /l*v \"C:\\a.log\"");
+    }
+
     [ElevatedFact]
     public async Task Scheduling_registers_a_real_one_shot_task_scheduler_entry()
     {

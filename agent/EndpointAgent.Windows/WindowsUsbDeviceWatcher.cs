@@ -228,9 +228,11 @@ public sealed class WindowsUsbDeviceWatcher(ILogger<WindowsUsbDeviceWatcher> log
                 watcher.Stop();
                 watcher.Dispose();
             }
-            catch (ManagementException)
+            catch (Exception ex) when (ex is ManagementException or COMException)
             {
-                // Already gone; nothing useful to do while shutting down.
+                // Already gone; nothing useful to do while shutting down. WMI being
+                // unreachable (RPC_S_SERVER_UNAVAILABLE) arrives as a COMException, and
+                // letting it out of Dispose turned an orderly stop into a crash.
             }
         }
 

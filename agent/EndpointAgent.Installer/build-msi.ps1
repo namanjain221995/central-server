@@ -31,7 +31,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ServerBaseUrl,
 
-    [string]$Version = '1.16.1',
+    [string]$Version = '1.16.2',
 
     [switch]$SkipPublish
 )
@@ -52,6 +52,14 @@ if ($ServerBaseUrl -notmatch '^https://') {
     }
     Write-Host "WARNING: building a development installer against $ServerBaseUrl" -ForegroundColor Yellow
 }
+
+# --- a development installer must never look like a release -----------------
+# A package built against localhost was once uploaded as a release and rolled
+# out to production endpoints. One built for this machine is named so that it
+# cannot be mistaken for a release, whichever scheme it uses.
+$serverHost = ([Uri]$ServerBaseUrl).Host
+$isDevelopmentBuild = $serverHost -eq 'localhost' -or $serverHost -like '*.localhost' `
+    -or $serverHost -like '127.*' -or $serverHost -eq '[::1]'
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Version must be three-part, e.g. 1.0.0 (got '$Version')."
@@ -124,7 +132,12 @@ foreach ($ext in @('WixToolset.Util.wixext', 'WixToolset.UI.wixext')) {
 }
 
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
-$msiPath = Join-Path $outputDir "EndpointPlatformAgent-$Version-x64.msi"
+$msiName = if ($isDevelopmentBuild) {
+    "EndpointPlatformAgent-$Version-x64.LOCALHOST-DO-NOT-INSTALL.msi"
+} else {
+    "EndpointPlatformAgent-$Version-x64.msi"
+}
+$msiPath = Join-Path $outputDir $msiName
 
 Write-Host "Building MSI..." -ForegroundColor Cyan
 & wix build `

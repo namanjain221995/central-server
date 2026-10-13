@@ -98,8 +98,10 @@ internal static class UsbNative
     internal static readonly DEVPROPKEY DEVPKEY_Device_ClassGuid = new() { Fmtid = DevPropClassCommon, Pid = 10 };
     internal static readonly DEVPROPKEY DEVPKEY_Device_Manufacturer = new() { Fmtid = DevPropClassCommon, Pid = 13 };
     internal static readonly DEVPROPKEY DEVPKEY_Device_FriendlyName = new() { Fmtid = DevPropClassCommon, Pid = 14 };
+    internal static readonly DEVPROPKEY DEVPKEY_Device_ConfigFlags = new() { Fmtid = DevPropClassCommon, Pid = 12 };
     internal static readonly DEVPROPKEY DEVPKEY_Device_InstanceId = new() { Fmtid = DevPropClassDevice, Pid = 256 };
 
+    internal const uint DEVPROP_TYPE_UINT32 = 0x00000007;
     internal const uint DEVPROP_TYPE_GUID = 0x0000000D;
     internal const uint DEVPROP_TYPE_STRING = 0x00000012;
     internal const uint DEVPROP_TYPE_STRING_LIST = 0x00002012;
@@ -188,6 +190,27 @@ internal static class UsbNative
 
     [DllImport(CfgMgr, EntryPoint = "CM_Locate_DevNodeW", CharSet = CharSet.Unicode)]
     internal static extern int CM_Locate_DevNode(out uint devInst, string deviceId, uint flags);
+
+    /// <summary>
+    /// CSCONFIGFLAG_DISABLED — the per-hardware-profile disable a
+    /// <see cref="DICS_FLAG_CONFIGSPECIFIC"/> disable persists. It is what keeps a
+    /// device disabled across unplug and replug.
+    /// </summary>
+    internal const uint CSCONFIGFLAG_DISABLED = 0x00000001;
+
+    /// <summary>CONFIGFLAG_DISABLED — the global disable in the device's ConfigFlags.</summary>
+    internal const uint CONFIGFLAG_DISABLED = 0x00000001;
+
+    /// <summary>
+    /// Reads and writes the current hardware profile's flags by instance id. Unlike
+    /// the class installer, these work on a device that is not attached: they act
+    /// on the registry record Windows keeps for it.
+    /// </summary>
+    [DllImport(CfgMgr, EntryPoint = "CM_Get_HW_Prof_FlagsW", CharSet = CharSet.Unicode)]
+    internal static extern int CM_Get_HW_Prof_Flags(string deviceId, uint hardwareProfile, out uint value, uint flags);
+
+    [DllImport(CfgMgr, EntryPoint = "CM_Set_HW_Prof_FlagsW", CharSet = CharSet.Unicode)]
+    internal static extern int CM_Set_HW_Prof_Flags(string deviceId, uint hardwareProfile, uint value, uint flags);
 
     [DllImport(CfgMgr)]
     internal static extern int CM_Get_Child(out uint childDevInst, uint devInst, uint flags);

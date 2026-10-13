@@ -536,6 +536,18 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
             if (!UsbNative.SetupDiCallClassInstaller(UsbNative.DIF_PROPERTYCHANGE, set, ref info))
             {
                 var win32 = Marshal.GetLastWin32Error();
+
+                // An unplugged device still has a record SetupDiOpenDeviceInfo opens,
+                // but the class installer refuses it. Its persisted state is all that
+                // matters then: a restriction is applied on arrival anyway, and an
+                // enable has to clear the flag that would disable it on the next
+                // plug-in.
+                if (win32 == UsbNative.ERROR_NO_SUCH_DEVINST && !IsPresent(instanceId))
+                {
+                    present = false;
+                    return !enabled || ClearPersistedDisable(set, ref info, instanceId, out error);
+                }
+
                 error = win32 == UsbNative.ERROR_ACCESS_DENIED
                     ? "Access denied changing the device state. The agent must run as LocalSystem."
                     : $"SetupDiCallClassInstaller failed (Win32 {win32}: {new Win32Exception(win32).Message}).";
@@ -548,6 +560,68 @@ public sealed class WindowsUsbPolicyEnforcer(ILogger<WindowsUsbPolicyEnforcer> l
         {
             UsbNative.SetupDiDestroyDeviceInfoList(set);
         }
+    }
+
+    /// <summary>
+    /// Clears the disable a <see cref="UsbNative.DICS_FLAG_CONFIGSPECIFIC"/> disable
+    /// left on a device that is no longer attached.
+    /// </summary>
+    /// <remarks>
+    /// Only the per-profile flag is cleared, because that is the only one this
+    /// agent sets. A global disable in ConfigFlags was put there by someone else;
+    /// it is reported rather than touched, which keeps the device on the release
+    /// list until it is plugged in and released through the class installer.
+    /// </remarks>
+    private bool ClearPersistedDisable(
+        IntPtr set, ref UsbNative.SP_DEVINFO_DATA info, string instanceId, out string error)
+    {
+        error = "";
+
+        var configRet = UsbNative.CM_Get_HW_Prof_Flags(instanceId, 0, out var profileFlags, 0);
+        if (configRet != UsbNative.CR_SUCCESS)
+        {
+            error = $"The device is not attached and its disable flag could not be read (CONFIGRET 0x{configRet:X}).";
+            return false;
+        }
+
+        if ((profileFlags & UsbNative.CSCONFIGFLAG_DISABLED) != 0)
+        {
+            configRet = UsbNative.CM_Set_HW_Prof_Flags(
+                instanceId, 0, profileFlags & ~UsbNative.CSCONFIGFLAG_DISABLED, 0);
+
+            if (configRet != UsbNative.CR_SUCCESS
+                || UsbNative.CM_Get_HW_Prof_Flags(instanceId, 0, out profileFlags, 0) != UsbNative.CR_SUCCESS
+                || (profileFlags & UsbNative.CSCONFIGFLAG_DISABLED) != 0)
+            {
+                error = "The device is not attached and its disable flag could not be cleared "
+                    + $"(CONFIGRET 0x{configRet:X}). It is released the next time it is plugged in.";
+                return false;
+            }
+
+            _logger.LogInformation(
+                "USB device {InstanceId} is not attached; its disable flag was cleared.", instanceId);
+        }
+
+        if ((ReadConfigFlags(set, ref info) & UsbNative.CONFIGFLAG_DISABLED) != 0)
+        {
+            error = "The device is not attached and is disabled globally, which this agent never sets. "
+                + "Plug it in and enable it in Device Manager.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static uint ReadConfigFlags(IntPtr set, ref UsbNative.SP_DEVINFO_DATA info)
+    {
+        var key = UsbNative.DEVPKEY_Device_ConfigFlags;
+        var buffer = new byte[sizeof(uint)];
+
+        return UsbNative.SetupDiGetDeviceProperty(
+                set, ref info, ref key, out var type, buffer, (uint)buffer.Length, out _, 0)
+            && type == UsbNative.DEVPROP_TYPE_UINT32
+                ? BitConverter.ToUInt32(buffer)
+                : 0;
     }
 
     /// <summary>Polls for the disk interfaces beneath a USB device after enabling it.</summary>

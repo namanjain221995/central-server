@@ -71,6 +71,18 @@ public static class Program
                 optional: true,
                 reloadOnChange: false);
 
+            // The server URL the installer recorded (SERVERBASEURL), read after the
+            // file so it wins over the URL baked into the package. Self-update passes
+            // the running agent's URL to the installer, which is what keeps an
+            // upgrade on the server the endpoint is already managed by.
+            if (ReadInstalledServerBaseUrl() is { } installedServerBaseUrl)
+            {
+                builder.Configuration.AddInMemoryCollection(
+                [
+                    new($"{AgentOptions.SectionName}:{nameof(AgentOptions.ServerBaseUrl)}", installedServerBaseUrl),
+                ]);
+            }
+
             // ENDPOINTAGENT_Agent__ServerBaseUrl, ENDPOINTAGENT_Enrollment__Token, ...
             builder.Configuration.AddEnvironmentVariables(prefix: "ENDPOINTAGENT_");
 
@@ -310,6 +322,32 @@ public static class Program
         finally
         {
             await Log.CloseAndFlushAsync();
+        }
+    }
+
+    /// <summary>
+    /// HKLM\SOFTWARE\EndpointPlatform\Agent\ServerBaseUrl, written by the installer;
+    /// null when absent, empty or not an absolute URL, so an install from an older
+    /// package falls back to agent.config.json as before.
+    /// </summary>
+    private static string? ReadInstalledServerBaseUrl()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            using var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\EndpointPlatform\Agent");
+            return key?.GetValue("ServerBaseUrl") is string value
+                && Uri.TryCreate(value, UriKind.Absolute, out _)
+                    ? value
+                    : null;
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException)
+        {
+            return null;
         }
     }
 

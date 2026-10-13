@@ -210,11 +210,16 @@ pnputil /enable-device "<instance id>"
 by a running agent whose policy still says *Restricted* — within seconds, because the
 re-enabled device raises an arrival the agent reacts to, and at the latest on its
 one-minute reconcile. Grant access or stop the service first. Device Manager → the device →
-*Enable device* is the same operation. An unplugged phone's release goes through
-Windows' class installer for a device that is not present (verified read-only:
-Windows still opens its record); whether that clears the disable has not been
-observed, so if a phone comes back disabled after the agent is gone, plug it in and
-use `pnputil`.
+*Enable device* is the same operation. An unplugged device's record still opens,
+but Windows' class installer refuses it with `ERROR_NO_SUCH_DEVINST` (0xE000020B):
+observed on an endpoint on 2026-10-13, where two unplugged sticks stayed on the
+release list and every stop retried them. Since 1.16.2 the release then works on the
+device's stored state instead: it clears the per-profile disable flag
+(`CSCONFIGFLAG_DISABLED`, which is what the agent's config-specific disable writes)
+and drops the device from the list. A global disable the agent did not set is
+reported and left alone. Clearing a flag that *is* set has not been observed on
+hardware (the two devices seen had none), so if a device comes back disabled after
+the agent is gone, plug it in and use `pnputil`.
 
 ## 5. Before the next release that adds an enum value
 
