@@ -65,6 +65,10 @@ const NAV_SECTIONS: NavSection[] = [
     heading: 'Configuration',
     items: [
       { to: '/software', label: 'Software', icon: 'software' },
+      // Beside Software rather than a tab in it: Software is what an
+      // administrator pushes to machines, Company Apps is what an employee may
+      // pull for themselves.
+      { to: '/company-apps', label: 'Company Apps', icon: 'portal' },
       { to: '/policies', label: 'Policies', icon: 'policies' },
       // Its own page rather than a tab under Software: Chrome is managed by
       // group and by profile, which the software catalogue has no notion of.

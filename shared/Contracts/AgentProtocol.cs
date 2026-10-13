@@ -123,5 +123,17 @@ public static class AgentProtocol
 
         /// <summary>Suffix for the package content stream.</summary>
         public const string PackageContentSuffix = "/content";
+
+        /// <summary>
+        /// The Company Portal catalog for this device: <c>/catalog</c> lists what
+        /// the device may offer, <c>/catalog/{id}/icon</c> streams a tile's PNG,
+        /// and <c>POST /catalog/{id}/install</c> asks for an app by id. The server
+        /// decides; the device only names a published entry.
+        /// </summary>
+        public const string Catalog = "/catalog";
+
+        public const string CatalogIconSuffix = "/icon";
+
+        public const string CatalogInstallSuffix = "/install";
     }
 }

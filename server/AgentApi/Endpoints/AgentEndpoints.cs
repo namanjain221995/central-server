@@ -88,6 +88,17 @@ public static class AgentEndpoints
                 GetDriverPackageContentAsync)
             .WithName("AgentGetDriverPackageContent");
 
+        group.MapGet(AgentProtocol.Routes.Catalog, GetCatalogAsync)
+            .WithName("AgentGetCatalog");
+
+        group.MapGet(AgentProtocol.Routes.Catalog + "/{appId:guid}" + AgentProtocol.Routes.CatalogIconSuffix,
+                GetCatalogIconAsync)
+            .WithName("AgentGetCatalogIcon");
+
+        group.MapPost(AgentProtocol.Routes.Catalog + "/{appId:guid}" + AgentProtocol.Routes.CatalogInstallSuffix,
+                RequestCatalogInstallAsync)
+            .WithName("AgentRequestCatalogInstall");
+
         group.MapPost(AgentProtocol.Routes.SecretRedeem, RedeemSecretAsync)
             .WithName("AgentRedeemSecret");
 
@@ -133,6 +144,99 @@ public static class AgentEndpoints
         return secret is null
             ? Results.Problem(title: "Secret reference is not redeemable.", statusCode: StatusCodes.Status404NotFound)
             : Results.Ok(new RedeemSecretResponse(secret));
+    }
+
+    /// <summary>
+    /// What the Company Portal on this device may show.
+    /// </summary>
+    /// <remarks>
+    /// The three catalog handlers share one shape: protocol check, device
+    /// credential, then a service that reasons only about that device. There is no
+    /// way to ask about another device's catalog, because nothing identifies one.
+    /// </remarks>
+    private static async Task<IResult> GetCatalogAsync(
+        [FromHeader(Name = AgentProtocol.Headers.Credential)] string? credentialHeader,
+        [FromHeader(Name = AgentProtocol.Headers.ProtocolVersion)] int? protocolVersion,
+        AgentAuthenticationService authenticationService,
+        Infrastructure.Software.SelfServiceCatalogService catalogService,
+        CancellationToken cancellationToken)
+    {
+        if (protocolVersion != AgentProtocol.Version)
+        {
+            return Results.Problem(title: "Unsupported agent protocol version.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var auth = await authenticationService.AuthenticateAsync(credentialHeader, cancellationToken);
+        if (!auth.Success)
+        {
+            return Results.Unauthorized();
+        }
+
+        var entries = await catalogService.ListForDeviceAsync(auth.Device!, cancellationToken);
+
+        return Results.Ok(new CatalogListResponse(entries
+            .Select(e => new CatalogEntry(
+                e.Id, e.DisplayName, e.Description, e.Category, e.HasIcon, e.Version, e.Publisher,
+                e.UpdatedAt, e.State.ToString()))
+            .ToList()));
+    }
+
+    private static async Task<IResult> GetCatalogIconAsync(
+        Guid appId,
+        [FromHeader(Name = AgentProtocol.Headers.Credential)] string? credentialHeader,
+        [FromHeader(Name = AgentProtocol.Headers.ProtocolVersion)] int? protocolVersion,
+        AgentAuthenticationService authenticationService,
+        Infrastructure.Software.SelfServiceCatalogService catalogService,
+        CancellationToken cancellationToken)
+    {
+        if (protocolVersion != AgentProtocol.Version)
+        {
+            return Results.Problem(title: "Unsupported agent protocol version.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var auth = await authenticationService.AuthenticateAsync(credentialHeader, cancellationToken);
+        if (!auth.Success)
+        {
+            return Results.Unauthorized();
+        }
+
+        // Only an app the device may see has an icon, as far as the device is
+        // concerned: a 404 here says nothing about whether the id exists.
+        var png = await catalogService.GetIconAsync(auth.Device!, appId, cancellationToken);
+        return png is null ? Results.NotFound() : Results.Bytes(png, "image/png");
+    }
+
+    private static async Task<IResult> RequestCatalogInstallAsync(
+        Guid appId,
+        [FromBody] CatalogInstallCommand request,
+        [FromHeader(Name = AgentProtocol.Headers.Credential)] string? credentialHeader,
+        [FromHeader(Name = AgentProtocol.Headers.ProtocolVersion)] int? protocolVersion,
+        AgentAuthenticationService authenticationService,
+        Infrastructure.Software.SelfServiceCatalogService catalogService,
+        CancellationToken cancellationToken)
+    {
+        if (protocolVersion != AgentProtocol.Version)
+        {
+            return Results.Problem(title: "Unsupported agent protocol version.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (request.RequestedBy is { Length: > 256 })
+        {
+            return Results.Problem(title: "requestedBy is too long.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var auth = await authenticationService.AuthenticateAsync(credentialHeader, cancellationToken);
+        if (!auth.Success)
+        {
+            return Results.Unauthorized();
+        }
+
+        var decision = await catalogService.RequestInstallAsync(
+            auth.Device!, appId, request.RequestedBy, cancellationToken);
+
+        // 200 whatever the outcome. A refusal is a normal answer to the portal,
+        // not an error, and keeping it off the error path keeps it uniform.
+        return Results.Ok(new CatalogInstallResponse(decision.Outcome.ToString(), decision.TaskId));
     }
 
     private static async Task<IResult> GetPackageContentAsync(

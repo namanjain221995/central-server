@@ -108,6 +108,12 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
 
     public DbSet<SoftwarePackage> SoftwarePackages => Set<SoftwarePackage>();
 
+    public DbSet<CatalogApp> CatalogApps => Set<CatalogApp>();
+
+    public DbSet<CatalogAppGroup> CatalogAppGroups => Set<CatalogAppGroup>();
+
+    public DbSet<CatalogInstallRequest> CatalogInstallRequests => Set<CatalogInstallRequest>();
+
     public DbSet<SoftwareDeployment> SoftwareDeployments => Set<SoftwareDeployment>();
 
     public DbSet<SoftwareDeploymentTarget> SoftwareDeploymentTargets => Set<SoftwareDeploymentTarget>();

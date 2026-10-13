@@ -129,6 +129,46 @@ backward compatible in both directions: an older server stores
 field; an older agent sends neither, and the server shows its reports as
 applied-but-unverified rather than enforced.
 
+### `GET /agent/v1/catalog` — implemented
+
+The Company Portal catalog for this device ([company-portal.md](company-portal.md)):
+every published entry the device may see, each with its state on the device.
+
+```json
+{ "apps": [ { "id": "…", "displayName": "Zoom", "description": "…", "category": "Meetings",
+              "hasIcon": true, "version": "6.2.0", "publisher": "Zoom", "updatedAt": "…",
+              "state": "Available" } ] }
+```
+
+`state` is one of `Available`, `UpdateAvailable`, `Installing`, `Installed`, as
+a string. Nothing about the package behind an entry -- file name, hash, product
+code -- crosses here; the device learns those only from the `InstallPackage`
+task the server queues.
+
+### `GET /agent/v1/catalog/{id}/icon` — implemented
+
+The entry's PNG, or 404. Only an entry the device may see has an icon as far as
+the device is concerned, so a 404 says nothing about whether the id exists.
+
+### `POST /agent/v1/catalog/{id}/install` — implemented
+
+Asks for an entry by id. The body carries the signed-in user for the record;
+it is informational and decides nothing.
+
+```json
+{ "requestedBy": "DOMAIN\\jsmith" }
+```
+
+Always 200 with an outcome, because a refusal is a normal answer, not an error:
+
+```json
+{ "outcome": "Queued", "taskId": "…" }
+```
+
+`outcome` is `Queued`, `AlreadyInstalled`, `AlreadyInProgress` or `Refused`.
+`Refused` covers every reason the device may not have the entry, in one value.
+A device that sends more than 10 requests a minute is refused without a record.
+
 ## Error handling
 
 Errors are RFC 7807 problem-details with a `correlationId` extension. The

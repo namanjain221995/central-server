@@ -224,6 +224,8 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Software.SoftwarePackageService>();
         services.AddScoped<Software.SoftwareDeploymentService>();
         services.AddScoped<Software.SoftwareDeploymentReadService>();
+        services.AddScoped<Software.CatalogAppService>();
+        services.AddScoped<Software.SelfServiceCatalogService>();
         services.AddScoped<Software.ApplicationForceStopService>();
         services.AddScoped<Drivers.DriverPackageService>();
         services.AddScoped<Agents.AgentReleaseService>();
