@@ -374,6 +374,126 @@ public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient
         return await SendAsync<RedeemSecretResponse>(message, "redeem-secret", cancellationToken);
     }
 
+    public async Task<AgentApiResult<CatalogListResponse>> GetCatalogAsync(
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            AgentProtocol.RoutePrefix + AgentProtocol.Routes.Catalog);
+
+        AddProtocolHeaders(message, Core.AgentVersion.Current);
+        message.Headers.Add(AgentProtocol.Headers.Credential, credential.ToHeaderValue());
+        message.Headers.Add(AgentProtocol.Headers.DeviceId, credential.DeviceId.ToString());
+
+        return await SendAsync<CatalogListResponse>(message, "catalog", cancellationToken);
+    }
+
+    public async Task<AgentApiResult<byte[]>> GetCatalogIconAsync(
+        Guid appId,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            AgentProtocol.RoutePrefix + AgentProtocol.Routes.Catalog + "/" + appId + AgentProtocol.Routes.CatalogIconSuffix);
+
+        AddProtocolHeaders(message, Core.AgentVersion.Current);
+        message.Headers.Add(AgentProtocol.Headers.Credential, credential.ToHeaderValue());
+        message.Headers.Add(AgentProtocol.Headers.DeviceId, credential.DeviceId.ToString());
+
+        // The same download envelope as packages, into a buffer that refuses to
+        // grow past the server's icon ceiling: a body that turns out larger is
+        // not an icon and is reported as rejected, not as something to retry.
+        using var buffer = new BoundedMemoryStream(CompanyPortal.CompanyPortalProtocol.MaxIconBytes);
+        var result = await StreamToAsync(message, buffer, "catalog icon", cancellationToken);
+
+        if (buffer.Exceeded)
+        {
+            return AgentApiResult<byte[]>.Rejected();
+        }
+
+        if (!result.IsSuccess)
+        {
+            return new AgentApiResult<byte[]>(null, result.Status);
+        }
+
+        return buffer.Length == 0
+            ? AgentApiResult<byte[]>.Rejected()
+            : AgentApiResult<byte[]>.Success(buffer.ToArray());
+    }
+
+    public async Task<AgentApiResult<CatalogInstallResponse>> RequestCatalogInstallAsync(
+        Guid appId,
+        CatalogInstallCommand command,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(credential);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            AgentProtocol.RoutePrefix + AgentProtocol.Routes.Catalog + "/" + appId + AgentProtocol.Routes.CatalogInstallSuffix)
+        {
+            Content = JsonContent.Create(command),
+        };
+
+        AddProtocolHeaders(message, Core.AgentVersion.Current);
+        message.Headers.Add(AgentProtocol.Headers.Credential, credential.ToHeaderValue());
+        message.Headers.Add(AgentProtocol.Headers.DeviceId, credential.DeviceId.ToString());
+
+        return await SendAsync<CatalogInstallResponse>(message, "catalog install", cancellationToken);
+    }
+
+    /// <summary>
+    /// A memory stream with a ceiling. A write that would pass it fails with an
+    /// <see cref="IOException"/>, which the download envelope treats as a failed
+    /// stream, and <see cref="Exceeded"/> lets the caller tell that apart from a
+    /// dropped connection.
+    /// </summary>
+    private sealed class BoundedMemoryStream(int ceiling) : MemoryStream
+    {
+        public bool Exceeded { get; private set; }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            Check(buffer.Length);
+            base.Write(buffer);
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            Check(count);
+            base.Write(buffer, offset, count);
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Check(buffer.Length);
+            return base.WriteAsync(buffer, cancellationToken);
+        }
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            Check(count);
+            return base.WriteAsync(buffer, offset, count, cancellationToken);
+        }
+
+        private void Check(int incoming)
+        {
+            if (Length + incoming > ceiling)
+            {
+                Exceeded = true;
+                throw new IOException("The response is larger than the ceiling for this content.");
+            }
+        }
+    }
+
     private static void AddProtocolHeaders(HttpRequestMessage message, string agentVersion)
     {
         message.Headers.Add(AgentProtocol.Headers.ProtocolVersion, AgentProtocol.Version.ToString());

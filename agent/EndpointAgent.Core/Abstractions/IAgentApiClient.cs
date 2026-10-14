@@ -170,6 +170,40 @@ public interface IAgentApiClient
             EndpointPlatform.Contracts.Agent.EscrowRecoveryKeyRequest request,
             DeviceCredential credential,
             CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The Company Portal catalog for this device: what it may offer its user,
+    /// each entry with its state on this device.
+    /// </summary>
+    /// <remarks>
+    /// Read-only and device-scoped. The three catalog calls are the only thing
+    /// the service does on a signed-in user's request (ADR-0005, Company Portal
+    /// amendment), and this one carries no input at all.
+    /// </remarks>
+    Task<AgentApiResult<CatalogListResponse>> GetCatalogAsync(
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>One catalog entry's PNG tile, bounded at the server's icon ceiling.</summary>
+    Task<AgentApiResult<byte[]>> GetCatalogIconAsync(
+        Guid appId,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Asks the server to queue one catalog entry's install on this device.
+    /// </summary>
+    /// <remarks>
+    /// Names an id; decides nothing. The server checks that the entry is
+    /// published, visible to this device and needed, and the install that
+    /// follows arrives as an ordinary InstallPackage task with every gate the
+    /// executor already applies. The reported user is for the record only.
+    /// </remarks>
+    Task<AgentApiResult<CatalogInstallResponse>> RequestCatalogInstallAsync(
+        Guid appId,
+        CatalogInstallCommand command,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>Placeholder for a response body-less call (204 No Content).</summary>

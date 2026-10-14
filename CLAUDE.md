@@ -82,6 +82,15 @@ the only thing that can abort an armed restart or a countdown Windows already
 owns. An offline armed device cannot be cancelled until it checks in. Keep one
 way to undo a restart.
 
+**The Company Portal is the one place a user's process talks to the agent
+service, and it can only name a catalog id.** The portal pipe
+(`EndpointPlatformAgent.CompanyPortal`) carries `list`, `icon <id>` or
+`install <id>`, strictly parsed; the service relays to the server, which
+decides on the device credential and group, and an agreed install arrives as
+an ordinary `InstallPackage` task with every gate that executor has. Do not add
+a request that carries a path, a name, an argument or text — ADR-0005's
+Company Portal amendment says why, and `docs/company-portal.md` is the contract.
+
 None of them may ever reach the **Agent API**, which every managed endpoint can
 talk to. `AgentApiKeyBoundaryGuard` refuses to start that process if any is
 present. The Agent API *does* get `RECOVERY_SEALING_PUBLIC_KEY`: it only

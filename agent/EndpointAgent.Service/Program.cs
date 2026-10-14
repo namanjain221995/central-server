@@ -216,6 +216,20 @@ public static class Program
                 sp.GetRequiredService<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>());
             builder.Services.AddHostedService(sp =>
                 sp.GetRequiredService<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>());
+
+            // The Company Portal's side of the service: a second pipe, duplex this
+            // time, on which a signed-in user's portal may ask three questions
+            // about this device and nothing else. The handler relays each to the
+            // server on the device credential and the server decides. Registered
+            // once and hosted from that registration, like the notice server, so
+            // the instance that owns the pipe is the one the handler is wired to
+            // (ADR-0005, Company Portal amendment).
+            builder.Services.AddSingleton<EndpointAgent.Core.CompanyPortal.CompanyPortalRequestHandler>();
+            builder.Services.AddSingleton<EndpointAgent.Core.CompanyPortal.IPortalRequestHandler>(sp =>
+                sp.GetRequiredService<EndpointAgent.Core.CompanyPortal.CompanyPortalRequestHandler>());
+            builder.Services.AddSingleton<EndpointAgent.Windows.CompanyPortal.CompanyPortalPipeServer>();
+            builder.Services.AddHostedService(sp =>
+                sp.GetRequiredService<EndpointAgent.Windows.CompanyPortal.CompanyPortalPipeServer>());
             builder.Services.AddSingleton<IPackageInstaller, WindowsMsiPackageInstaller>();
             builder.Services.AddSingleton<ILocalAccountsControl, WindowsLocalAccountControl>();
             builder.Services.AddSingleton<ISecretRedeemer, EndpointAgent.Core.Communication.ServerSecretRedeemer>();

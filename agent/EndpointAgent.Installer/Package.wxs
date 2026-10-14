@@ -83,6 +83,7 @@
       <ComponentGroupRef Id="AgentServiceComponents" />
       <ComponentGroupRef Id="AgentStateComponents" />
       <ComponentGroupRef Id="SessionNoticeComponents" />
+      <ComponentGroupRef Id="CompanyPortalComponents" />
     </Feature>
   </Package>
 
@@ -231,6 +232,38 @@
       <Component Id="AgentServerUrl" Directory="STATEFOLDER" Bitness="always64" Guid="c3e8a5d1-6f42-4b97-8e20-9d1a7b4f2c63">
         <RegistryValue Root="HKLM" Key="SOFTWARE\EndpointPlatform\Agent"
                        Name="ServerBaseUrl" Type="string" Value="[SERVERBASEURL]" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="CompanyPortalComponents">
+      <!--
+        The Company Portal is a Start-menu entry and nothing more: the employee
+        opens it, the service never starts it (ADR-0005, Company Portal
+        amendment). The executable and the desktop runtime it needs come from the
+        globbed publish folder; this component carries only the shortcut.
+
+        A non-advertised shortcut, so clicking it runs the program directly rather
+        than through Windows Installer's feature check. Windows Installer wants a
+        per-user key path for such a shortcut (ICE43); the marker value under
+        HKCU is that key path and nothing reads it. For an upgrade run by the
+        agent itself the "current user" is SYSTEM, which is harmless: the
+        shortcut still lands in the all-users Start menu, which is what matters.
+      -->
+      <Component Id="CompanyPortalShortcut" Directory="INSTALLFOLDER" Bitness="always64" Guid="a3f1c7d9-2e84-4b6a-9c05-6d1f8e2b7a40">
+        <Shortcut Id="CompanyPortalStartMenu"
+                  Directory="ProgramMenuFolder"
+                  Name="Company Portal"
+                  Description="Install apps approved by IT"
+                  Target="[INSTALLFOLDER]EndpointAgent.CompanyPortal.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\EndpointPlatform\Agent"
+                       Name="CompanyPortalShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>

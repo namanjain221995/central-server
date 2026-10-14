@@ -156,6 +156,19 @@ public sealed class InstallPackageExecutorTests
             GetBitLockerEscrowStatusAsync(DeviceCredential credential, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<AgentApiResult<EndpointPlatform.Contracts.Agent.CatalogListResponse>> GetCatalogAsync(
+            DeviceCredential credential, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<AgentApiResult<byte[]>> GetCatalogIconAsync(
+            Guid appId, DeviceCredential credential, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<AgentApiResult<EndpointPlatform.Contracts.Agent.CatalogInstallResponse>> RequestCatalogInstallAsync(
+            Guid appId, EndpointPlatform.Contracts.Agent.CatalogInstallCommand command, DeviceCredential credential,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<AgentApiResult<EndpointPlatform.Contracts.Agent.EscrowRecoveryKeyResponse>>
             EscrowRecoveryKeyAsync(
                 EndpointPlatform.Contracts.Agent.EscrowRecoveryKeyRequest request,

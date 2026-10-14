@@ -77,6 +77,19 @@ public sealed class AutomaticEscrowRunnerTests
                 : new AgentApiResult<BitLockerEscrowStatusResponse>(status, AgentApiStatus.Success));
         }
 
+        public Task<AgentApiResult<EndpointPlatform.Contracts.Agent.CatalogListResponse>> GetCatalogAsync(
+            DeviceCredential credential, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<AgentApiResult<byte[]>> GetCatalogIconAsync(
+            Guid appId, DeviceCredential credential, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<AgentApiResult<EndpointPlatform.Contracts.Agent.CatalogInstallResponse>> RequestCatalogInstallAsync(
+            Guid appId, EndpointPlatform.Contracts.Agent.CatalogInstallCommand command, DeviceCredential credential,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<AgentApiResult<EscrowRecoveryKeyResponse>> EscrowRecoveryKeyAsync(
             EscrowRecoveryKeyRequest request, DeviceCredential credential,
             CancellationToken cancellationToken = default)

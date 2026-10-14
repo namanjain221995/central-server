@@ -57,6 +57,7 @@ signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
 | `C:\Program Files\EndpointPlatform\Agent\` | binaries; the service account cannot write here |
 | `C:\ProgramData\EndpointPlatformAgent\` | device credential, machine config, enrollment state |
 | `C:\ProgramData\EndpointPlatformAgent\Logs\` | rolling operational logs, 14 days |
+| Start menu → **Company Portal** | the self-service app employees use to install approved software ([company-portal.md](company-portal.md)); runs as the signed-in user and talks only to the local service |
 
 The ProgramData directory's ACL is replaced at install time with **SYSTEM and
 Administrators only** — ProgramData otherwise inherits an entry granting all
