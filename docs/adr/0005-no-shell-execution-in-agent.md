@@ -184,3 +184,63 @@ The notifier is plain Win32 through P/Invoke, shares the service's self-containe
 runtime (five files, about 240 KB), references no UI framework and no PowerShell,
 takes no arguments and reads none, and sits inside the process-creation scan,
 which a test pins.
+
+## Amendment: the Company Portal
+
+Employees install approved software themselves from `EndpointAgent.CompanyPortal.exe`,
+a desktop app in their own session ([company-portal.md](../company-portal.md)).
+For the first time, a process in a user's session sends something to the
+LocalSystem service. What it can send, and what the service does with it, is
+recorded here, because it is the kind of thing this ADR exists to bound.
+
+- **Three questions, about this device, and nothing else.** The portal connects
+  to a second named pipe, `EndpointPlatformAgent.CompanyPortal`, and sends one
+  line of strictly parsed JSON: `list`, `icon` with a catalog app id, or
+  `install` with a catalog app id. A line with any other property, an unknown
+  version or operation, an id that is not a GUID, or more than 256 bytes is
+  refused unread. There is no path, no package name, no argument, no text: a
+  request names an entry the management server already holds, by its id, and
+  the only text the portal ever shows is what the server sends back for that
+  entry.
+- **The service relays; the server decides.** `CompanyPortalRequestHandler` turns
+  a request into the matching authenticated call on the device's own credential
+  and returns the answer. It installs nothing, downloads nothing, runs nothing.
+  An install the server agrees to arrives later as an ordinary `InstallPackage`
+  task and passes every gate that executor already has — the content hash, the
+  Authenticode signer, the Windows Installer API, no process launch. The portal
+  therefore cannot cause anything on the machine that an administrator's
+  deployment could not, and only for an entry an administrator published to
+  this device's group.
+- **The user is a name on a record, not an identity.** The service learns who
+  asked from the client's session (`WTSQuerySessionInformation`), sends it to
+  the server for the request history, and the server decides on the device
+  credential and the device's group alone. A process that lied about its user
+  would change what the history says and nothing else.
+- **Bounded on both sides.** The service answers one request per connection,
+  reads at most 257 bytes of it, waits at most five seconds, and admits at most
+  120 lists, 600 icons and 10 installs a minute per session before answering
+  `TooManyRequests` without asking the server; the server applies its own limit
+  on top. The portal reads a bounded response and parses it as strictly as the
+  notifier parses a notice: one payload, known error words, an icon no larger
+  than the server's ceiling.
+- **Access.** The pipe's protected DACL gives the service account full control
+  and interactive users read and write — enough to send a line and read one —
+  and nothing else: no new instance, no permission change, no ownership. The
+  name is claimed with `FirstPipeInstance`, and the portal trusts only a server
+  in session 0, for the reasons the notifier amendment gives.
+- **Starting it is the user's business.** The portal is a Start-menu shortcut.
+  The service never starts it: `CreateProcessAsUserW` stays pinned to the
+  notifier, one constant image with no arguments, and the process-creation scan
+  covers the portal's sources too. The portal itself opens no link, folder or
+  process.
+- **A UI framework, deliberately.** The notifier draws one window in raw Win32
+  so as not to ship the desktop runtime. The portal is a real catalog — tiles,
+  icons, scrolling, search — and is written with Windows Forms, which adds the
+  desktop runtime to the self-contained publish folder and some fifteen to
+  twenty megabytes to the installer. That cost was accepted by the owner. The
+  notifier keeps its own rule and its test; the portal is a separate project
+  with the same self-contained publish, so the two share one runtime copy.
+
+What is unchanged: `Process.Start` and PowerShell are banned in every agent
+source file, the notifier pipe is still one-way, and the only program the
+service ever starts is still the notifier.

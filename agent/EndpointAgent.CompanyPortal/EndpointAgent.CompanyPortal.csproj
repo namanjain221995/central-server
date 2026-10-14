@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- WinExe: a desktop app the user opens from the Start menu; no console window. -->
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>EndpointAgent.CompanyPortal</RootNamespace>
+    <AssemblyName>EndpointAgent.CompanyPortal</AssemblyName>
+    <VersionPrefix>1.17.0</VersionPrefix>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+
+    <!--
+      WinForms, unlike the session notifier, which is plain Win32 on purpose. The
+      notifier draws one fixed sentence and a countdown; this is a real catalog:
+      a scrolling, searchable list of tiles with icons, text that wraps and
+      truncates, and a button on each. Hand-drawing that through P/Invoke
+      would be more code to review than the framework it avoids. The ADR-0005
+      amendment for the Company Portal records this choice.
+
+      The cost is real and accepted: WinForms pulls the desktop runtime
+      (System.Windows.Forms, System.Drawing and their natives) into the publish
+      folder beside the service's runtime. build-msi.ps1 publishes it there with the
+      same runtime identifier and self-contained setting so the core runtime is
+      still shared; only the desktop assemblies are new.
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationDefaultFont>Segoe UI, 10pt</ApplicationDefaultFont>
+
+    <RuntimeIdentifier Condition="'$(PublishAgent)' == 'true'">win-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(PublishAgent)' == 'true'">true</SelfContained>
+    <PublishTrimmed Condition="'$(PublishAgent)' == 'true'">false</PublishTrimmed>
+    <PublishSingleFile Condition="'$(PublishAgent)' == 'true'">false</PublishSingleFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!--
+      Runs in a signed-in user's session, as that user, when they open it. It takes
+      no arguments and reads none, holds no credential, and never talks to the
+      server: it asks the LocalSystem service three fixed questions over a named
+      pipe (list, icon, install) and draws the answers. It launches nothing and
+      executes nothing it receives; an install it asks for is queued by the server
+      and carried out by the service through the same gates every deployment has.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EndpointAgent.Windows\EndpointAgent.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

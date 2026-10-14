@@ -36,6 +36,31 @@ eligibility, the retired-device rule, the minimum agent version, and the
 package's SHA-256 and signer pins all apply unchanged. There is no second
 install path.
 
+## On the PC
+
+The portal is `EndpointAgent.CompanyPortal.exe`, installed by the agent MSI
+with a Start-menu shortcut, "Company Portal". It runs as the signed-in user and
+talks only to the local agent service, over the named pipe
+`EndpointPlatformAgent.CompanyPortal`: one request per connection, one line of
+JSON each way, parsed strictly on both sides. The service relays the three
+questions above to the management server on the device's own credential; the
+portal never holds a credential and never reaches the server. ADR-0005's
+Company Portal amendment records what the pipe may carry and why that is
+enough.
+
+What the user sees is a tile per published entry: icon, name, publisher and
+version, description, and one button whose label is the entry's state on this
+device -- Install, Update, Installing… or Installed. Clicking Install sends the
+entry's id; the answer is one of the outcomes below. Every other word on the
+window is fixed in the program: nothing from the wire is shown as an
+instruction, a link or a path.
+
+The portal refreshes itself every minute, and every ten seconds while an
+install is under way, so "Installing…" turns into "Installed" once the next
+inventory reports the product. The service answers at most 120 lists, 600 icons and 10 installs a minute
+per session before saying "too many requests"; a person clicking does not get
+near that.
+
 ## Visibility
 
 `AllDevices` means every device of the organization. `SelectedGroups` means
