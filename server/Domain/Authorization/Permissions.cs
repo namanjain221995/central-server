@@ -158,6 +158,18 @@ public static class Permissions
         public const string Manage = "chrome.manage";
     }
 
+    /// <summary>
+    /// Broadcasting short notices to device screens. Its own permission rather
+    /// than part of <see cref="Task"/>: writing to every screen in the estate is
+    /// a communication authority, and the people trusted to queue maintenance
+    /// tasks are not automatically the people trusted to speak to every user.
+    /// </summary>
+    public static class Announcement
+    {
+        /// <summary>Send a plain-text message to device screens. Never held by Helpdesk or Auditor.</summary>
+        public const string Send = "announcement.send";
+    }
+
     public static class Policy
     {
         public const string View = "policy.view";
@@ -233,6 +245,10 @@ public static class Permissions
 
         new(Chrome.View, "Chrome", "View Chrome installations, profiles and extensions", HighRisk: false),
         new(Chrome.Manage, "Chrome", "Manage Chrome extensions and updates on devices", HighRisk: true),
+
+        // High risk: it interrupts every signed-in user on the targeted machines
+        // at once, so the UI confirms it and the audit log records it elevated.
+        new(Announcement.Send, "Announcements", "Send a message to device screens", HighRisk: true),
 
         new(Policy.View, "Policies", "View policies and compliance results", HighRisk: false),
         new(Policy.Create, "Policies", "Create and version policies", HighRisk: false),

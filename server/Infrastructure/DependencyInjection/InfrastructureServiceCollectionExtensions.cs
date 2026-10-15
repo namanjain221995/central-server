@@ -201,6 +201,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Groups.DeviceGroupActionService>();
         services.AddScoped<Restarts.RestartCancellationService>();
         services.AddScoped<Restarts.RestartScheduleService>();
+        services.AddScoped<Announcements.AnnouncementService>();
         services.AddScoped<Devices.SoftwareReadService>();
         services.AddScoped<Devices.SecurityReadService>();
         services.AddScoped<Devices.UpdateReadService>();

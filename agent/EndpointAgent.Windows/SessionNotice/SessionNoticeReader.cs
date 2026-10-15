@@ -5,7 +5,7 @@ namespace EndpointAgent.Windows.SessionNotice;
 
 /// <summary>
 /// The session side of the pipe: connects, verifies the server, and keeps the
-/// latest restart notice it has been told about.
+/// latest restart notice and the latest announcement it has been told about.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -17,8 +17,11 @@ namespace EndpointAgent.Windows.SessionNotice;
 /// </para>
 /// <para>
 /// It only ever records data. There is no code path from anything received to
-/// anything executed, opened or displayed as text: a notice is a time and a grace
-/// period, and the words the user sees are constants.
+/// anything executed or opened: a restart notice is a time and a grace period
+/// shown in fixed words, and an announcement's title and message -- the one text
+/// the protocol carries, bounded and from a session-0 server only -- are drawn as
+/// plain text inside fixed chrome, never parsed, never a link (ADR-0005,
+/// announcements amendment).
 /// </para>
 /// <para>
 /// <b>It lives as long as the service it reads from.</b> Until it has found the
@@ -44,6 +47,7 @@ public sealed class SessionNoticeReader
     private readonly Func<NamedPipeClientStream, SessionNoticePipe.Trust> _evaluate;
     private readonly TimeProvider _time;
     private RestartNotice? _latest;
+    private AnnouncementNotice? _latestAnnouncement;
     private int _lastTrust = NoTrustYet;
     private int _serviceLost;
 
@@ -66,8 +70,15 @@ public sealed class SessionNoticeReader
         _time = time;
     }
 
-    /// <summary>The most recent plausible notice from a trusted server, or null.</summary>
+    /// <summary>The most recent plausible restart notice from a trusted server, or null.</summary>
     public RestartNotice? Latest => Volatile.Read(ref _latest);
+
+    /// <summary>
+    /// The most recent plausible announcement from a trusted server, or null.
+    /// Kept beside the restart notice, not instead of it: a message never
+    /// displaces a countdown.
+    /// </summary>
+    public AnnouncementNotice? LatestAnnouncement => Volatile.Read(ref _latestAnnouncement);
 
     /// <summary>How the last server was judged. For diagnostics and tests.</summary>
     public SessionNoticePipe.Trust? LastTrust =>
@@ -143,7 +154,7 @@ public sealed class SessionNoticeReader
     /// </summary>
     internal async Task ReadAsync(Stream stream, CancellationToken cancellationToken)
     {
-        var buffer = new byte[RestartNoticeProtocol.MaxLineBytes + 1];
+        var buffer = new byte[SessionNoticeProtocol.MaxLineBytes + 1];
         var filled = 0;
 
         while (!cancellationToken.IsCancellationRequested)
@@ -166,7 +177,7 @@ public sealed class SessionNoticeReader
                 filled = rest;
             }
 
-            if (filled > RestartNoticeProtocol.MaxLineBytes)
+            if (filled > SessionNoticeProtocol.MaxLineBytes)
             {
                 return;
             }
@@ -175,11 +186,20 @@ public sealed class SessionNoticeReader
 
     private void Accept(ReadOnlySpan<byte> line)
     {
-        if (RestartNoticeProtocol.TryDecode(line, out var notice)
-            && notice is not null
-            && IsPlausible(notice, _time.GetUtcNow()))
+        if (!SessionNoticeProtocol.TryDecode(line, out var notice, out var announcement))
+        {
+            return;
+        }
+
+        var now = _time.GetUtcNow();
+        if (notice is not null && IsPlausible(notice, now))
         {
             Volatile.Write(ref _latest, notice);
+        }
+
+        if (announcement is not null && IsPlausibleAnnouncement(announcement, now))
+        {
+            Volatile.Write(ref _latestAnnouncement, announcement);
         }
     }
 
@@ -189,6 +209,14 @@ public sealed class SessionNoticeReader
     /// not one so far past that it would never be shown.
     /// </summary>
     internal static bool IsPlausible(RestartNotice notice, DateTimeOffset now) =>
-        notice.RestartAt <= now + TimeSpan.FromSeconds(RestartNoticeProtocol.MaxGraceSeconds) + FutureSkew
+        notice.RestartAt <= now + TimeSpan.FromSeconds(SessionNoticeProtocol.MaxGraceSeconds) + FutureSkew
         && notice.RestartAt >= now - RestartNoticeView.LingerAfterRestart;
+
+    /// <summary>
+    /// An announcement is only worth keeping while it would still be shown: not
+    /// stamped in the future beyond clock skew, and not past its linger.
+    /// </summary>
+    internal static bool IsPlausibleAnnouncement(AnnouncementNotice notice, DateTimeOffset now) =>
+        notice.At <= now + FutureSkew
+        && notice.At >= now - AnnouncementView.Linger;
 }

@@ -176,4 +176,17 @@ public enum DeviceTaskType
     /// the two would be the one chosen by a mistake.
     /// </remarks>
     InstallDriverPackage = 50,
+
+    /// <summary>
+    /// Show a short administrator-written announcement on the device's screens
+    /// (agent 1.18.0+).
+    /// </summary>
+    /// <remarks>
+    /// Plain text only, server-validated to tight length limits: the payload is a
+    /// message to read, never a thing to execute or render as markup. Queued per
+    /// target device by the Announcements feature with a day-long lifetime, so a
+    /// machine that is offline right now still shows the notice when it next
+    /// checks in -- after a day the news is stale and the task expires instead.
+    /// </remarks>
+    ShowAnnouncement = 51,
 }

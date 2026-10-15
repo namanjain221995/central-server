@@ -244,3 +244,40 @@ recorded here, because it is the kind of thing this ADR exists to bound.
 What is unchanged: `Process.Start` and PowerShell are banned in every agent
 source file, the notifier pipe is still one-way, and the only program the
 service ever starts is still the notifier.
+
+## Amendment: announcements
+
+The session-notice amendment above fixed **every word the user sees** as a
+compile-time constant, so nothing reaching the endpoint could put its own words
+in a window that speaks for IT. Announcements (agent 1.18.0) consciously amend
+that principle: a `ShowAnnouncement` task carries an administrator's title
+(≤80 characters) and message (≤500), and the notifier displays them. Why that is
+now acceptable, and what still holds:
+
+- **The words originate with an authenticated administrator, nowhere else.** They
+  arrive only through the server's task channel — authorization
+  `announcement.send`, audited like every task, TTL-bounded — on the device's own
+  credential. Nothing local can inject them: the pipe's DACL still gives
+  interactive users read access and nothing else, the name is still claimed with
+  `FirstPipeInstance`, and the notifier still refuses any server outside
+  session 0 without reading a byte. The forgery the fixed-words rule was built
+  against — a local process putting words in IT's mouth — is still impossible.
+- **Bounded and strictly parsed, at both ends.** Protocol v3 gives every line a
+  `kind`; an announcement line is exactly six properties (version, kind, the
+  server's announcement id — which is what a user's dismissal keys on, so a
+  re-delivered message stays closed — the moment, title 1–80 and message 1–500
+  characters), no control characters beyond newline and tab, and at most
+  2048 bytes — anything else is refused, exactly as v2 refused the unexpected.
+  The executor validates the task payload against the same bounds before
+  anything is encoded, so nothing the service agrees to send can be refused on
+  arrival. Restart lines still carry no text at all.
+- **Rendered as data, never interpreted.** The window chrome stays fixed words
+  ("Announcement", "Message from your IT administrator"); the administrator's
+  text is drawn with `DrawTextW` as plain text — never parsed, never a link,
+  never a path or command, nothing to click, follow or execute.
+- **The pipe stays one-way, and a restart keeps the screen.** The notifier still
+  never sends a byte, and when a restart notice and an announcement are both
+  live, the countdown is shown: a message can wait; a reboot cannot.
+
+`AgentSafetyTests` is unchanged and still pins the rest: no process creation
+outside the one host, no PowerShell, the notifier inside the scan.

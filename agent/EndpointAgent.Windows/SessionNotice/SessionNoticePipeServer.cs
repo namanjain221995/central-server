@@ -38,10 +38,13 @@ namespace EndpointAgent.Windows.SessionNotice;
 /// pipe stays one-way and carries no request in either direction.
 /// </para>
 /// <para>
-/// <b>Late sign-in.</b> The latest notice is kept and replayed to a notifier that
-/// connects while its countdown still means something, so a user who signs in
-/// five minutes into a ten-minute restart still sees the five minutes -- and so
-/// does a notifier this service has just started.
+/// <b>Late sign-in.</b> The latest restart notice and the latest announcement are
+/// each kept and replayed to a notifier that connects while they still mean
+/// something, so a user who signs in five minutes into a ten-minute restart still
+/// sees the five minutes, and one who signs in while an announcement lingers
+/// still reads it -- and so does a notifier this service has just started. The
+/// replay sends the restart first: a reboot countdown must never arrive behind a
+/// message.
 /// </para>
 /// <para>
 /// <b>Stopping.</b> A notifier ends itself when the service it was reading from
@@ -51,7 +54,7 @@ namespace EndpointAgent.Windows.SessionNotice;
 /// file, and by the time it does, nothing of the agent's is running.
 /// </para>
 /// </remarks>
-public sealed class SessionNoticePipeServer : BackgroundService, IRestartNotifier
+public sealed class SessionNoticePipeServer : BackgroundService, IRestartNotifier, IAnnouncementNotifier
 {
     /// <summary>Enough for every session a workstation or small terminal server has.</summary>
     internal const int MaxInstances = 32;
@@ -71,6 +74,7 @@ public sealed class SessionNoticePipeServer : BackgroundService, IRestartNotifie
     private readonly Lock _gate = new();
     private readonly List<Client> _clients = [];
     private RestartNotice? _current;
+    private AnnouncementNotice? _currentAnnouncement;
     private bool _startedNotifiers;
 
     public SessionNoticePipeServer(
@@ -132,6 +136,17 @@ public sealed class SessionNoticePipeServer : BackgroundService, IRestartNotifie
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Counted from the connections themselves, not from
+    /// <see cref="ConnectedSessions"/>: the pipe driver may decline to name a
+    /// client's session, and a notifier it will not name is still a session
+    /// watching. The notifier's own per-session mutex keeps it to one per
+    /// session, so connected clients IS the session count; the id set stays for
+    /// the launcher's bookkeeping only.
+    /// </remarks>
+    public int ConnectedSessionCount => ConnectedCount;
+
+    /// <inheritdoc />
     public void RestartScheduled(RestartNotice notice)
     {
         ArgumentNullException.ThrowIfNull(notice);
@@ -143,7 +158,7 @@ public sealed class SessionNoticePipeServer : BackgroundService, IRestartNotifie
             clients = [.. _clients];
         }
 
-        var bytes = RestartNoticeProtocol.Encode(notice);
+        var bytes = SessionNoticeProtocol.Encode(notice);
         foreach (var client in clients)
         {
             // Fire and forget per client: the executor that called this must not
@@ -174,13 +189,42 @@ public sealed class SessionNoticePipeServer : BackgroundService, IRestartNotifie
             clients = [.. _clients];
         }
 
-        var bytes = RestartNoticeProtocol.Encode(notice);
+        var bytes = SessionNoticeProtocol.Encode(notice);
         foreach (var client in clients)
         {
             _ = SendAsync(client, bytes);
         }
 
         _logger.LogInformation("Restart cancellation notice sent to {Count} session(s).", clients.Count);
+    }
+
+    /// <inheritdoc />
+    public void AnnouncementReceived(AnnouncementNotice notice)
+    {
+        ArgumentNullException.ThrowIfNull(notice);
+
+        List<Client> clients;
+        lock (_gate)
+        {
+            _currentAnnouncement = notice;
+            clients = [.. _clients];
+        }
+
+        var bytes = SessionNoticeProtocol.Encode(notice);
+        foreach (var client in clients)
+        {
+            // Fire and forget per client, like a restart notice: the executor
+            // that called this must not wait on a session that has stopped reading.
+            _ = SendAsync(client, bytes);
+        }
+
+        _logger.LogInformation(
+            "Announcement sent to {Count} session(s); a session that connects before {Until:u} is still shown it.",
+            clients.Count, notice.At + AnnouncementView.Linger);
+
+        // Any signed-in session without a notifier gets one now; it receives this
+        // announcement as the replay the moment it connects.
+        StartNotifiersWhereMissing();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -238,17 +282,34 @@ public sealed class SessionNoticePipeServer : BackgroundService, IRestartNotifie
                 SessionNoticePipe.ClientProcessId(server.SafePipeHandle));
 
             RestartNotice? replay;
+            AnnouncementNotice? announcementReplay;
             lock (_gate)
             {
                 _clients.Add(client);
                 replay = _current;
+                announcementReplay = _currentAnnouncement;
             }
 
-            // A notice only worth replaying while it still describes something:
-            // the view model hides it once the restart is well past.
-            if (replay is not null && RestartNoticeView.For(replay, _time.GetUtcNow()).Visible)
+            // Notices are only worth replaying while they still describe
+            // something: the view models hide a restart well past and an
+            // announcement past its linger. Restart first -- a reboot countdown
+            // must never arrive behind a message -- and in ONE write, because two
+            // fire-and-forget sends would race each other for the order.
+            var now = _time.GetUtcNow();
+            var lines = new List<byte>(SessionNoticeProtocol.MaxLineBytes * 2);
+            if (replay is not null && RestartNoticeView.For(replay, now).Visible)
             {
-                _ = SendAsync(client, RestartNoticeProtocol.Encode(replay));
+                lines.AddRange(SessionNoticeProtocol.Encode(replay));
+            }
+
+            if (announcementReplay is not null && AnnouncementView.For(announcementReplay, now).Visible)
+            {
+                lines.AddRange(SessionNoticeProtocol.Encode(announcementReplay));
+            }
+
+            if (lines.Count > 0)
+            {
+                _ = SendAsync(client, [.. lines]);
             }
         }
 
@@ -345,7 +406,7 @@ public sealed class SessionNoticePipeServer : BackgroundService, IRestartNotifie
             PipeTransmissionMode.Byte,
             options,
             inBufferSize: 0,
-            outBufferSize: RestartNoticeProtocol.MaxLineBytes * 4,
+            outBufferSize: SessionNoticeProtocol.MaxLineBytes * 4,
             BuildSecurity(_serviceIdentity));
     }
 

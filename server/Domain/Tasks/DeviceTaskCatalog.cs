@@ -107,6 +107,16 @@ public static class DeviceTaskCatalog
             // reappears is still the right thing to do.
             new(DeviceTaskType.InstallDriverPackage, Permissions.Driver.Manage, HighRisk: true, 3600,
                 MinimumAgentVersion: "1.3.0"),
+
+            // High-risk because it interrupts every signed-in user on every
+            // targeted machine at once -- an estate-wide broadcast deserves a
+            // confirmation and an elevated audit record. A day of lifetime, so a
+            // device that is offline now still shows the notice on reconnect;
+            // older news than that is better re-sent than shown late. Gated on
+            // the agent that has the display executor: an older one would fail
+            // the task as unknown, which reads exactly like delivery failing.
+            new(DeviceTaskType.ShowAnnouncement, Permissions.Announcement.Send, HighRisk: true, 24 * 3600,
+                MinimumAgentVersion: "1.18.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

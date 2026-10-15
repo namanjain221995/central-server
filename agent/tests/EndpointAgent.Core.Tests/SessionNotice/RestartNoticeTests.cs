@@ -16,8 +16,12 @@ public sealed class RestartNoticeTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 15, 10, 0, 0, TimeSpan.Zero);
 
-    private static bool Decode(string line, out RestartNotice? notice) =>
-        RestartNoticeProtocol.TryDecode(Encoding.UTF8.GetBytes(line), out notice);
+    private static bool Decode(string line, out RestartNotice? notice)
+    {
+        var decoded = SessionNoticeProtocol.TryDecode(Encoding.UTF8.GetBytes(line), out notice, out var announcement);
+        announcement.ShouldBeNull("no line in these tests may ever decode as an announcement");
+        return decoded;
+    }
 
     // ------------------------------------------------------------- protocol
 
@@ -26,10 +30,11 @@ public sealed class RestartNoticeTests
     {
         var notice = new RestartNotice(Now.AddMinutes(10), 600);
 
-        var line = RestartNoticeProtocol.Encode(notice);
+        var line = SessionNoticeProtocol.Encode(notice);
 
         line[^1].ShouldBe((byte)'\n');
-        RestartNoticeProtocol.TryDecode(line.AsSpan(0, line.Length - 1), out var decoded).ShouldBeTrue();
+        SessionNoticeProtocol.TryDecode(line.AsSpan(0, line.Length - 1), out var decoded, out var announcement).ShouldBeTrue();
+        announcement.ShouldBeNull();
         decoded.ShouldBe(notice);
         decoded!.Cancelled.ShouldBeFalse();
     }
@@ -39,25 +44,27 @@ public sealed class RestartNoticeTests
     {
         var notice = RestartNotice.CancelledAt(Now);
 
-        var line = RestartNoticeProtocol.Encode(notice);
+        var line = SessionNoticeProtocol.Encode(notice);
 
-        RestartNoticeProtocol.TryDecode(line.AsSpan(0, line.Length - 1), out var decoded).ShouldBeTrue();
+        SessionNoticeProtocol.TryDecode(line.AsSpan(0, line.Length - 1), out var decoded, out _).ShouldBeTrue();
         decoded.ShouldBe(notice);
         decoded!.Cancelled.ShouldBeTrue();
         decoded.GraceSeconds.ShouldBe(0);
     }
 
     [Fact]
-    public void The_encoded_line_carries_only_the_time_the_grace_period_and_the_flag()
+    public void The_encoded_line_carries_only_its_kind_the_time_the_grace_period_and_the_flag()
     {
-        var text = Encoding.UTF8.GetString(RestartNoticeProtocol.Encode(new RestartNotice(Now, 60)));
+        var text = Encoding.UTF8.GetString(SessionNoticeProtocol.Encode(new RestartNotice(Now, 60)));
 
-        text.ShouldContain("\"v\":2");
+        text.ShouldContain("\"v\":3");
+        text.ShouldContain("\"kind\":\"restart\"");
         text.ShouldContain("\"restartAt\"");
         text.ShouldContain("\"graceSeconds\":60");
         text.ShouldContain("\"cancelled\":false");
         text.ShouldNotContain("message", Case.Insensitive);
-        text.Length.ShouldBeLessThan(RestartNoticeProtocol.MaxLineBytes);
+        text.ShouldNotContain("title", Case.Insensitive);
+        text.Length.ShouldBeLessThan(SessionNoticeProtocol.MaxLineBytes);
     }
 
     [Theory]
@@ -65,23 +72,26 @@ public sealed class RestartNoticeTests
     [InlineData("not json")]
     [InlineData("[]")]
     [InlineData("\"a string\"")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","cancelled":false}""")]
-    [InlineData("""{"v":2,"graceSeconds":60,"cancelled":false}""")]
-    [InlineData("""{"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60}""")]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60}""")]
-    [InlineData("""{"v":1,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60}""")]
     [InlineData("""{"v":3,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
-    [InlineData("""{"v":"2","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":-1,"cancelled":false}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":3601,"cancelled":false}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":1.5,"cancelled":false}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":"60","cancelled":false}""")]
-    [InlineData("""{"v":2,"restartAt":"not a date","graceSeconds":60,"cancelled":false}""")]
-    [InlineData("""{"v":2,"restartAt":12345,"graceSeconds":60,"cancelled":false}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":"false"}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":0}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":null}""")]
+    [InlineData("""{"v":1,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":4,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":"3","kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"Restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"shutdown","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":3,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":-1,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":3601,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":1.5,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":"60","cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"not a date","graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":12345,"graceSeconds":60,"cancelled":false}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":"false"}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":0}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":null}""")]
     public void Anything_that_is_not_exactly_a_notice_is_refused(string line)
     {
         Decode(line, out var notice).ShouldBeFalse($"'{line}' must be refused");
@@ -89,15 +99,27 @@ public sealed class RestartNoticeTests
     }
 
     /// <summary>
-    /// An extra property is not tolerated. A sender that adds a "message" is not
-    /// the sender this reader was written for, and the reader must never become a
-    /// way to put words in front of a user.
+    /// The service and the notifier ship in the same installer, so there is no
+    /// mixed-version case to tolerate: yesterday's well-formed version 2 line is
+    /// refused like any other unexpected one.
+    /// </summary>
+    [Fact]
+    public void A_version_2_line_is_refused()
+    {
+        Decode("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}""", out _).ShouldBeFalse();
+    }
+
+    /// <summary>
+    /// An extra property is not tolerated. A sender that adds a "message" to a
+    /// RESTART line is not the sender this reader was written for: text travels
+    /// only as an announcement, with its own kind and its own bounds.
     /// </summary>
     [Theory]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"message":"Click here to keep working"}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"command":"calc.exe"}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"extra":null}""")]
-    [InlineData("""{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":true,"reason":"because"}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"message":"Click here to keep working"}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"command":"calc.exe"}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"extra":null}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":true,"reason":"because"}""")]
+    [InlineData("""{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false,"title":"x"}""")]
     public void An_extra_property_is_refused_whatever_it_is(string line)
     {
         Decode(line, out _).ShouldBeFalse();
@@ -106,8 +128,8 @@ public sealed class RestartNoticeTests
     [Fact]
     public void A_line_longer_than_the_protocol_allows_is_refused_unread()
     {
-        var padded = """{"v":2,"restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}"""
-            .PadRight(RestartNoticeProtocol.MaxLineBytes + 1);
+        var padded = """{"v":3,"kind":"restart","restartAt":"2026-09-15T10:10:00Z","graceSeconds":60,"cancelled":false}"""
+            .PadRight(SessionNoticeProtocol.MaxLineBytes + 1);
 
         Decode(padded, out _).ShouldBeFalse();
     }

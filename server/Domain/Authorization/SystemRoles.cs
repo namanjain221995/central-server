@@ -85,6 +85,11 @@ public static class SystemRoles
         // machine, which is a change-control decision rather than a support
         // action -- and Helpdesk can already see the extension and escalate it.
         Permissions.Chrome.Manage,
+        // Deliberately not granted to Helpdesk. A broadcast interrupts every
+        // signed-in user on the targeted machines at once, which is speaking
+        // for the organization rather than supporting one caller -- and Auditor
+        // is read-only and never gets it.
+        Permissions.Announcement.Send,
         Permissions.Policy.View,
         Permissions.Policy.Create,
         Permissions.Policy.Assign,

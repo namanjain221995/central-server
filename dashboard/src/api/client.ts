@@ -129,6 +129,8 @@ export interface DeviceListItem {
   latestAgentVersion: string | null
   /** True when a strictly newer published agent exists for this device. */
   agentUpdateAvailable: boolean
+  /** The interactive user the agent last reported, or null when none is signed in. */
+  loggedOnUser?: string | null
 }
 
 export interface DevicePage {
@@ -2869,4 +2871,62 @@ export interface InstallRequestPage {
 export function getCatalogInstalls(page: number, pageSize: number): Promise<InstallRequestPage> {
   const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
   return request<InstallRequestPage>(`/admin/v1/catalog/installs?${params}`)
+}
+
+// ------------------------------------------------------------- announcements
+
+/** How an announcement's recipients were chosen. */
+export type AnnouncementTargetType = 'Group' | 'Devices'
+
+/**
+ * Exactly one way of naming recipients, as a union rather than two optional
+ * fields: the server answers 400 to a request that names both or neither, and
+ * the union makes that request unwritable here.
+ */
+export type AnnouncementInput =
+  | { title: string; message: string; groupId: string }
+  | { title: string; message: string; deviceIds: string[] }
+
+/**
+ * What the server did with a broadcast. `targeted` is the devices the target
+ * resolved to; `queued` is every device a delivery task was created for,
+ * online or not; `skipped` were not sent anything. `offline` is the subset of
+ * `queued` the server had not seen for 180 s at send time — the ones that get
+ * the message on reconnect rather than within seconds.
+ */
+export interface AnnouncementSendResult {
+  announcementId: string
+  targeted: number
+  queued: number
+  skipped: number
+  offline: number
+}
+
+/** One past broadcast with its per-device delivery tally, all server-derived. */
+export interface AnnouncementRow {
+  id: string
+  title: string
+  message: string
+  targetType: AnnouncementTargetType
+  /** The group's name for a Group target; null for Devices, or a deleted group. */
+  groupName: string | null
+  createdByDisplay: string
+  createdAt: string
+  targeted: number
+  queued: number
+  succeeded: number
+  pending: number
+  failed: number
+  skipped: number
+}
+
+export function sendAnnouncement(input: AnnouncementInput): Promise<AnnouncementSendResult> {
+  return request<AnnouncementSendResult>('/admin/v1/announcements', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function getAnnouncements(): Promise<AnnouncementRow[]> {
+  return request<AnnouncementRow[]>('/admin/v1/announcements')
 }

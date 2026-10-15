@@ -123,6 +123,7 @@ public sealed class DeviceReadService(
                 d.Hostname,
                 d.DisplayName,
                 d.OperatingSystem,
+                d.LoggedOnUser,
                 d.AgentVersion,
                 d.Status,
                 d.LastSeenAt,
@@ -136,6 +137,7 @@ public sealed class DeviceReadService(
                 d.Hostname,
                 d.DisplayName,
                 d.OperatingSystem,
+                d.LoggedOnUser,
                 d.AgentVersion,
                 d.Status.ToString(),
                 d.LastSeenAt,
@@ -191,6 +193,12 @@ public sealed record DeviceListItem(
     /// <summary>The administrator's console label, or null when none is set.</summary>
     string? DisplayName,
     string? OperatingSystem,
+    /// <summary>
+    /// Who was signed in at the last inventory, or null when the machine has
+    /// never reported one. List pickers (announcements above all) lead with it:
+    /// "whose screen is this" is the question a broadcast is asked about.
+    /// </summary>
+    string? LoggedOnUser,
     string AgentVersion,
     string Status,
     DateTimeOffset? LastSeenAt,

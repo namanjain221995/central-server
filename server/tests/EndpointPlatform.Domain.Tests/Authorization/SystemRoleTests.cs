@@ -178,6 +178,27 @@ public sealed class SystemRoleTests
     }
 
     /// <summary>
+    /// Only IT Administrator and Super Administrator may broadcast to device
+    /// screens. A whole-catalogue assertion, so a role added later cannot pick
+    /// up <c>announcement.send</c> without this failing: speaking to every
+    /// signed-in user at once is speaking for the organization, which is not a
+    /// support action and certainly not a read.
+    /// </summary>
+    [Fact]
+    public void Only_administrators_can_send_announcements()
+    {
+        Permissions.All.ToDictionary(p => p.Key, StringComparer.Ordinal)[Permissions.Announcement.Send]
+            .HighRisk.ShouldBeTrue();
+
+        var holders = SystemRoles.All
+            .Where(r => r.Value.PermissionKeys.Contains(Permissions.Announcement.Send, StringComparer.Ordinal))
+            .Select(r => r.Key)
+            .ToArray();
+
+        holders.ShouldBe([SystemRoles.SuperAdministrator, SystemRoles.ItAdministrator], ignoreOrder: true);
+    }
+
+    /// <summary>
     /// Only IT Administrator and Super Administrator may open USB storage access.
     /// </summary>
     /// <remarks>

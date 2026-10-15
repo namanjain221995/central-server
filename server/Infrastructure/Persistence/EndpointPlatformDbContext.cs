@@ -139,6 +139,11 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
 
     public DbSet<DeviceTask> DeviceTasks => Set<DeviceTask>();
 
+    public DbSet<Domain.Announcements.Announcement> Announcements => Set<Domain.Announcements.Announcement>();
+
+    public DbSet<Domain.Announcements.AnnouncementDevice> AnnouncementDevices =>
+        Set<Domain.Announcements.AnnouncementDevice>();
+
     public DbSet<EnrollmentToken> EnrollmentTokens => Set<EnrollmentToken>();
 
     public DbSet<AgentCredential> AgentCredentials => Set<AgentCredential>();
