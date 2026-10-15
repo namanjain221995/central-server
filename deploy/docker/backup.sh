@@ -38,7 +38,22 @@ cd "$here"
 root_dir=/var/backups/endpoint-platform
 bundle_dir="${root_dir}/bundles"
 passphrase_file=/etc/endpoint-platform/backup.passphrase
-keep=14
+backup_conf=/etc/endpoint-platform/backup.conf
+offsite_conf=/etc/endpoint-platform/offsite.conf
+
+# How many bundles stay on this machine. With an off-site copy the local ones
+# are only a convenience -- a quick restore, a buffer while an upload is
+# retried -- so three are enough and a small cloud disk is not filled with
+# them. Without one, the local bundles are the only bundles, so two weeks.
+# BACKUP_KEEP=<n> in backup.conf overrides either.
+if [ -s "$offsite_conf" ]; then keep=3; else keep=14; fi
+if [ -s "$backup_conf" ]; then
+    configured="$(grep -E '^BACKUP_KEEP=' "$backup_conf" | tail -n 1 | cut -d= -f2- || true)"
+    if [ -n "$configured" ]; then
+        [[ "$configured" =~ ^[1-9][0-9]*$ ]] || { echo "backup.sh: BACKUP_KEEP in ${backup_conf} must be a positive number" >&2; exit 1; }
+        keep="$configured"
+    fi
+fi
 
 die() { echo "backup.sh: $*" >&2; exit 1; }
 
@@ -220,22 +235,33 @@ listed="$(gpg --batch --quiet --pinentry-mode loopback --passphrase-file "$passp
 chown "$owner" "$bundle" "${bundle}.sha256"
 chmod 640 "$bundle" "${bundle}.sha256"
 
-echo "==> keeping the newest ${keep}"
-ls -1t "${bundle_dir}"/epp-backup-*.tar.gpg 2>/dev/null | tail -n +"$((keep + 1))" | while read -r old; do
-    rm -f "$old" "${old}.sha256"
-done
-
 echo
 grep -E '^count_' "${work}/manifest.txt" | sed 's/^count_/    /; s/=/: /'
 echo "backup.sh: done -> ${bundle} ($(du -h "$bundle" | cut -f1))"
 
-# Off-site copy, when offsite-upload.sh --setup has been run. A failed upload
-# fails the run (so the timer shows it), but the local bundle above stands.
-if [ -s /etc/endpoint-platform/offsite.conf ]; then
+# Off-site copy, when offsite-upload.sh --setup has been run. With no argument
+# it sends every bundle not yet off-site, so a night whose upload failed is
+# caught up by the next one instead of being left behind.
+upload_failed=0
+if [ -s "$offsite_conf" ]; then
     echo
-    bash "${here}/offsite-upload.sh" "$bundle" \
-        || die "the local backup is fine (${bundle}), but the OFF-SITE UPLOAD FAILED"
+    bash "${here}/offsite-upload.sh" || upload_failed=1
 else
     echo "Copy it off this machine: a backup that dies with the server restores nothing."
     echo "(sudo ./offsite-upload.sh --setup uploads every backup to Google Drive automatically.)"
 fi
+
+# Pruned after the upload, and only bundles that are known to be off-site:
+# with an off-site copy configured, a bundle without its .offsite marker is
+# kept however old it is. The one copy of a night's data is never the one
+# that gets deleted.
+echo "==> keeping the newest ${keep} here"
+ls -1t "${bundle_dir}"/epp-backup-*.tar.gpg 2>/dev/null | tail -n +"$((keep + 1))" | while read -r old; do
+    if [ -s "$offsite_conf" ] && [ ! -e "${old}.offsite" ]; then
+        echo "    keeping $(basename "$old"): not off-site yet"
+        continue
+    fi
+    rm -f "$old" "${old}.sha256" "${old}.offsite"
+done
+
+[ "$upload_failed" -eq 0 ] || die "the local backup is fine (${bundle}), but the OFF-SITE UPLOAD FAILED"

@@ -40,8 +40,11 @@ sudo ./backup.sh                  # first backup, now
 sudo ./backup.sh --install-timer  # nightly at 02:30, catches up after downtime
 ```
 
-Bundles land in `/var/backups/endpoint-platform/bundles/`; the newest 14 are
-kept. Each run decrypts its own bundle again before reporting success.
+Bundles land in `/var/backups/endpoint-platform/bundles/`. Each run decrypts its
+own bundle again before reporting success. How many stay on the server depends
+on whether an off-site copy is set up (next section): **3** when it is — the
+local ones are then only a quick-restore convenience — and **14** when it is
+not. `BACKUP_KEEP=<n>` in `/etc/endpoint-platform/backup.conf` overrides either.
 
 Check the timer at any time:
 
@@ -56,13 +59,16 @@ journalctl -u endpoint-platform-backup -n 30 --no-pager
 
 ```bash
 sudo ./offsite-upload.sh --setup   # once: connect the Drive account (interactive)
-sudo ./offsite-upload.sh           # upload the newest bundle now
+sudo ./offsite-upload.sh           # upload every bundle not yet off-site, now
 ```
 
-From then on `backup.sh` uploads every new bundle, verifies the uploaded copy
-by hash, and keeps the newest 30 in the Drive folder. If the upload fails, the
-nightly run is marked failed in `journalctl -u endpoint-platform-backup`, while
-the local bundle is kept.
+From then on `backup.sh` uploads every bundle that is not yet off-site — not
+only the one it just made — verifies each uploaded copy by hash, and keeps the
+newest 30 in the Drive folder. A verified bundle gets a `<bundle>.offsite`
+marker beside it, and the server deletes a local bundle only once it has one.
+So a night whose upload fails (a Drive rate limit, a network outage) is marked
+failed in `journalctl -u endpoint-platform-backup`, keeps its bundle however
+old it gets, and is uploaded by the next run that can reach Drive.
 
 During `--setup`, choose the **`drive.file`** scope. rclone can then see only
 the files it uploaded, so the token on the server cannot read anything else in
