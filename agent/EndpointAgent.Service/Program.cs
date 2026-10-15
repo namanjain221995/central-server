@@ -214,6 +214,13 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>();
             builder.Services.AddSingleton<EndpointAgent.Core.Abstractions.IRestartNotifier>(sp =>
                 sp.GetRequiredService<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>());
+
+            // The same pipe, same instance, second face: announcements travel the
+            // session-notice pipe as their own line kind, so the executor that
+            // shows them talks to the server that owns the connected sessions
+            // (ADR-0005, announcements amendment).
+            builder.Services.AddSingleton<EndpointAgent.Core.Abstractions.IAnnouncementNotifier>(sp =>
+                sp.GetRequiredService<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>());
             builder.Services.AddHostedService(sp =>
                 sp.GetRequiredService<EndpointAgent.Windows.SessionNotice.SessionNoticePipeServer>());
 
@@ -242,6 +249,10 @@ public static class Program
             // The undo of the restart: aborts the countdown Windows is running,
             // or removes a scheduled restart that has not started counting yet.
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.CancelRestartTaskExecutor>();
+
+            // An administrator's message to whoever is signed in, shown through
+            // the session-notice pipe above.
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ShowAnnouncementExecutor>();
 
             // Scheduled restarts the device holds itself, so they happen at their
             // moment with or without the network. Durable across service restarts

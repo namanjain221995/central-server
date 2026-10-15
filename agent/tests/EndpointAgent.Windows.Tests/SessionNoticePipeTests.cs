@@ -40,7 +40,7 @@ public sealed class SessionNoticePipeTests
     {
         try
         {
-            await untrusted.WriteAsync(RestartNoticeProtocol.Encode(Notice));
+            await untrusted.WriteAsync(SessionNoticeProtocol.Encode(Notice));
             await untrusted.FlushAsync();
         }
         catch (IOException)
@@ -324,6 +324,185 @@ public sealed class SessionNoticePipeTests
         public override DateTimeOffset GetUtcNow() => now;
     }
 
+    // -------------------------------------------------------- announcements
+
+    [Fact]
+    public async Task An_announcement_reaches_a_connected_reader_exactly()
+    {
+        var name = UniquePipe();
+        var server = new SessionNoticePipeServer(name, NullLogger<SessionNoticePipeServer>.Instance);
+        using var stop = new CancellationTokenSource();
+        await server.StartAsync(stop.Token);
+
+        var reader = new SessionNoticeReader(name, _ => SessionNoticePipe.Trust.Trusted, TimeProvider.System);
+        var reading = reader.RunAsync(stop.Token);
+
+        (await EventuallyAsync(() => server.ConnectedCount == 1)).ShouldBeTrue("the reader must connect");
+
+        // The count the executor reports comes from the connections themselves:
+        // one connected notifier is one session, whether or not the pipe driver
+        // names its session id.
+        server.ConnectedSessionCount.ShouldBe(1);
+
+        var announcement = new AnnouncementNotice(
+            Guid.NewGuid(), "Maintenance", "The office network is down tonight.", DateTimeOffset.UtcNow);
+        server.AnnouncementReceived(announcement);
+
+        (await EventuallyAsync(() => reader.LatestAnnouncement is not null)).ShouldBeTrue();
+        reader.LatestAnnouncement.ShouldBe(announcement);
+
+        stop.Cancel();
+        await server.StopAsync(CancellationToken.None);
+        await reading;
+    }
+
+    /// <summary>
+    /// The two kinds live side by side: a message never displaces a countdown,
+    /// and a countdown never eats a message.
+    /// </summary>
+    [Fact]
+    public async Task An_announcement_and_a_restart_are_each_kept_without_displacing_the_other()
+    {
+        var name = UniquePipe();
+        var server = new SessionNoticePipeServer(name, NullLogger<SessionNoticePipeServer>.Instance);
+        using var stop = new CancellationTokenSource();
+        await server.StartAsync(stop.Token);
+
+        var reader = new SessionNoticeReader(name, _ => SessionNoticePipe.Trust.Trusted, TimeProvider.System);
+        var reading = reader.RunAsync(stop.Token);
+        (await EventuallyAsync(() => server.ConnectedCount == 1)).ShouldBeTrue();
+
+        var announcement = new AnnouncementNotice(
+            Guid.NewGuid(), "Heads up", "Printers move to the second floor on Friday.", DateTimeOffset.UtcNow);
+        server.RestartScheduled(Notice);
+        server.AnnouncementReceived(announcement);
+
+        (await EventuallyAsync(() => reader.Latest is not null && reader.LatestAnnouncement is not null)).ShouldBeTrue();
+        reader.Latest.ShouldBe(Notice);
+        reader.LatestAnnouncement.ShouldBe(announcement);
+
+        stop.Cancel();
+        await server.StopAsync(CancellationToken.None);
+        await reading;
+    }
+
+    /// <summary>
+    /// A session that connects while both notices still matter is replayed both,
+    /// and the restart comes first: a reboot countdown must never arrive behind a
+    /// message. Read with a raw pipe client, because the order on the wire is the
+    /// thing under test.
+    /// </summary>
+    [Fact]
+    public async Task A_late_connection_is_replayed_the_restart_before_the_announcement()
+    {
+        var name = UniquePipe();
+        var at = new DateTimeOffset(2026, 10, 16, 10, 0, 0, TimeSpan.Zero);
+        var server = new SessionNoticePipeServer(name, NullLogger<SessionNoticePipeServer>.Instance, new FixedClock(at));
+        using var stop = new CancellationTokenSource();
+        await server.StartAsync(stop.Token);
+
+        var restart = new RestartNotice(at.AddMinutes(5), 300);
+        var announcement = new AnnouncementNotice(Guid.NewGuid(), "Maintenance", "Back at noon.", at);
+        server.RestartScheduled(restart);
+        server.AnnouncementReceived(announcement);
+
+        await using var raw = new NamedPipeClientStream(".", name, PipeDirection.In, PipeOptions.Asynchronous);
+        await raw.ConnectAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        var lines = await ReadLinesAsync(raw, 2);
+
+        lines.Count.ShouldBe(2, "the replay must carry both notices");
+        SessionNoticeProtocol.TryDecode(lines[0], out var firstRestart, out var firstAnnouncement).ShouldBeTrue();
+        firstRestart.ShouldBe(restart, "the restart must come first");
+        firstAnnouncement.ShouldBeNull();
+        SessionNoticeProtocol.TryDecode(lines[1], out var secondRestart, out var secondAnnouncement).ShouldBeTrue();
+        secondRestart.ShouldBeNull();
+        secondAnnouncement.ShouldBe(announcement);
+
+        stop.Cancel();
+        await server.StopAsync(CancellationToken.None);
+    }
+
+    /// <summary>An announcement past its linger is not replayed; the still-live restart is.</summary>
+    [Fact]
+    public async Task A_lingered_out_announcement_is_not_replayed_to_a_late_connection()
+    {
+        var name = UniquePipe();
+        var sent = new DateTimeOffset(2026, 10, 16, 10, 0, 0, TimeSpan.Zero);
+        var later = sent + AnnouncementView.Linger + TimeSpan.FromMinutes(1);
+        var clock = new MutableClock(sent);
+        var server = new SessionNoticePipeServer(name, NullLogger<SessionNoticePipeServer>.Instance, clock);
+        using var stop = new CancellationTokenSource();
+        await server.StartAsync(stop.Token);
+
+        var restart = new RestartNotice(later.AddMinutes(5), 300);
+        server.RestartScheduled(restart);
+        server.AnnouncementReceived(new AnnouncementNotice(Guid.NewGuid(), "Old news", "This was over an hour ago.", sent));
+
+        clock.Now = later;
+        await using var raw = new NamedPipeClientStream(".", name, PipeDirection.In, PipeOptions.Asynchronous);
+        await raw.ConnectAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        // Ask for two lines and give a wrongly-replayed announcement time to
+        // arrive; only the restart may.
+        var lines = await ReadLinesAsync(raw, 2, TimeSpan.FromSeconds(2));
+
+        lines.Count.ShouldBe(1);
+        SessionNoticeProtocol.TryDecode(lines[0], out var replayed, out var announcement).ShouldBeTrue();
+        replayed.ShouldBe(restart);
+        announcement.ShouldBeNull("an announcement past its linger is old news, not a replay");
+
+        stop.Cancel();
+        await server.StopAsync(CancellationToken.None);
+    }
+
+    private sealed class MutableClock(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    /// <summary>Reads whole newline-terminated lines from a pipe, without their terminators.</summary>
+    private static async Task<List<byte[]>> ReadLinesAsync(Stream stream, int count, TimeSpan? wait = null)
+    {
+        var buffer = new byte[SessionNoticeProtocol.MaxLineBytes * 4];
+        var filled = 0;
+        var lines = new List<byte[]>();
+        using var timeout = new CancellationTokenSource(wait ?? TimeSpan.FromSeconds(10));
+
+        while (lines.Count < count)
+        {
+            int read;
+            try
+            {
+                read = await stream.ReadAsync(buffer.AsMemory(filled), timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            if (read == 0)
+            {
+                break;
+            }
+
+            filled += read;
+
+            int newline;
+            while ((newline = Array.IndexOf(buffer, (byte)'\n', 0, filled)) >= 0)
+            {
+                lines.Add(buffer.AsSpan(0, newline).ToArray());
+                var rest = filled - newline - 1;
+                Array.Copy(buffer, newline + 1, buffer, 0, rest);
+                filled = rest;
+            }
+        }
+
+        return lines;
+    }
+
     /// <summary>
     /// Every connected session is told.
     /// </summary>
@@ -492,7 +671,7 @@ public sealed class SessionNoticePipeTests
     public async Task The_reader_ignores_malformed_lines_and_keeps_reading()
     {
         var reader = new SessionNoticeReader(UniquePipe(), _ => SessionNoticePipe.Trust.Trusted, TimeProvider.System);
-        var bytes = Encoding.UTF8.GetBytes("garbage\n{\"v\":9}\n").Concat(RestartNoticeProtocol.Encode(Notice)).ToArray();
+        var bytes = Encoding.UTF8.GetBytes("garbage\n{\"v\":9}\n").Concat(SessionNoticeProtocol.Encode(Notice)).ToArray();
 
         await reader.ReadAsync(new MemoryStream(bytes), CancellationToken.None);
 
@@ -503,9 +682,9 @@ public sealed class SessionNoticePipeTests
     public async Task An_overlong_line_ends_the_connection_and_nothing_after_it_is_read()
     {
         var reader = new SessionNoticeReader(UniquePipe(), _ => SessionNoticePipe.Trust.Trusted, TimeProvider.System);
-        var flood = new byte[RestartNoticeProtocol.MaxLineBytes * 4];
+        var flood = new byte[SessionNoticeProtocol.MaxLineBytes * 4];
         Array.Fill(flood, (byte)'x');
-        var bytes = flood.Concat(RestartNoticeProtocol.Encode(Notice)).ToArray();
+        var bytes = flood.Concat(SessionNoticeProtocol.Encode(Notice)).ToArray();
 
         await reader.ReadAsync(new MemoryStream(bytes), CancellationToken.None);
 
@@ -536,5 +715,42 @@ public sealed class SessionNoticePipeTests
         var now = DateTimeOffset.UtcNow;
 
         SessionNoticeReader.IsPlausible(new RestartNotice(now.AddSeconds(secondsFromNow), 60), now).ShouldBeTrue();
+    }
+
+    /// <summary>
+    /// Even from a trusted server, an announcement is only worth keeping while it
+    /// would still be shown: not past its linger, not stamped in the future
+    /// beyond clock skew.
+    /// </summary>
+    [Theory]
+    [InlineData(-31, false)]
+    [InlineData(-29, true)]
+    [InlineData(0, true)]
+    [InlineData(2, false)]
+    public void An_announcement_is_plausible_only_while_it_would_still_be_shown(int minutesFromNow, bool plausible)
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        SessionNoticeReader
+            .IsPlausibleAnnouncement(new AnnouncementNotice(Guid.NewGuid(), "T", "M", now.AddMinutes(minutesFromNow)), now)
+            .ShouldBe(plausible);
+    }
+
+    [Fact]
+    public async Task A_stale_or_future_stamped_announcement_is_not_recorded()
+    {
+        var now = new DateTimeOffset(2026, 10, 16, 10, 0, 0, TimeSpan.Zero);
+        var reader = new SessionNoticeReader(UniquePipe(), _ => SessionNoticePipe.Trust.Trusted, new FixedClock(now));
+        var stale = SessionNoticeProtocol.Encode(
+            new AnnouncementNotice(Guid.NewGuid(), "Old", "Too old.", now - AnnouncementView.Linger - TimeSpan.FromMinutes(1)));
+        var future = SessionNoticeProtocol.Encode(new AnnouncementNotice(Guid.NewGuid(), "Soon", "Too soon.", now.AddMinutes(5)));
+        var fresh = SessionNoticeProtocol.Encode(new AnnouncementNotice(Guid.NewGuid(), "Now", "Just right.", now.AddMinutes(-1)));
+
+        await reader.ReadAsync(new MemoryStream([.. stale, .. future]), CancellationToken.None);
+        reader.LatestAnnouncement.ShouldBeNull("a stale or future-stamped announcement must not be recorded");
+
+        await reader.ReadAsync(new MemoryStream(fresh), CancellationToken.None);
+        reader.LatestAnnouncement.ShouldNotBeNull();
+        reader.LatestAnnouncement!.Title.ShouldBe("Now");
     }
 }

@@ -54,6 +54,14 @@
   --color-primary-bg: rgba(59, 130, 246, 0.14);
   --color-primary-border: rgba(59, 130, 246, 0.42);
 
+  /* The broadcast accent: the orange family for "send to screens" actions.
+     Same three-step contract as the primary fills, measured the same way —
+     white text reads 5.2:1 on solid, 4.7:1 on hover, 7.3:1 on active, all
+     above the 4.5:1 floor for the 13px semi-bold button label. */
+  --color-accent-solid: #c2410c;
+  --color-accent-solid-hover: #cc470e;
+  --color-accent-active: #9a3412;
+
   --color-ok: #4ade80;
   --color-ok-bg: rgba(74, 222, 128, 0.13);
   --color-ok-border: rgba(74, 222, 128, 0.36);
@@ -753,6 +761,24 @@ button:disabled,
   border-color: var(--color-primary-active);
 }
 
+/* The broadcast variant: .btn-primary's metrics and weight on the orange
+   family, reserved for actions that put something on device screens so the
+   colour keeps one meaning. */
+.btn-accent {
+  background: var(--color-accent-solid);
+  border-color: var(--color-accent-solid);
+  color: var(--color-primary-fg);
+  font-weight: 600;
+}
+.btn-accent:hover:not(:disabled) {
+  background: var(--color-accent-solid-hover);
+  border-color: var(--color-accent-solid-hover);
+}
+.btn-accent:active:not(:disabled) {
+  background: var(--color-accent-active);
+  border-color: var(--color-accent-active);
+}
+
 /* Destructive actions are outlined rather than filled: a wall of solid red
    reads as an error state, and the outline still separates them clearly from
    neutral actions. They fill on hover, at the point of commitment. */
@@ -808,7 +834,8 @@ button:disabled,
   color: var(--color-text);
   animation: spin 600ms linear infinite;
 }
-.btn-primary.btn-loading::after { color: #fff; }
+.btn-primary.btn-loading::after,
+.btn-accent.btn-loading::after { color: #fff; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 

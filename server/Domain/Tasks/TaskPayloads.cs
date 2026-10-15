@@ -315,4 +315,21 @@ public static class TaskPayloads
     /// <param name="MemberName">Last-known member name (logging).</param>
     public sealed record LocalGroupMembership(
         string GroupSid, string GroupName, string MemberSid, string MemberName);
+
+    // ---- Announcements ----
+
+    /// <summary>
+    /// A short administrator-written notice the agent shows on the device's
+    /// screens. Plain text, already trimmed and length-checked server-side
+    /// (title 80, message 500); the agent displays it verbatim and never
+    /// interprets it.
+    /// </summary>
+    /// <param name="AnnouncementId">
+    /// The announcement row this task came from. It travels with the notice over
+    /// the session-notice pipe, and the agent keys dismissal on it: an
+    /// announcement the user has dismissed is not shown again for the same id,
+    /// however many tasks re-deliver it. It also makes the agent's log and the
+    /// server's history name the same thing.
+    /// </param>
+    public sealed record ShowAnnouncement(Guid AnnouncementId, string Title, string Message);
 }

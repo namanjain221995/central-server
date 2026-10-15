@@ -31,7 +31,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ServerBaseUrl,
 
-    [string]$Version = '1.17.0',
+    [string]$Version = '1.18.0',
 
     [switch]$SkipPublish
 )

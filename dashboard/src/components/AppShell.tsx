@@ -76,6 +76,9 @@ const NAV_SECTIONS: NavSection[] = [
       // A department's restart at a chosen moment, with cancellation. Its own
       // page rather than a button on Groups: it is about a time, not an action.
       { to: '/restart-management', label: 'Restart Management', icon: 'restart' },
+      // Beside Restart Management: both push an operator's one decision out to
+      // many device screens at once, by group or by named device.
+      { to: '/announcements', label: 'Announcements', icon: 'megaphone' },
       { to: '/updates', label: 'Updates', icon: 'updates' },
       // /agent-releases, not /agent: nginx proxies the /agent/ prefix to the
       // Agent API for enrolled endpoints, so an /agent SPA route breaks on

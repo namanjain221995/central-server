@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 namespace EndpointAgent.Core.SessionNotice;
@@ -6,8 +7,7 @@ namespace EndpointAgent.Core.SessionNotice;
 /// <summary>
 /// A restart Windows has accepted: when it will happen and the grace period it
 /// was scheduled with - or, with <see cref="Cancelled"/> set, the fact that the
-/// restart the user was told about has been called off. The only things the
-/// service ever tells the signed-in user's session.
+/// restart the user was told about has been called off.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -15,7 +15,9 @@ namespace EndpointAgent.Core.SessionNotice;
 /// or administrator text here: the words the user sees are fixed in
 /// <see cref="RestartNoticeView"/>, so nothing that reaches the endpoint -- not a
 /// task payload, not a compromised server, not another process on the machine --
-/// can put its own words in a notice that claims to come from IT.
+/// can put its own words in a notice that claims to come from IT. Administrator
+/// text travels only as an <see cref="AnnouncementNotice"/>, which is the
+/// deliberate, bounded exception recorded in ADR-0005.
 /// </para>
 /// <para>
 /// For a cancellation, <see cref="RestartAt"/> is the moment the restart was
@@ -32,30 +34,79 @@ public sealed record RestartNotice(DateTimeOffset RestartAt, int GraceSeconds, b
 
 /// <summary>
 /// The wire format between the service and the session notifier: one line of
-/// JSON per notice, parsed strictly.
+/// JSON per notice, parsed strictly, one <c>kind</c> per line.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Strict because the reader runs in an ordinary user's session and must treat
 /// every byte as hostile until the pipe's server has been verified -- and even
-/// then. A line is refused if it is too long, is not exactly the four expected
-/// properties, names an unknown version, or carries a value outside what a real
-/// restart can have. Refusing costs one notice; accepting something unexpected
-/// could cost a user's trust in a window that claims to speak for IT.
+/// then. A line is refused if it is too long, is not exactly the expected
+/// properties for its kind, names an unknown version or kind, or carries a value
+/// outside what a real notice can have. Refusing costs one notice; accepting
+/// something unexpected could cost a user's trust in a window that claims to
+/// speak for IT.
 /// </para>
 /// <para>
-/// Version 2 added <c>cancelled</c>. The service and the notifier ship in the
-/// same installer, so there is no mixed-version case to tolerate: a version 1
-/// line is refused like any other unexpected one.
+/// Version 3 added <c>kind</c> and the <c>announcement</c> line. A restart line
+/// is still numbers and a flag; a cancellation stays kind <c>restart</c> with
+/// <c>cancelled</c> set, so the shape count stays at two. An announcement is the
+/// one line that carries text -- an administrator's title and message, bounded
+/// here and validated again before anything is shown (ADR-0005, announcements
+/// amendment). The service and the notifier ship in the same installer, so there
+/// is no mixed-version case to tolerate: a version 1 or 2 line is refused like
+/// any other unexpected one.
+/// </para>
+/// <para>
+/// Text is encoded without the serializer's non-ASCII escaping, so the character
+/// bounds and the byte bound can hold together: 80 + 500 characters of any
+/// plain text fit a <see cref="MaxLineBytes"/> line as raw UTF-8, where the
+/// default <c>\uXXXX</c> escaping of every non-ASCII character would not.
+/// Control characters other than newline and tab are refused instead of
+/// escaped -- they have no place in text meant to be read.
 /// </para>
 /// </remarks>
-public static class RestartNoticeProtocol
+public static class SessionNoticeProtocol
 {
-    public const int Version = 2;
+    public const int Version = 3;
 
-    public const int MaxLineBytes = 256;
+    /// <summary>
+    /// Sized for the largest announcement: 80 + 500 characters at up to three
+    /// UTF-8 bytes each, plus the JSON around them, stays under this with room.
+    /// </summary>
+    public const int MaxLineBytes = 2048;
 
     public const int MaxGraceSeconds = 3600;
+
+    public const int MaxTitleChars = 80;
+
+    public const int MaxMessageChars = 500;
+
+    private const string RestartKind = "restart";
+    private const string AnnouncementKind = "announcement";
+
+    /// <summary>
+    /// Raw UTF-8 for non-ASCII; see the type remarks. Quotes, backslashes and the
+    /// permitted control characters still escape, to two bytes each.
+    /// </summary>
+    private static readonly JsonSerializerOptions TextOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    /// <summary>
+    /// Whether a string may travel as an announcement title. One shared rule for
+    /// the executor that accepts the payload and the reader that decodes the
+    /// line, so nothing the service agrees to send can be refused on arrival.
+    /// </summary>
+    public static bool IsValidTitle(string? title) => IsValidText(title, MaxTitleChars);
+
+    /// <summary>Whether a string may travel as an announcement message. See <see cref="IsValidTitle"/>.</summary>
+    public static bool IsValidMessage(string? message) => IsValidText(message, MaxMessageChars);
+
+    private static bool IsValidText(string? text, int maxChars) =>
+        !string.IsNullOrEmpty(text)
+        && text.Length <= maxChars
+        && !text.Any(static c => char.IsControl(c) && c is not ('\r' or '\n' or '\t'));
 
     public static byte[] Encode(RestartNotice notice)
     {
@@ -63,6 +114,7 @@ public static class RestartNoticeProtocol
         var json = JsonSerializer.Serialize(new
         {
             v = Version,
+            kind = RestartKind,
             restartAt = notice.RestartAt.ToUniversalTime().ToString("O"),
             graceSeconds = notice.GraceSeconds,
             cancelled = notice.Cancelled,
@@ -71,9 +123,55 @@ public static class RestartNoticeProtocol
         return Encoding.UTF8.GetBytes(json + "\n");
     }
 
-    public static bool TryDecode(ReadOnlySpan<byte> line, out RestartNotice? notice)
+    public static byte[] Encode(AnnouncementNotice notice)
     {
-        notice = null;
+        ArgumentNullException.ThrowIfNull(notice);
+
+        // The service must never emit a line its own reader would refuse: the
+        // executor validates the payload against the same rules, so reaching
+        // here with invalid text is a programming error, not a data condition.
+        if (!IsValidTitle(notice.Title))
+        {
+            throw new ArgumentException($"An announcement title must be 1..{MaxTitleChars} printable characters.", nameof(notice));
+        }
+
+        if (!IsValidMessage(notice.Message))
+        {
+            throw new ArgumentException($"An announcement message must be 1..{MaxMessageChars} printable characters.", nameof(notice));
+        }
+
+        var json = JsonSerializer.Serialize(new
+        {
+            v = Version,
+            kind = AnnouncementKind,
+            // The server's announcement id, so a delivery of the same message --
+            // a replay, a re-queued task -- is recognisable as the same message.
+            id = notice.Id.ToString("D"),
+            at = notice.At.ToUniversalTime().ToString("O"),
+            title = notice.Title,
+            message = notice.Message,
+        }, TextOptions);
+
+        var bytes = Encoding.UTF8.GetBytes(json + "\n");
+        if (bytes.Length > MaxLineBytes)
+        {
+            // Unreachable while the bounds above hold (see MaxLineBytes); kept so
+            // a future loosening fails here, loudly, rather than at every reader.
+            throw new InvalidOperationException("An encoded announcement exceeded the line limit.");
+        }
+
+        return bytes;
+    }
+
+    /// <summary>
+    /// Decodes one line into exactly one kind of notice, or refuses it. At most
+    /// one of <paramref name="restart"/> and <paramref name="announcement"/> is
+    /// set, and only when the method returns true.
+    /// </summary>
+    public static bool TryDecode(ReadOnlySpan<byte> line, out RestartNotice? restart, out AnnouncementNotice? announcement)
+    {
+        restart = null;
+        announcement = null;
 
         if (line.IsEmpty || line.Length > MaxLineBytes)
         {
@@ -90,55 +188,129 @@ public static class RestartNoticeProtocol
                 return false;
             }
 
-            // Exactly these four. An extra property is not ignored: a sender that
-            // adds fields is not the sender this reader was written for.
-            var names = root.EnumerateObject().Select(p => p.Name).ToList();
-            if (names.Count != 4
-                || !names.Contains("v") || !names.Contains("restartAt")
-                || !names.Contains("graceSeconds") || !names.Contains("cancelled"))
-            {
-                return false;
-            }
-
-            if (root.GetProperty("v").ValueKind != JsonValueKind.Number
-                || !root.GetProperty("v").TryGetInt32(out var version)
+            if (root.TryGetProperty("v", out var versionElement) is false
+                || versionElement.ValueKind != JsonValueKind.Number
+                || !versionElement.TryGetInt32(out var version)
                 || version != Version)
             {
                 return false;
             }
 
-            var graceElement = root.GetProperty("graceSeconds");
-            if (graceElement.ValueKind != JsonValueKind.Number
-                || !graceElement.TryGetInt32(out var grace)
-                || grace is < 0 or > MaxGraceSeconds)
+            if (!root.TryGetProperty("kind", out var kindElement) || kindElement.ValueKind != JsonValueKind.String)
             {
                 return false;
             }
 
-            var cancelledElement = root.GetProperty("cancelled");
-            if (cancelledElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            return kindElement.GetString() switch
             {
-                return false;
-            }
-
-            var restartElement = root.GetProperty("restartAt");
-            if (restartElement.ValueKind != JsonValueKind.String
-                || !DateTimeOffset.TryParse(
-                    restartElement.GetString(),
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    System.Globalization.DateTimeStyles.RoundtripKind,
-                    out var restartAt))
-            {
-                return false;
-            }
-
-            notice = new RestartNotice(restartAt.ToUniversalTime(), grace, cancelledElement.GetBoolean());
-            return true;
+                RestartKind => TryDecodeRestart(root, out restart),
+                AnnouncementKind => TryDecodeAnnouncement(root, out announcement),
+                _ => false,
+            };
         }
         catch (JsonException)
         {
             return false;
         }
+    }
+
+    private static bool TryDecodeRestart(JsonElement root, out RestartNotice? notice)
+    {
+        notice = null;
+
+        // Exactly these five. An extra property is not ignored: a sender that
+        // adds fields is not the sender this reader was written for.
+        var names = root.EnumerateObject().Select(p => p.Name).ToList();
+        if (names.Count != 5
+            || !names.Contains("v") || !names.Contains("kind") || !names.Contains("restartAt")
+            || !names.Contains("graceSeconds") || !names.Contains("cancelled"))
+        {
+            return false;
+        }
+
+        var graceElement = root.GetProperty("graceSeconds");
+        if (graceElement.ValueKind != JsonValueKind.Number
+            || !graceElement.TryGetInt32(out var grace)
+            || grace is < 0 or > MaxGraceSeconds)
+        {
+            return false;
+        }
+
+        var cancelledElement = root.GetProperty("cancelled");
+        if (cancelledElement.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            return false;
+        }
+
+        if (!TryReadMoment(root, "restartAt", out var restartAt))
+        {
+            return false;
+        }
+
+        notice = new RestartNotice(restartAt, grace, cancelledElement.GetBoolean());
+        return true;
+    }
+
+    private static bool TryDecodeAnnouncement(JsonElement root, out AnnouncementNotice? notice)
+    {
+        notice = null;
+
+        var names = root.EnumerateObject().Select(p => p.Name).ToList();
+        if (names.Count != 6
+            || !names.Contains("v") || !names.Contains("kind") || !names.Contains("id")
+            || !names.Contains("at") || !names.Contains("title") || !names.Contains("message"))
+        {
+            return false;
+        }
+
+        // Exactly the form the service writes ("D"); a sender spelling the id
+        // another way is not the sender this reader was written for.
+        var idElement = root.GetProperty("id");
+        if (idElement.ValueKind != JsonValueKind.String
+            || !Guid.TryParseExact(idElement.GetString(), "D", out var id))
+        {
+            return false;
+        }
+
+        var titleElement = root.GetProperty("title");
+        var messageElement = root.GetProperty("message");
+        if (titleElement.ValueKind != JsonValueKind.String || messageElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var title = titleElement.GetString();
+        var message = messageElement.GetString();
+        if (!IsValidTitle(title) || !IsValidMessage(message))
+        {
+            return false;
+        }
+
+        if (!TryReadMoment(root, "at", out var at))
+        {
+            return false;
+        }
+
+        notice = new AnnouncementNotice(id, title!, message!, at);
+        return true;
+    }
+
+    private static bool TryReadMoment(JsonElement root, string name, out DateTimeOffset moment)
+    {
+        moment = default;
+        var element = root.GetProperty(name);
+        if (element.ValueKind != JsonValueKind.String
+            || !DateTimeOffset.TryParse(
+                element.GetString(),
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind,
+                out var parsed))
+        {
+            return false;
+        }
+
+        moment = parsed.ToUniversalTime();
+        return true;
     }
 }
 

@@ -46,6 +46,7 @@ export type IconName =
   | 'chrome'
   | 'restart'
   | 'portal'
+  | 'megaphone'
 
 const PATHS: Record<IconName, ReactNode> = {
   // A storefront: scalloped awning over a doorway. The Company Portal is where
@@ -57,6 +58,14 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M3 10a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0" />
       <path d="M5 13v8h14v-8" />
       <path d="M10 21v-5h4v5" />
+    </>
+  ),
+  // A megaphone: the speaker cone with its mouthpiece arc. Announcements are
+  // broadcast to device screens, and the glyph says "address everyone".
+  megaphone: (
+    <>
+      <path d="m3 11 18-5v12L3 14v-3z" />
+      <path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" />
     </>
   ),
   // The power symbol: a broken ring with a bar through the gap.

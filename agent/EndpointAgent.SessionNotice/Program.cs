@@ -42,12 +42,12 @@ internal static class Program
         var reader = new SessionNoticeReader();
 
         // The reader runs on the thread pool; the window owns this thread and its
-        // message loop, and polls the reader's latest notice on a timer. Nothing
+        // message loop, and polls the reader's latest notices on a timer. Nothing
         // crosses back from the reader into window code. When the reader finishes
         // -- the service has gone -- the window closes and this process ends.
         var reading = Task.Run(() => reader.RunAsync(stop.Token));
 
-        var exitCode = NoticeWindow.Run(() => reader.Latest, () => reading.IsCompleted);
+        var exitCode = NoticeWindow.Run(() => reader.Latest, () => reader.LatestAnnouncement, () => reading.IsCompleted);
 
         stop.Cancel();
         try

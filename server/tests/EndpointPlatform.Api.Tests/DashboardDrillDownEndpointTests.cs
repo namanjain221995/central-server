@@ -21,7 +21,7 @@ public sealed class DashboardDrillDownEndpointTests(AdminApiPostgresFixture fixt
     private async Task<HttpClient> ClientAsync(string email) =>
         _fixture.CreateClientFor(await _fixture.SignInAsync(email));
 
-    private async Task<Guid> SeedDeviceAsync(string hostname, DateTimeOffset lastSeenAt)
+    private async Task<Guid> SeedDeviceAsync(string hostname, DateTimeOffset lastSeenAt, string? loggedOnUser = null)
     {
         await using var db = _fixture.CreateDbContext();
         var organizationId = await db.Organizations.Select(o => o.Id).FirstAsync();
@@ -37,6 +37,11 @@ public sealed class DashboardDrillDownEndpointTests(AdminApiPostgresFixture fixt
         var device = Device.Enroll(
             organizationId, hostname, $"smbios-{Guid.CreateVersion7()}", "1.16.2",
             "Windows 11 Pro", enrollmentToken.Id, lastSeenAt);
+        if (loggedOnUser is not null)
+        {
+            device.RecordInventory(loggedOnUser, lastSeenAt);
+        }
+
         db.Devices.Add(device);
 
         await db.SaveChangesAsync();
@@ -79,6 +84,29 @@ public sealed class DashboardDrillDownEndpointTests(AdminApiPostgresFixture fixt
         (await HostnamesAsync(client, $"search={tag}&connectivity=online")).ShouldBe([$"ON-{tag}"]);
         (await HostnamesAsync(client, $"search={tag}&connectivity=offline")).ShouldBe([$"OFF-{tag}"]);
         (await HostnamesAsync(client, $"search={tag}")).Count.ShouldBe(2);
+    }
+
+    /// <summary>
+    /// The list says who is signed in where. The announcements device picker
+    /// leads with this column -- "whose screen gets this" is the question --
+    /// so the field must be served, not only stored.
+    /// </summary>
+    [Fact]
+    public async Task The_device_list_carries_the_logged_on_user()
+    {
+        var tag = Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        await SeedDeviceAsync($"WHO-{tag}", DateTimeOffset.UtcNow, loggedOnUser: @"CORP\asha");
+        await SeedDeviceAsync($"NOBODY-{tag}", DateTimeOffset.UtcNow);
+
+        var client = await ClientAsync(AdminApiPostgresFixture.HelpdeskEmail);
+        var page = await (await client.GetAsync($"/admin/v1/devices?search={tag}"))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        var items = page.GetProperty("items").EnumerateArray()
+            .ToDictionary(i => i.GetProperty("hostname").GetString()!);
+
+        items[$"WHO-{tag}"].GetProperty("loggedOnUser").GetString().ShouldBe(@"CORP\asha");
+        items[$"NOBODY-{tag}"].GetProperty("loggedOnUser").ValueKind.ShouldBe(JsonValueKind.Null,
+            "a machine that never reported a session says so rather than inventing one");
     }
 
     [Fact]
