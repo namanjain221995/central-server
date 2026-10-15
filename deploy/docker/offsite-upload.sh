@@ -4,10 +4,16 @@
 # rclone speaks), verifies the copy, and keeps the newest N there.
 #
 #   sudo ./offsite-upload.sh --setup     # once: connect a Google Drive account
-#   sudo ./offsite-upload.sh             # upload the newest bundle now
+#   sudo ./offsite-upload.sh             # upload every local bundle not yet off-site
 #   sudo ./offsite-upload.sh <bundle>    # upload one particular bundle
 #
 # Once set up, backup.sh calls this after every nightly backup on its own.
+#
+# Without arguments it catches up, rather than sending only the newest bundle.
+# A night whose upload failed (a Drive rate limit, a network outage) used to
+# leave that bundle on this machine alone for ever, because the next night sent
+# only its own. Every bundle that arrives intact gets a "<bundle>.offsite"
+# marker beside it; backup.sh deletes a local bundle only once it has one.
 #
 # What leaves the machine is the ENCRYPTED bundle and its checksum, nothing
 # else. The passphrase never goes off-site: keep it in a password manager,
@@ -105,9 +111,16 @@ rc() { rclone --config "$rclone_conf" --retries 5 --low-level-retries 10 --tpsli
 
 bundles=("$@")
 if [ "${#bundles[@]}" -eq 0 ]; then
-    newest="$(ls -1 "${bundle_dir}"/epp-backup-*.tar.gpg 2>/dev/null | sort | tail -n 1 || true)"
-    [ -n "$newest" ] || die "no bundles in ${bundle_dir}"
-    bundles=("$newest")
+    # Every local bundle without a marker, oldest first, so a backlog lands in
+    # the order it was made. One that is already on the remote is not sent
+    # again: rclone copy skips a file whose size and hash match, and the check
+    # below still runs, so it is verified and marked all the same.
+    mapfile -t bundles < <(ls -1 "${bundle_dir}"/epp-backup-*.tar.gpg 2>/dev/null | sort \
+        | while read -r b; do [ -e "${b}.offsite" ] || echo "$b"; done)
+    if [ "${#bundles[@]}" -eq 0 ]; then
+        ls -1 "${bundle_dir}"/epp-backup-*.tar.gpg >/dev/null 2>&1 || die "no bundles in ${bundle_dir}"
+        echo "==> every local bundle is already off-site"
+    fi
 fi
 
 for bundle in "${bundles[@]}"; do
@@ -123,6 +136,10 @@ for bundle in "${bundles[@]}"; do
     # MD5 of every file). "Uploaded" is not the same as "arrived intact".
     rc check "$dir" "$remote" --one-way --include "/${name}" --include "/${name}.sha256" 2>/dev/null \
         || die "${name} on ${remote} does not match the local file"
+
+    # The marker is what lets backup.sh delete the local copy. Written only
+    # after the check, so it can never claim more than was verified.
+    touch "${dir}/${name}.offsite"
     echo "    verified"
 done
 
