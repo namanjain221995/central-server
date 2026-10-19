@@ -114,6 +114,22 @@ public sealed class Device : AuditableEntity
     public string? LoggedOnUser { get; private set; }
 
     /// <summary>
+    /// Whether the agent said, on its last heartbeat, that it is currently showing
+    /// a persistent full-screen lock. Null until an agent that reports it (1.19.0+)
+    /// checks in.
+    /// </summary>
+    /// <remarks>
+    /// A reported FACT, stored like <see cref="LastSeenAt"/> -- not the device's
+    /// "locked" status, which stays derived (from the engage/release tasks combined
+    /// with this flag), the same way <see cref="IsOnline"/> is derived from
+    /// <see cref="LastSeenAt"/>. Its one job is to let a lock cleared on the machine
+    /// itself, with the IT unlock code, show as released in the console even though
+    /// no release task was queued: the agent reports false and the derived status
+    /// follows. See the screen-lock service's derivation rule.
+    /// </remarks>
+    public bool? ScreenLockedReported { get; private set; }
+
+    /// <summary>
     /// When an administrator last asked for a fresh inventory. The next heartbeat
     /// response tells the agent to upload one; comparing against
     /// <see cref="InventoryCollectedAt"/> decides whether the request is still
@@ -156,7 +172,16 @@ public sealed class Device : AuditableEntity
     /// when the agent did not say. Measured on the agent alone, so the boot time
     /// derived from it is on the server's clock whatever the device's clock reads.
     /// </param>
-    public void RecordHeartbeat(string hostname, string agentVersion, string? operatingSystem, DateTimeOffset now, TimeSpan? uptime = null)
+    /// <param name="screenLocked">
+    /// Whether the agent is currently showing a persistent full-screen lock, or null
+    /// when it did not say (an agent before 1.19.0). Null leaves the last reported
+    /// value untouched -- an older agent must not wipe a truth a newer one reported
+    /// -- while true or false records the agent's current account, which is what
+    /// lets a lock cleared on the machine with the IT unlock code show as released.
+    /// </param>
+    public void RecordHeartbeat(
+        string hostname, string agentVersion, string? operatingSystem, DateTimeOffset now,
+        TimeSpan? uptime = null, bool? screenLocked = null)
     {
         // A retired device's heartbeats are rejected upstream; guard here too so a
         // coding error cannot quietly resurrect one.
@@ -177,6 +202,14 @@ public sealed class Device : AuditableEntity
         if (operatingSystem is not null)
         {
             OperatingSystem = Guard.OptionalMaxLength(operatingSystem, 256);
+        }
+
+        // Only overwrite when the agent actually reported it. A null means "this
+        // build does not say", not "unlocked", so an old agent heartbeating must
+        // not clear what a newer one last told us.
+        if (screenLocked is not null)
+        {
+            ScreenLockedReported = screenLocked;
         }
 
         LastSeenAt = now;

@@ -76,6 +76,9 @@ const NAV_SECTIONS: NavSection[] = [
       // A department's restart at a chosen moment, with cancellation. Its own
       // page rather than a button on Groups: it is about a time, not an action.
       { to: '/restart-management', label: 'Restart Management', icon: 'restart' },
+      // Beside Restart Management: both reach a set of device screens at once.
+      // This one holds them on a notice until an administrator lifts it.
+      { to: '/screen-locks', label: 'Screen Locks', icon: 'lock' },
       // Beside Restart Management: both push an operator's one decision out to
       // many device screens at once, by group or by named device.
       { to: '/announcements', label: 'Announcements', icon: 'megaphone' },

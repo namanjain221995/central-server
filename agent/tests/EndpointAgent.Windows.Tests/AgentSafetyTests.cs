@@ -108,8 +108,35 @@ public sealed class AgentSafetyTests
         var start = typeof(EndpointAgent.Windows.SessionNotice.WindowsSessionProcessHost).GetMethod("StartInSession")!;
         start.GetParameters().Select(p => p.Name).ShouldBe(["sessionId", "imagePath", "workingDirectory"]);
 
-        // And the only caller resolves that image from a constant name beside the service.
+        // The callers resolve the image from a constant name beside the service.
+        // There are exactly TWO reviewed images the service starts this way, each
+        // pinned explicitly: the session notifier and the screen-lock overlay. The
+        // overlay needs foreground, input hooks and a UI framework the notifier must
+        // never have, which is why it is a second service-launched image rather than
+        // a mode of the first (ADR-0005, screen-lock amendment). Adding a third is a
+        // deliberate change to this assertion, not a silent widening.
         EndpointAgent.Windows.SessionNotice.SessionNoticeLauncher.ImageName.ShouldBe("EndpointAgent.SessionNotice.exe");
+        EndpointAgent.Windows.ScreenLock.ScreenLockOverlayLauncher.ImageName.ShouldBe("EndpointAgent.LockScreen.exe");
+    }
+
+    /// <summary>
+    /// The screen-lock overlay runs in every signed-in user's session, like the
+    /// notifier, so it is the other component where a launch capability would do
+    /// the most harm. The process-creation scan above covers it only because it
+    /// lives under <c>agent/</c>; this fails if it is ever moved somewhere the scan
+    /// does not look, and pins that it creates no process of its own -- the service
+    /// starts it, it starts nothing.
+    /// </summary>
+    [Fact]
+    public void The_lock_overlay_is_inside_the_process_creation_scan_and_creates_none()
+    {
+        var agentRoot = FindAgentSourceRoot();
+        var overlaySources = Directory
+            .EnumerateFiles(Path.Combine(agentRoot, "EndpointAgent.LockScreen"), "*.cs", SearchOption.TopDirectoryOnly)
+            .ToList();
+
+        overlaySources.ShouldNotBeEmpty("the lock overlay's sources must sit under the scanned agent tree");
+        overlaySources.ShouldAllBe(f => !ProcessCreationApis.Any(api => File.ReadAllText(f).Contains(api, StringComparison.Ordinal)));
     }
 
     /// <summary>

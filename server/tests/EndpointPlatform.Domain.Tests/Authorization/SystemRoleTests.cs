@@ -199,6 +199,30 @@ public sealed class SystemRoleTests
     }
 
     /// <summary>
+    /// The persistent full-screen lock is its own high-risk authority, held only by
+    /// IT Administrator and Super Administrator. Helpdesk holds <c>device.lock</c>
+    /// (the session lock) but must NOT inherit the power to take a machine over until
+    /// an administrator releases it, and Auditor mutates nothing.
+    /// </summary>
+    [Fact]
+    public void Only_administrators_can_screen_lock_a_device()
+    {
+        var catalogue = Permissions.All.ToDictionary(p => p.Key, StringComparer.Ordinal);
+        catalogue[Permissions.Device.ScreenLock].HighRisk.ShouldBeTrue();
+
+        var holders = SystemRoles.All
+            .Where(r => r.Value.PermissionKeys.Contains(Permissions.Device.ScreenLock, StringComparer.Ordinal))
+            .Select(r => r.Key)
+            .ToArray();
+
+        holders.ShouldBe([SystemRoles.SuperAdministrator, SystemRoles.ItAdministrator], ignoreOrder: true);
+
+        // The session lock stays exactly as it was: Helpdesk keeps device.lock.
+        SystemRoles.All[SystemRoles.Helpdesk].PermissionKeys.ShouldContain(Permissions.Device.Lock);
+        SystemRoles.All[SystemRoles.Helpdesk].PermissionKeys.ShouldNotContain(Permissions.Device.ScreenLock);
+    }
+
+    /// <summary>
     /// Only IT Administrator and Super Administrator may open USB storage access.
     /// </summary>
     /// <remarks>

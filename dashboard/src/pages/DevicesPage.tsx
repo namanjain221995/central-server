@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
+  ApiError,
   deviceName,
   getAgentReleases,
   getDevices,
+  releaseScreenLock,
   updateDeviceAgent,
   type AgentReleaseRow,
   type DeviceListItem,
   type DevicePage,
+  type ScreenLockResult,
 } from '../api/client'
+import { useAuth } from '../auth/AuthContext'
+import { RowActionsMenu } from '../components/RowActionsMenu'
+import { ScreenLockDialog } from './ScreenLockDialog'
+import { deriveLockedBadge, lockSummary } from './screenLocksView'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import {
   connectivityFilters,
@@ -74,6 +81,13 @@ export function DevicesPage() {
   const [updating, setUpdating] = useState(false)
   const [outcome, setOutcome] = useState<string | null>(null)
   const [refusals, setRefusals] = useState<UpdateOutcome[]>([])
+
+  // ---- full-screen lock ----
+  const { hasPermission } = useAuth()
+  const canLock = hasPermission('device.screenlock')
+  const [lockTarget, setLockTarget] = useState<DeviceListItem | null>(null)
+  const [unlockTarget, setUnlockTarget] = useState<DeviceListItem | null>(null)
+  const [lockNotice, setLockNotice] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -168,6 +182,25 @@ export function DevicesPage() {
     void load()
   }
 
+  function onLocked(result: ScreenLockResult) {
+    setLockTarget(null)
+    setLockNotice(lockSummary(result))
+    void load()
+  }
+
+  async function onUnlock() {
+    if (unlockTarget === null) return
+    const target = unlockTarget
+    setUnlockTarget(null)
+    try {
+      const { released } = await releaseScreenLock({ deviceIds: [target.id] })
+      setLockNotice(`Unlocked ${released} device${released === 1 ? '' : 's'}.`)
+      void load()
+    } catch (e) {
+      setError(e instanceof ApiError ? (e.detail ?? e.message) : 'The device could not be unlocked.')
+    }
+  }
+
   const totalPages = data ? Math.max(1, Math.ceil(data.totalCount / PAGE_SIZE)) : 1
 
   return (
@@ -176,6 +209,20 @@ export function DevicesPage() {
         <div className="error-banner">
           <Icon name="alert" size={15} />
           <span>{error}</span>
+        </div>
+      )}
+      {lockNotice && (
+        <div className="notice-banner" role="status">
+          <Icon name="check" size={15} />
+          <span style={{ flex: 1 }}>{lockNotice}</span>
+          <button
+            type="button"
+            className="btn-ghost btn-sm"
+            style={{ color: 'inherit' }}
+            onClick={() => setLockNotice(null)}
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -338,10 +385,13 @@ export function DevicesPage() {
                     <th>Agent</th>
                     <th>Last seen</th>
                     <th>Enrolled</th>
+                    {canLock && <th aria-label="Screen lock actions" />}
                   </tr>
                 </thead>
                 <tbody>
-                  {data.items.map((device) => (
+                  {data.items.map((device) => {
+                    const lockedBadge = deriveLockedBadge(device)
+                    return (
                     <tr key={device.id}>
                       {target && (
                         <td>
@@ -377,13 +427,17 @@ export function DevicesPage() {
                       <td>
                         {/* Retired is neutral rather than critical: it is an
                             intended end state, not a fault to be investigated. */}
-                        {device.status === 'Retired' ? (
-                          <span className="badge neutral">Retired</span>
-                        ) : device.isOnline ? (
-                          <span className="badge ok">Online</span>
-                        ) : (
-                          <span className="badge crit">Offline</span>
-                        )}
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                          {device.status === 'Retired' ? (
+                            <span className="badge neutral">Retired</span>
+                          ) : device.isOnline ? (
+                            <span className="badge ok">Online</span>
+                          ) : (
+                            <span className="badge crit">Offline</span>
+                          )}
+                          {/* A held machine, from the server's own flag. */}
+                          {lockedBadge && <span className={`badge ${lockedBadge.tone}`}>{lockedBadge.label}</span>}
+                        </div>
                       </td>
                       <td>{device.operatingSystem ?? '—'}</td>
                       <td>
@@ -398,8 +452,33 @@ export function DevicesPage() {
                       </td>
                       <td>{formatLastSeen(device.lastSeenAt)}</td>
                       <td>{new Date(device.enrolledAt).toLocaleDateString()}</td>
+                      {canLock && (
+                        <td style={{ textAlign: 'right' }}>
+                          {/* Both actions always present so the menu's shape is
+                              steady row to row; each says why when it cannot run. */}
+                          <RowActionsMenu
+                            label={`Screen lock actions for ${deviceName(device)}`}
+                            items={[
+                              {
+                                key: 'lock',
+                                label: 'Full-screen lock…',
+                                enabled: device.status === 'Active',
+                                reason: device.status === 'Active' ? null : 'A retired device cannot be locked',
+                              },
+                              {
+                                key: 'unlock',
+                                label: 'Unlock',
+                                enabled: device.screenLocked,
+                                reason: device.screenLocked ? null : 'This device is not locked',
+                              },
+                            ]}
+                            onSelect={(key) => (key === 'lock' ? setLockTarget(device) : setUnlockTarget(device))}
+                          />
+                        </td>
+                      )}
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -447,6 +526,26 @@ export function DevicesPage() {
           {eligibleDevices(selectedCandidates, target)
             .map((d) => d.hostname)
             .join(', ')}
+        </ConfirmDialog>
+      )}
+
+      {lockTarget && (
+        <ScreenLockDialog
+          preset={{ kind: 'device', deviceId: lockTarget.id, name: deviceName(lockTarget) }}
+          onCancel={() => setLockTarget(null)}
+          onLocked={onLocked}
+        />
+      )}
+
+      {unlockTarget && (
+        <ConfirmDialog
+          title={`Unlock ${deviceName(unlockTarget)}?`}
+          confirmLabel="Unlock"
+          onCancel={() => setUnlockTarget(null)}
+          onConfirm={() => void onUnlock()}
+        >
+          The full-screen lock is lifted and the device returns to the Windows sign-in screen. If it is
+          offline, it unlocks when it next connects.
         </ConfirmDialog>
       )}
     </>

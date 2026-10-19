@@ -36,7 +36,8 @@ public sealed class HeartbeatLoop(
     IOptions<AgentOptions> agentOptions,
     IOptions<EnrollmentOptions> enrollmentOptions,
     TimeProvider timeProvider,
-    ILogger<HeartbeatLoop> logger)
+    ILogger<HeartbeatLoop> logger,
+    EndpointAgent.Core.ScreenLock.ScreenLockManager? screenLock = null)
 {
     private static readonly TimeSpan MinBackoff = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
@@ -74,6 +75,10 @@ public sealed class HeartbeatLoop(
 
     private readonly ILogger<HeartbeatLoop> _logger = logger
         ?? throw new ArgumentNullException(nameof(logger));
+
+    // Optional: a device with no screen-lock feature wired (older composition, a
+    // test) simply reports "not locked". Not null-guarded, because absent is valid.
+    private readonly EndpointAgent.Core.ScreenLock.ScreenLockManager? _screenLock = screenLock;
 
     /// <summary>The agent build version reported to the server.</summary>
     public string AgentVersion { get; init; } = Core.AgentVersion.Current;
@@ -113,12 +118,23 @@ public sealed class HeartbeatLoop(
             while (!stoppingToken.IsCancellationRequested)
             {
                 var sentAt = _timeProvider.GetUtcNow();
-                var request = new HeartbeatRequest(
+
+                // Whether this device is holding a screen lock, by the agent's own
+                // account, carried on every heartbeat (ADR-0005, screen-lock
+                // amendment). This is the ground truth that lets a local Ctrl+Alt+U
+                // unlock reflect in the console: the agent reports false the moment
+                // the user clears the lock on the machine, so the derived status stops
+                // saying locked even though no release task was ever queued. A device
+                // with no screen-lock feature wired simply reports false.
+                var screenLocked = _screenLock?.CurrentlyLocked ?? false;
+
+                var request = BuildRequest(
                     _systemInfoProvider.GetHostName(),
                     AgentVersion,
                     await _systemInfoProvider.GetOperatingSystemDescriptionAsync(stoppingToken),
                     sentAt,
-                    BootTime(sentAt));
+                    BootTime(sentAt),
+                    screenLocked);
 
                 AgentApiResult<HeartbeatResponse> result;
 
@@ -306,6 +322,20 @@ public sealed class HeartbeatLoop(
             _logger.LogError(ex, "Inventory collection failed; will retry on the next server request.");
         }
     }
+
+    /// <summary>
+    /// Assembles the heartbeat the agent sends. Extracted so a test can prove the
+    /// device's live screen-lock state is carried on the wire -- the console's
+    /// "locked" status depends on it -- without standing up the whole loop.
+    /// </summary>
+    internal static HeartbeatRequest BuildRequest(
+        string hostname,
+        string agentVersion,
+        string? operatingSystem,
+        DateTimeOffset sentAt,
+        DateTimeOffset? bootedAt,
+        bool screenLocked) =>
+        new(hostname, agentVersion, operatingSystem, sentAt, bootedAt, ScreenLocked: screenLocked);
 
     /// <summary>
     /// When the machine last started: now minus the system tick count, which

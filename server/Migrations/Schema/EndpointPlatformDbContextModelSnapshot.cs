@@ -894,6 +894,10 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasColumnType("uuid")
                         .HasColumnName("organization_id");
 
+                    b.Property<bool?>("ScreenLockedReported")
+                        .HasColumnType("boolean")
+                        .HasColumnName("screen_locked_reported");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -3464,6 +3468,172 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("restart_schedule_exclusions", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.ScreenLocks.ScreenLock", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ContactLine")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("contact_line");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreatedByDisplay")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("created_by_display");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<Guid?>("DeviceGroupId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_group_id");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("message");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("organization_id");
+
+                    b.Property<string>("TargetType")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("target_type");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_screen_locks");
+
+                    b.HasIndex("OrganizationId", "CreatedAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_screen_locks_organization_id_created_at");
+
+                    b.ToTable("screen_locks", "endpoint_platform");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.ScreenLocks.ScreenLockDevice", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<Guid?>("EngageTaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("engage_task_id");
+
+                    b.Property<string>("Hostname")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("hostname");
+
+                    b.Property<Guid?>("ReleaseTaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("release_task_id");
+
+                    b.Property<Guid>("ScreenLockId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("screen_lock_id");
+
+                    b.Property<string>("SkipReason")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("skip_reason");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_screen_lock_devices");
+
+                    b.HasIndex("DeviceId")
+                        .HasDatabaseName("ix_screen_lock_devices_device_id");
+
+                    b.HasIndex("ScreenLockId", "DeviceId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_screen_lock_devices_screen_lock_id_device_id");
+
+                    b.ToTable("screen_lock_devices", "endpoint_platform");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Security.OrganizationSecuritySetting", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("organization_id");
+
+                    b.Property<string>("ScreenUnlockAlgo")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("screen_unlock_algo");
+
+                    b.Property<string>("ScreenUnlockHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("screen_unlock_hash");
+
+                    b.Property<int>("ScreenUnlockIterations")
+                        .HasColumnType("integer")
+                        .HasColumnName("screen_unlock_iterations");
+
+                    b.Property<string>("ScreenUnlockSalt")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("screen_unlock_salt");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_organization_security_settings");
+
+                    b.HasIndex("OrganizationId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_organization_security_settings_organization_id");
+
+                    b.ToTable("organization_security_settings", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Software.CatalogApp", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4488,6 +4658,33 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_restart_schedule_exclusions_restart_schedules_schedule_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.ScreenLocks.ScreenLockDevice", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_screen_lock_devices_devices_device_id");
+
+                    b.HasOne("EndpointPlatform.Domain.ScreenLocks.ScreenLock", null)
+                        .WithMany()
+                        .HasForeignKey("ScreenLockId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_screen_lock_devices_screen_locks_screen_lock_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Security.OrganizationSecuritySetting", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Identity.Organization", null)
+                        .WithMany()
+                        .HasForeignKey("OrganizationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_organization_security_settings_organizations_organization_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Software.CatalogApp", b =>

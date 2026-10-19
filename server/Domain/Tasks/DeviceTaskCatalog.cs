@@ -117,6 +117,26 @@ public static class DeviceTaskCatalog
             // the task as unknown, which reads exactly like delivery failing.
             new(DeviceTaskType.ShowAnnouncement, Permissions.Announcement.Send, HighRisk: true, 24 * 3600,
                 MinimumAgentVersion: "1.18.0"),
+
+            // High-risk because it takes a machine over completely until it is
+            // deliberately released -- the most disruptive thing this platform can
+            // do to a working endpoint short of shutting it down -- so the UI
+            // confirms it and the audit is elevated. A week of lifetime, deliberately
+            // longer than an announcement's day: a locked-down machine that is
+            // offline now should still come up locked when it reconnects within the
+            // week, because the reason to lock it (a lost or compromised device) has
+            // not expired just because the machine was unreachable for a while.
+            // Gated on the agent that has the lock executor: an older one would fail
+            // the task as unknown, which reads exactly like the lock failing to engage.
+            new(DeviceTaskType.EngageScreenLock, Permissions.Device.ScreenLock, HighRisk: true, 7 * 24 * 3600,
+                MinimumAgentVersion: "1.19.0"),
+
+            // Not high-risk: it lifts a lock rather than imposing one, the undo of
+            // EngageScreenLock. Same permission and the same week of lifetime as the
+            // engage, so an unlock issued for an offline device still reaches it on
+            // reconnect within the window the lock itself lives.
+            new(DeviceTaskType.ReleaseScreenLock, Permissions.Device.ScreenLock, HighRisk: false, 7 * 24 * 3600,
+                MinimumAgentVersion: "1.19.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

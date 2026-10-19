@@ -189,4 +189,37 @@ public enum DeviceTaskType
     /// checks in -- after a day the news is stale and the task expires instead.
     /// </remarks>
     ShowAnnouncement = 51,
+
+    /// <summary>
+    /// Put the device behind a persistent full-screen lock until an administrator
+    /// releases it or the on-device IT recovery code is entered (agent 1.19.0+).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A different thing entirely from <see cref="LockDevice"/>, which merely
+    /// locks the interactive session the way Win+L does and is dismissed by the
+    /// user's own password. This lock takes over every screen and stays until it
+    /// is deliberately lifted, so it carries the message to show and a PBKDF2
+    /// verifier of the organization's IT unlock code -- never the code itself, so
+    /// a captured task cannot reveal it. Queued per target device with a week of
+    /// lifetime, so a machine offline now is still locked when it reconnects
+    /// within the week. Gated on the agent that has the lock executor: an older
+    /// one would fail the task as unknown, which reads exactly like the lock
+    /// failing to engage.
+    /// </para>
+    /// </remarks>
+    EngageScreenLock = 52,
+
+    /// <summary>
+    /// Lift a persistent full-screen lock that <see cref="EngageScreenLock"/>
+    /// engaged (agent 1.19.0+). The undo half of the lock/unlock pair.
+    /// </summary>
+    /// <remarks>
+    /// Names the lock it releases in its payload, the way
+    /// <see cref="CancelRestart"/> names the restart it aborts, so the agent lifts
+    /// the right lock and both logs say the same thing. The same week of lifetime
+    /// as the engage, so an unlock issued for an offline device still reaches it
+    /// on reconnect rather than leaving it locked.
+    /// </remarks>
+    ReleaseScreenLock = 53,
 }

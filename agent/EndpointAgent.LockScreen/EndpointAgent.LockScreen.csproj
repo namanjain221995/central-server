@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- WinExe: a full-screen overlay the SERVICE starts in a user session; no console window. -->
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>EndpointAgent.LockScreen</RootNamespace>
+    <AssemblyName>EndpointAgent.LockScreen</AssemblyName>
+    <VersionPrefix>1.19.0</VersionPrefix>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+
+    <!--
+      WinForms, like the Company Portal and unlike the session notifier. The
+      notifier draws one small window in raw Win32 so as not to ship the desktop
+      runtime; this draws a full-screen overlay on every monitor with a logo, wrapped
+      text and a passphrase box, and WinForms is less code to review than hand-drawing
+      all of that. The cost (the desktop runtime in the publish folder) is already
+      paid by the portal, and build-msi.ps1 publishes this into the same folder with
+      the same self-contained runtime, so the two share one copy. The ADR-0005
+      screen-lock amendment records this, and why a SECOND service-launched image
+      exists (the overlay needs foreground, input hooks and a UI framework the
+      notifier must never have).
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationDefaultFont>Segoe UI, 10pt</ApplicationDefaultFont>
+
+    <RuntimeIdentifier Condition="'$(PublishAgent)' == 'true'">win-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(PublishAgent)' == 'true'">true</SelfContained>
+    <PublishTrimmed Condition="'$(PublishAgent)' == 'true'">false</PublishTrimmed>
+    <PublishSingleFile Condition="'$(PublishAgent)' == 'true'">false</PublishSingleFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!--
+      Runs in a signed-in user's session, as that user, started by the LocalSystem
+      service while the device is locked. It takes NO arguments and reads none for
+      what to show: it asks the service over a named pipe. It blocks input, draws the
+      lock, and on Ctrl+Alt+U sends a typed code to the service for verification. It
+      launches nothing and executes nothing it receives.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The Techsara logo, embedded so the overlay carries it without a loose file. -->
+    <EmbeddedResource Include="Assets\techsara-logo.png" LogicalName="EndpointAgent.LockScreen.techsara-logo.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EndpointAgent.Windows\EndpointAgent.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

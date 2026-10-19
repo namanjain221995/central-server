@@ -332,4 +332,56 @@ public static class TaskPayloads
     /// server's history name the same thing.
     /// </param>
     public sealed record ShowAnnouncement(Guid AnnouncementId, string Title, string Message);
+
+    // ---- Screen lock ----
+
+    /// <summary>
+    /// A PBKDF2-SHA256 verifier of the organization's IT unlock code, so the agent
+    /// can check a code entered on the locked machine itself without the plaintext
+    /// ever leaving the server.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the whole reason the payload is safe to persist and to deliver over
+    /// the task channel: it is a one-way verifier (base64 <paramref name="Salt"/>
+    /// and <paramref name="Hash"/>), not the code. The agent derives PBKDF2 over
+    /// what the operator typed with the same <paramref name="Algo"/>,
+    /// <paramref name="Iterations"/> and salt and compares in constant time; it can
+    /// confirm the right code but can never recover it, and neither can anyone who
+    /// reads a captured task row.
+    /// </para>
+    /// <para>
+    /// <paramref name="Algo"/> is always <c>pbkdf2-sha256</c> today and travels
+    /// explicitly so the parameters can be raised later without the agent having to
+    /// guess which construction an older lock used.
+    /// </para>
+    /// </remarks>
+    public sealed record ScreenLockVerifier(string Algo, int Iterations, string Salt, string Hash);
+
+    /// <summary>
+    /// Engage a persistent full-screen lock. Plain text, already trimmed and
+    /// length-checked server-side (message 500, contact line 200); the agent shows
+    /// it verbatim and never interprets it.
+    /// </summary>
+    /// <param name="LockId">
+    /// The screen-lock row this task came from. It travels with the lock and the
+    /// agent keys the lock on it, so a matching <see cref="ReleaseScreenLock"/>
+    /// lifts exactly this lock and both logs name the same thing.
+    /// </param>
+    /// <param name="Message">What to show on the locked screen (why it is locked).</param>
+    /// <param name="ContactLine">
+    /// An optional second line -- who to call to get it unlocked -- or null when the
+    /// administrator gave none.
+    /// </param>
+    /// <param name="Unlock">
+    /// The verifier of the IT unlock code the agent accepts on the device itself.
+    /// Never the code (see <see cref="ScreenLockVerifier"/>).
+    /// </param>
+    public sealed record EngageScreenLock(Guid LockId, string Message, string? ContactLine, ScreenLockVerifier Unlock);
+
+    /// <summary>
+    /// Lift the lock that <see cref="EngageScreenLock"/> engaged. Names the lock by
+    /// id so the agent releases exactly the one an administrator chose to lift.
+    /// </summary>
+    public sealed record ReleaseScreenLock(Guid LockId);
 }

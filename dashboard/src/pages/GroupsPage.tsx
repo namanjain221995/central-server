@@ -7,6 +7,7 @@ import {
   forceStopGroup,
   getGroup,
   getGroups,
+  releaseScreenLock,
   removeGroupDevices,
   renameGroup,
   runGroupAction,
@@ -15,10 +16,14 @@ import {
   type GroupAction,
   type GroupActionResult,
   type GroupForceStopResult,
+  type ScreenLockResult,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Icon } from '../components/Icon'
-import { RowActionsMenu } from '../components/RowActionsMenu'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { RowActionsMenu, type RowActionsMenuItem } from '../components/RowActionsMenu'
+import { ScreenLockDialog } from './ScreenLockDialog'
+import { lockSummary } from './screenLocksView'
 import {
   AddDevicesDialog,
   CreateGroupDialog,
@@ -40,6 +45,11 @@ type Dialog =
   | { kind: 'action'; action: GroupAction }
   | { kind: 'force-stop' }
   | { kind: 'cancel-restart' }
+  | { kind: 'screen-lock' }
+  | { kind: 'screen-unlock' }
+
+/** Every key the group Actions menu can emit, including the full-screen lock pair. */
+type GroupMenuKey = GroupAction | 'force-stop' | 'cancel-restart' | 'screen-lock' | 'screen-unlock'
 
 /**
  * Device groups: the partitions a device lives in, and the actions a group runs
@@ -56,6 +66,7 @@ type Dialog =
 export function GroupsPage() {
   const { hasPermission } = useAuth()
   const canManage = hasPermission('group.manage')
+  const canLock = hasPermission('device.screenlock')
   const actionItems = groupActionItems({
     restart: hasPermission('device.restart'),
     shutdown: hasPermission('device.shutdown'),
@@ -201,10 +212,29 @@ export function GroupsPage() {
 
   // --------------------------------------------------------------- actions
 
-  function onActionSelected(key: (typeof actionItems)[number]['key']) {
+  function onActionSelected(key: GroupMenuKey) {
     if (key === 'force-stop') setDialog({ kind: 'force-stop' })
     else if (key === 'cancel-restart') setDialog({ kind: 'cancel-restart' })
+    else if (key === 'screen-lock') setDialog({ kind: 'screen-lock' })
+    else if (key === 'screen-unlock') setDialog({ kind: 'screen-unlock' })
     else setDialog({ kind: 'action', action: key })
+  }
+
+  function onScreenLocked(result: ScreenLockResult) {
+    setDialog(null)
+    setNotice(lockSummary(result))
+  }
+
+  async function onScreenUnlock() {
+    if (!detail) return
+    setDialog(null)
+    setError(null)
+    try {
+      const { released } = await releaseScreenLock({ groupId: detail.id })
+      setNotice(`Unlocked ${released} device${released === 1 ? '' : 's'} in ${detail.name}.`)
+    } catch (e) {
+      setError(errorText(e, 'Could not unlock the group.'))
+    }
   }
 
   async function onRunAction(action: GroupAction, delaySeconds: number) {
@@ -330,19 +360,46 @@ export function GroupsPage() {
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  {actionItems.length > 0 && (
-                    <RowActionsMenu
+                  {(actionItems.length > 0 || canLock) && (
+                    <RowActionsMenu<GroupMenuKey>
                       label={`Actions for ${detail.name}`}
                       triggerLabel="Actions"
                       disabled={detail.deviceCount === 0}
-                      items={actionItems.map((i) => ({
-                        key: i.key,
-                        label: i.label,
-                        destructive: i.destructive,
-                        // Offered, but disabled with the reason, when there is no one to send it to.
-                        enabled: i.key === 'cancel-restart' || detail.onlineCount > 0,
-                        reason: i.key !== 'cancel-restart' && detail.onlineCount === 0 ? 'No device in this group is online' : null,
-                      }))}
+                      items={[
+                        ...actionItems.map((i): RowActionsMenuItem<GroupMenuKey> => ({
+                          key: i.key,
+                          label: i.label,
+                          destructive: i.destructive,
+                          // Offered, but disabled with the reason, when there is no one to send it to.
+                          enabled: i.key === 'cancel-restart' || detail.onlineCount > 0,
+                          reason:
+                            i.key !== 'cancel-restart' && detail.onlineCount === 0
+                              ? 'No device in this group is online'
+                              : null,
+                        })),
+                        // The full-screen lock pair. Named apart from the workstation
+                        // "Lock…" above: this one holds the device on a notice until
+                        // it is released, and reaches offline devices on reconnect — so
+                        // it is offered whenever the group has devices, online or not.
+                        ...(canLock
+                          ? [
+                              {
+                                key: 'screen-lock' as const,
+                                label: 'Full-screen lock…',
+                                destructive: false,
+                                enabled: detail.deviceCount > 0,
+                                reason: detail.deviceCount > 0 ? null : 'No devices in this group',
+                              },
+                              {
+                                key: 'screen-unlock' as const,
+                                label: 'Unlock full-screen lock…',
+                                destructive: false,
+                                enabled: true,
+                                reason: null,
+                              },
+                            ]
+                          : []),
+                      ]}
                       onSelect={onActionSelected}
                     />
                   )}
@@ -484,6 +541,24 @@ export function GroupsPage() {
             passed, or on an agent older than 1.14.0, cannot be taken back and is reported as such.
           </p>
         </GroupDialog>
+      )}
+      {dialog?.kind === 'screen-lock' && detail && (
+        <ScreenLockDialog
+          preset={{ kind: 'group', groupId: detail.id, name: detail.name }}
+          onCancel={() => setDialog(null)}
+          onLocked={onScreenLocked}
+        />
+      )}
+      {dialog?.kind === 'screen-unlock' && detail && (
+        <ConfirmDialog
+          title={`Unlock ${detail.name}?`}
+          confirmLabel="Unlock"
+          onCancel={() => setDialog(null)}
+          onConfirm={() => void onScreenUnlock()}
+        >
+          Every device in {detail.name} still held by a full-screen lock is released and returns to the
+          Windows sign-in screen. Offline devices unlock when they next connect.
+        </ConfirmDialog>
       )}
     </>
   )

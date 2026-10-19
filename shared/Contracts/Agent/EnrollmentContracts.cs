@@ -64,12 +64,23 @@ public sealed record EnrollResponse(
 /// happened, including one the device carried out while it was offline.
 /// Optional and last so older agents and servers keep working.
 /// </param>
+/// <param name="ScreenLocked">
+/// Whether the device is currently showing a persistent full-screen lock, by the
+/// agent's own account; null from agents that do not report it (before 1.19.0 and
+/// from one that has never locked). This is the ground truth that lets a local
+/// IT-unlock-code release reflect in the console: the agent reports false the
+/// moment the user clears the lock on the machine, so the derived "locked" status
+/// stops saying locked even though no release task was ever queued. Null falls
+/// back to the task-derived state, so an older agent is simply judged by the tasks
+/// it was sent. Optional and last so older agents and servers keep working.
+/// </param>
 public sealed record HeartbeatRequest(
     string Hostname,
     string AgentVersion,
     string? OperatingSystem,
     DateTimeOffset AgentTimestamp,
-    DateTimeOffset? BootedAt = null);
+    DateTimeOffset? BootedAt = null,
+    bool? ScreenLocked = null);
 
 /// <summary>Response body for a successful heartbeat.</summary>
 /// <param name="ServerTime">Server time, letting the agent detect its own skew.</param>

@@ -26,6 +26,19 @@ public static class Permissions
         public const string Restart = "device.restart";
         public const string Shutdown = "device.shutdown";
         public const string Lock = "device.lock";
+
+        /// <summary>
+        /// Impose a persistent full-screen lock that only an administrator (or the
+        /// on-device IT recovery code) can release.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately separate from <see cref="Lock"/>, which merely locks the
+        /// interactive session the way Win+L does and is a first-line support action
+        /// Helpdesk holds. Taking a machine over completely until it is released is a
+        /// different, higher-risk decision, so it is its own permission and does not
+        /// inherit the session lock's holders.
+        /// </remarks>
+        public const string ScreenLock = "device.screenlock";
         public const string SignOutUser = "device.sign_out_user";
         public const string Enroll = "device.enroll";
         public const string Retire = "device.retire";
@@ -206,6 +219,8 @@ public static class Permissions
         new(Device.Restart, "Devices", "Restart a device", HighRisk: true),
         new(Device.Shutdown, "Devices", "Shut down a device", HighRisk: true),
         new(Device.Lock, "Devices", "Lock a device session", HighRisk: false),
+        new(Device.ScreenLock, "Devices",
+            "Lock a device's screen full-screen until an administrator releases it", HighRisk: true),
         new(Device.SignOutUser, "Devices", "Sign out the interactive user on a device", HighRisk: true),
         new(Device.Enroll, "Devices", "Approve or complete device enrollment", HighRisk: true),
         new(Device.Retire, "Devices", "Retire a device and revoke its credential", HighRisk: true),

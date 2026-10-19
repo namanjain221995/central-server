@@ -131,6 +131,8 @@ export interface DeviceListItem {
   agentUpdateAvailable: boolean
   /** The interactive user the agent last reported, or null when none is signed in. */
   loggedOnUser?: string | null
+  /** True while a full-screen lock is in force on the device, per the server. */
+  screenLocked: boolean
 }
 
 export interface DevicePage {
@@ -2929,4 +2931,114 @@ export function sendAnnouncement(input: AnnouncementInput): Promise<Announcement
 
 export function getAnnouncements(): Promise<AnnouncementRow[]> {
   return request<AnnouncementRow[]>('/admin/v1/announcements')
+}
+
+// -------------------------------------------------------------- screen locks
+
+/** How a screen lock's targets were chosen. */
+export type ScreenLockTargetType = 'Group' | 'Devices'
+
+/**
+ * Exactly one way of naming targets, as a union rather than two optional fields:
+ * the server answers 400 to a request that names both or neither, and the union
+ * makes that request unwritable here. The contact line is optional — the server
+ * falls back to its own default when it is omitted.
+ */
+export type ScreenLockInput =
+  | { message: string; contactLine?: string; groupId: string }
+  | { message: string; contactLine?: string; deviceIds: string[] }
+
+/**
+ * What the server did when a lock was engaged. `targeted` is the devices the
+ * target resolved to; `queued` is every device a lock task was created for,
+ * online or not; `skipped` were not sent anything. `offline` is the subset of
+ * `queued` the server had not seen recently — the ones that lock on reconnect.
+ */
+export interface ScreenLockResult {
+  lockId: string
+  targeted: number
+  queued: number
+  skipped: number
+  offline: number
+}
+
+/** What releasing a lock reported: how many device locks were released. */
+export interface ScreenLockReleaseResult {
+  released: number
+}
+
+/**
+ * One screen lock with its per-device tally, all server-derived. `locked` is how
+ * many devices are showing the lock now; a row with `locked > 0` is still in
+ * force and can be released.
+ */
+export interface ScreenLockRow {
+  id: string
+  message: string
+  /** The contact line shown under the message, or null when none was given. */
+  contactLine: string | null
+  targetType: ScreenLockTargetType
+  /** The group's name for a Group target; null for Devices, or a deleted group. */
+  groupName: string | null
+  createdByDisplay: string
+  createdAt: string
+  targeted: number
+  locked: number
+  released: number
+  pending: number
+  failed: number
+  skipped: number
+  offline: number
+}
+
+/** How a release names what to unlock. The server accepts any one of these. */
+export interface ScreenLockReleaseInput {
+  lockId?: string
+  groupId?: string
+  deviceIds?: string[]
+}
+
+/**
+ * Whether the organisation's IT unlock code has been set, and when it last
+ * changed. The plaintext is never returned by the server — only this status is.
+ */
+export interface ScreenUnlockCodeStatus {
+  isSet: boolean
+  updatedAt?: string
+}
+
+/**
+ * Engage a full-screen lock on a group or a set of devices. A 409 (no problem
+ * code, only a detail) means the IT unlock code has not been set yet; the caller
+ * surfaces that detail and points at the Screen Locks settings control.
+ */
+export function engageScreenLock(input: ScreenLockInput): Promise<ScreenLockResult> {
+  return request<ScreenLockResult>('/admin/v1/screen-locks', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+/** Release a lock — by lock id, by group, or by specific devices. */
+export function releaseScreenLock(input: ScreenLockReleaseInput): Promise<ScreenLockReleaseResult> {
+  return request<ScreenLockReleaseResult>('/admin/v1/screen-locks/release', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function getScreenLocks(): Promise<ScreenLockRow[]> {
+  return request<ScreenLockRow[]>('/admin/v1/screen-locks')
+}
+
+export function getScreenUnlockCodeStatus(): Promise<ScreenUnlockCodeStatus> {
+  return request<ScreenUnlockCodeStatus>('/admin/v1/settings/screen-unlock-code')
+}
+
+/** Set or replace the org IT unlock code (min 6 chars). The server answers 204. */
+export function setScreenUnlockCode(code: string): Promise<void> {
+  return request<void>('/admin/v1/settings/screen-unlock-code', {
+    method: 'PUT',
+    body: JSON.stringify({ code }),
+  })
 }

@@ -47,8 +47,18 @@ export type IconName =
   | 'restart'
   | 'portal'
   | 'megaphone'
+  | 'lock'
 
 const PATHS: Record<IconName, ReactNode> = {
+  // A padlock: a rounded body under a shackle arc. The Full-Screen Lock holds a
+  // device on a notice until an administrator (or the on-device code) releases
+  // it, and the closed padlock says "held" rather than the open one's "unlocked".
+  lock: (
+    <>
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </>
+  ),
   // A storefront: scalloped awning over a doorway. The Company Portal is where
   // employees pick approved software for themselves, and the glyph says
   // "shop" without borrowing anyone's logo.
