@@ -36,7 +36,7 @@ public sealed class ScreenLockEndpointTests(AdminApiPostgresFixture fixture)
     private static readonly Uri UnlockCode = new("/admin/v1/settings/screen-unlock-code", UriKind.Relative);
 
     /// <summary>The oldest agent whose catalogue entry admits EngageScreenLock.</summary>
-    private const string CurrentAgent = "1.19.1";
+    private const string CurrentAgent = "1.19.2";
 
     private const string TheCode = "Recovery-Code-123!";
 

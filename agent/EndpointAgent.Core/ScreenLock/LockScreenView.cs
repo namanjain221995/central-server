@@ -178,7 +178,12 @@ public static class LockInputFilter
     /// <summary>The mouse is always swallowed: the overlay covers every monitor and the prompt is keyboard-only.</summary>
     public static bool SwallowMouse() => true;
 
-    /// <summary>Keys that may reach the passphrase box: letters, digits, common symbols, editing, Shift, Enter and Escape.</summary>
+    /// <summary>
+    /// Keys that may reach the passphrase box: letters, digits, common symbols,
+    /// editing, Shift, Enter and Escape. Retained for reference and tests; the
+    /// overlay now reads the code from the hook directly (see LockOverlay), so this
+    /// no longer gates live input.
+    /// </summary>
     public static bool IsPromptEditingKey(int virtualKey) =>
         virtualKey is (>= 0x41 and <= 0x5A)      // A-Z
             or (>= 0x30 and <= 0x39)             // 0-9
@@ -202,10 +207,12 @@ public static class LockInputFilter
     public const int VkMenu = 0x12;
     public const int VkLMenu = 0xA4;
     public const int VkRMenu = 0xA5;
+    public const int VkShift = 0x10;
+    public const int VkLShift = 0xA0;
+    public const int VkRShift = 0xA1;
 
     private const int VkBack = 0x08;
     private const int VkEnter = 0x0D;
-    private const int VkShift = 0x10;
     private const int VkEscape = 0x1B;
     private const int VkSpace = 0x20;
     private const int VkEnd = 0x23;
@@ -213,8 +220,6 @@ public static class LockInputFilter
     private const int VkLeft = 0x25;
     private const int VkRight = 0x27;
     private const int VkDelete = 0x2E;
-    private const int VkLShift = 0xA0;
-    private const int VkRShift = 0xA1;
 }
 
 /// <summary>
@@ -236,10 +241,14 @@ public sealed class LockModifierState
     private bool _rightCtrl;
     private bool _leftAlt;
     private bool _rightAlt;
+    private bool _leftShift;
+    private bool _rightShift;
 
     public bool CtrlDown => _leftCtrl || _rightCtrl;
 
     public bool AltDown => _leftAlt || _rightAlt;
+
+    public bool ShiftDown => _leftShift || _rightShift;
 
     /// <summary>
     /// Records one key event. Returns true when the key was a modifier this
@@ -262,6 +271,13 @@ public sealed class LockModifierState
                 return true;
             case LockInputFilter.VkRMenu:
                 _rightAlt = keyDown;
+                return true;
+            case LockInputFilter.VkLShift:
+            case LockInputFilter.VkShift:
+                _leftShift = keyDown;
+                return true;
+            case LockInputFilter.VkRShift:
+                _rightShift = keyDown;
                 return true;
             default:
                 return false;
