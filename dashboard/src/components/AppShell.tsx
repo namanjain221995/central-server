@@ -48,6 +48,9 @@ const NAV_SECTIONS: NavSection[] = [
       // not appeared yet is already in this part of the navigation.
       { to: '/enrollments', label: 'Pending Enrollments', icon: 'enrollments' },
       { to: '/groups', label: 'Groups', icon: 'groups' },
+      // Create or reset a local Windows account across the fleet, a group, or a
+      // selection — the estate-wide counterpart to a single device's Users tab.
+      { to: '/accounts', label: 'Accounts', icon: 'key' },
     ],
   },
   {

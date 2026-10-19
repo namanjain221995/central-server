@@ -266,7 +266,7 @@ public sealed class LocalAccountManagementService(
     /// Rejects names Windows will not accept, plus the reserved names that would let a
     /// created account impersonate a built-in principal.
     /// </summary>
-    private static string? ValidateUsername(string username)
+    public static string? ValidateUsername(string username)
     {
         var trimmed = (username ?? string.Empty).Trim();
 

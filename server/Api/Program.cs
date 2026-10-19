@@ -256,6 +256,7 @@ public sealed class Program
             app.MapEnrollmentApprovalEndpoints();
             app.MapDeviceEndpoints();
             app.MapLocalAccountEndpoints();
+            app.MapBulkLocalAccountEndpoints();
             app.MapLocalAdminElevationEndpoints();
             app.MapDriverEndpoints();
             app.MapBitLockerEndpoints();

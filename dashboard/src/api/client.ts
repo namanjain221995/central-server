@@ -2425,6 +2425,61 @@ export function removeLocalGroupMember(deviceId: string, groupSid: string, membe
 }
 
 // ---------------------------------------------------------------------------
+// Bulk (fleet-wide) local account management
+//
+// Create one account, or reset its password, across all devices, a group, or an
+// explicit selection. The server fans the existing per-device task out to each
+// matching device in the caller's scope and returns only aggregate counts; the
+// per-device work is the same tasks a single-device create/reset would queue.
+// Offline devices apply the change on their next check-in.
+// ---------------------------------------------------------------------------
+
+/** Aggregate outcome of a bulk create or reset. `offline` is a subset of `queued`. */
+export interface BulkLocalAccountResult {
+  targeted: number
+  queued: number
+  rejected: number
+  offline: number
+  skipped: number
+}
+
+/** Exactly one of these three names the devices a bulk operation acts on. */
+interface BulkTargetInput {
+  allDevices?: boolean
+  groupId?: string
+  deviceIds?: string[]
+}
+
+export interface BulkCreateLocalUserInput extends BulkTargetInput {
+  username: string
+  fullName?: string
+  description?: string
+  password: string
+  enabled: boolean
+  mustChangePasswordAtNextLogon: boolean
+  accountType: 'StandardUser' | 'Administrator'
+}
+
+export interface BulkResetLocalPasswordInput extends BulkTargetInput {
+  username: string
+  password: string
+}
+
+export function bulkCreateLocalUser(input: BulkCreateLocalUserInput): Promise<BulkLocalAccountResult> {
+  return request<BulkLocalAccountResult>('/admin/v1/local-users/bulk', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function bulkResetLocalPassword(input: BulkResetLocalPasswordInput): Promise<BulkLocalAccountResult> {
+  return request<BulkLocalAccountResult>('/admin/v1/local-users/bulk/reset-password', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Pending agent enrollment
 //
 // A Windows PC that has installed the MSI asks to be managed and then waits.
