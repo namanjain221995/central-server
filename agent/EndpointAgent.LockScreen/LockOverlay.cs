@@ -443,6 +443,90 @@ internal sealed class LockOverlayController : IDisposable
         }
     }
 
+    // --------------------------------------------------- reading the typed code
+
+    /// <summary>
+    /// What to do with one key pressed while the prompt is open, decided in the hook
+    /// so it does not depend on the window holding focus. Returns an action to run on
+    /// the UI thread, or null for a key that contributes nothing (a modifier, a
+    /// function key, a dead key). The scan code is read from <paramref name="lParam"/>
+    /// here because that pointer is valid only for the duration of the hook call.
+    /// </summary>
+    private Action? PromptActionFor(int virtualKey, IntPtr lParam) => virtualKey switch
+    {
+        0x0D => () => _ = SubmitCurrentAsync(), // Enter
+        0x1B => () => CancelPrompt(),           // Escape
+        0x08 => () => Backspace(),              // Backspace
+        _ => TranslateChar(virtualKey, lParam) is { Length: > 0 } ch ? () => AppendCode(ch) : null,
+    };
+
+    /// <summary>
+    /// Translates one key to the character it types, honouring the Shift the tracker
+    /// has seen (the system state is unreliable because the hook swallows the Shift
+    /// key too). A chord, a dead key or a control character yields nothing.
+    /// </summary>
+    private string TranslateChar(int virtualKey, IntPtr lParam)
+    {
+        if (_modifiers.CtrlDown || _modifiers.AltDown)
+        {
+            return string.Empty;
+        }
+
+        var scanCode = (uint)Marshal.ReadInt32(lParam + 4); // KBDLLHOOKSTRUCT.scanCode
+        var keyState = new byte[256];
+        if (_modifiers.ShiftDown)
+        {
+            keyState[LockInputFilter.VkShift] = 0x80;
+        }
+
+        if ((NativeMethods.GetKeyState(0x14) & 1) != 0)
+        {
+            keyState[0x14] = 0x01; // Caps Lock toggle, best effort
+        }
+
+        var buffer = new System.Text.StringBuilder(8);
+        var written = NativeMethods.ToUnicodeEx(
+            (uint)virtualKey, scanCode, keyState, buffer, buffer.Capacity, 0, NativeMethods.GetKeyboardLayout(0));
+        if (written <= 0)
+        {
+            return string.Empty;
+        }
+
+        var text = buffer.ToString();
+        if (text.Length > written)
+        {
+            text = text[..written];
+        }
+
+        return text.Any(char.IsControl) ? string.Empty : text;
+    }
+
+    private void AppendCode(string text)
+    {
+        if (_codeBox is { Enabled: true } box)
+        {
+            box.AppendText(text);
+        }
+    }
+
+    private void Backspace()
+    {
+        if (_codeBox is { } box && box.Text.Length > 0)
+        {
+            box.Text = box.Text[..^1];
+            box.SelectionStart = box.Text.Length;
+        }
+    }
+
+    private async Task SubmitCurrentAsync()
+    {
+        var code = _codeBox?.Text ?? string.Empty;
+        if (code.Length > 0)
+        {
+            await SubmitAsync(code);
+        }
+    }
+
     // ------------------------------------------------------------------ dismiss
 
     private void Dismiss()
@@ -518,30 +602,42 @@ internal sealed class LockOverlayController : IDisposable
             var keyDown = message is NativeMethods.WM_KEYDOWN or NativeMethods.WM_SYSKEYDOWN;
             var virtualKey = Marshal.ReadInt32(lParam); // KBDLLHOOKSTRUCT.vkCode is the first field.
 
-            // The modifiers are swallowed like every other key, and a swallowed key
-            // never reaches the system's key-state table, so GetAsyncKeyState alone
-            // never saw Ctrl or Alt held. The tracker follows the raw events; the
-            // system's view is only a fallback for a modifier pressed before the
-            // hook existed.
+            // Modifiers are swallowed like every other key, and a key a low-level
+            // hook swallows never updates the system key-state table, so the tracker
+            // follows the raw events; GetAsyncKeyState is only a fallback for a
+            // modifier pressed before the hook existed.
             _modifiers.Observe(virtualKey, keyDown);
+
+            if (_prompting)
+            {
+                // The prompt is open. The typed code is read from the hook itself,
+                // not from a focused text box: a full-screen window launched by the
+                // service often cannot take the foreground, which left the box
+                // visible but un-typable. Reading here also keeps the code from ever
+                // landing in whatever app sits focused behind the overlay. Every key
+                // is swallowed; the character is translated now (the lParam pointer
+                // is valid only during this call) and the UI update is posted.
+                if (keyDown)
+                {
+                    var update = PromptActionFor(virtualKey, lParam);
+                    if (update is not null)
+                    {
+                        _contentForm?.BeginInvoke(update);
+                    }
+                }
+
+                return new IntPtr(1);
+            }
+
             var ctrl = _modifiers.CtrlDown || IsDown(NativeMethods.VK_CONTROL);
             var alt = _modifiers.AltDown || IsDown(NativeMethods.VK_MENU);
-
-            switch (LockInputFilter.DecideKey(_prompting, ctrl, alt, virtualKey, keyDown))
+            if (LockInputFilter.DecideKey(prompting: false, ctrl, alt, virtualKey, keyDown) == LockKeyAction.OpenPrompt)
             {
-                case LockKeyAction.OpenPrompt:
-                    // Posted, not run here: Windows silently unhooks a slow hook
-                    // procedure, so the UI work stays off the hook's critical path.
-                    _contentForm?.BeginInvoke((Action)OpenPrompt);
-                    return new IntPtr(1); // swallow the chord's final key
-
-                case LockKeyAction.PassToPrompt:
-                    break; // let it through to the focused passphrase box
-
-                case LockKeyAction.Swallow:
-                default:
-                    return new IntPtr(1);
+                // Posted, not run here: Windows silently unhooks a slow hook.
+                _contentForm?.BeginInvoke((Action)OpenPrompt);
             }
+
+            return new IntPtr(1);
         }
 
         return NativeMethods.CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
@@ -597,6 +693,17 @@ internal sealed class LockOverlayController : IDisposable
 
         [DllImport("user32.dll")]
         internal static extern short GetAsyncKeyState(int vKey);
+
+        [DllImport("user32.dll")]
+        internal static extern short GetKeyState(int nVirtKey);
+
+        [DllImport("user32.dll")]
+        internal static extern IntPtr GetKeyboardLayout(uint idThread);
+
+        [DllImport("user32.dll")]
+        internal static extern int ToUnicodeEx(
+            uint wVirtKey, uint wScanCode, byte[] lpKeyState,
+            [Out] System.Text.StringBuilder pwszBuff, int cchBuff, uint wFlags, IntPtr dwhkl);
 
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]

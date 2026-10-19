@@ -174,12 +174,12 @@ public sealed class ScreenLockTests
         definition.HighRisk.ShouldBeTrue("it takes a machine over completely until it is deliberately released");
         definition.DefaultTimeToLiveSeconds.ShouldBe(7 * 24 * 3600,
             "an offline device should still come up locked on reconnect, up to a week");
-        definition.MinimumAgentVersion.ShouldBe("1.19.1");
+        definition.MinimumAgentVersion.ShouldBe("1.19.2");
         DeviceTaskCatalog.IsSupportedBy(definition, "1.18.9").ShouldBeFalse();
-        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.0").ShouldBeFalse(
-            "the 1.19.0 overlay never saw its Ctrl+Alt+U chord; a device it locked had no on-device way out");
-        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.1").ShouldBeTrue();
-        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.2+ci").ShouldBeTrue();
+        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.1").ShouldBeFalse(
+            "the 1.19.1 overlay opened the unlock box but could not accept typing, so a device it locked had no on-device way out");
+        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.2").ShouldBeTrue();
+        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.3+ci").ShouldBeTrue();
         DeviceTaskCatalog.IsSupportedBy(definition, null).ShouldBeFalse();
     }
 

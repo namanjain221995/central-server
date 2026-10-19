@@ -176,6 +176,20 @@ public sealed class LockScreenViewTests
     }
 
     [Fact]
+    public void Shift_is_tracked_on_each_side_so_typed_characters_can_be_capitalised()
+    {
+        var modifiers = new LockModifierState();
+
+        modifiers.Observe(LockInputFilter.VkLShift, keyDown: true).ShouldBeTrue();
+        modifiers.ShiftDown.ShouldBeTrue();
+        modifiers.Observe(LockInputFilter.VkLShift, keyDown: false);
+        modifiers.ShiftDown.ShouldBeFalse();
+
+        modifiers.Observe(LockInputFilter.VkRShift, keyDown: true);
+        modifiers.ShiftDown.ShouldBeTrue();
+    }
+
+    [Fact]
     public void The_mouse_is_always_swallowed()
     {
         LockInputFilter.SwallowMouse().ShouldBeTrue();
