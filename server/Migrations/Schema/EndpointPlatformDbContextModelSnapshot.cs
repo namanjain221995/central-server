@@ -2706,6 +2706,14 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasColumnType("character varying(32)")
                         .HasColumnName("status");
 
+                    b.Property<string>("ThemePreference")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasDefaultValue("system")
+                        .HasColumnName("theme_preference");
+
                     b.Property<DateTimeOffset?>("TotpConfirmedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("totp_confirmed_at");

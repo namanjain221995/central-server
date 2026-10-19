@@ -8,6 +8,8 @@
  * storage.
  */
 
+import { isThemePreference, type ThemePreference } from '../theme/theme'
+
 export interface ServiceInfo {
   service: string
   version: string
@@ -1812,6 +1814,12 @@ export interface CurrentUser {
    * does not carry it. Treat a missing value as false.
    */
   mfaEnrolmentRequired?: boolean
+  /**
+   * This administrator's own Light, Dark or System choice, stored on their
+   * account. Optional so an older server that does not send it still works; the
+   * console then keeps whatever this browser last used.
+   */
+  themePreference?: ThemePreference
 }
 
 /**
@@ -1837,12 +1845,14 @@ function toCurrentUser(body: {
   email: string
   displayName: string
   permissions: string[]
+  themePreference?: string
 }): CurrentUser {
   return {
     userId: body.userId,
     email: body.email,
     displayName: body.displayName,
     permissions: body.permissions,
+    themePreference: isThemePreference(body.themePreference) ? body.themePreference : undefined,
   }
 }
 
@@ -1867,6 +1877,7 @@ export async function login(email: string, password: string): Promise<LoginResul
     email: string
     displayName: string
     permissions: string[]
+    themePreference?: string
   }
 
   if (body.mfaRequired && body.challengeToken) {
@@ -1900,6 +1911,7 @@ export async function verifyMfa(challengeToken: string, code: string): Promise<C
       email: string
       displayName: string
       permissions: string[]
+      themePreference?: string
     },
   )
 }
@@ -1946,6 +1958,14 @@ export async function logout(): Promise<void> {
 
 export function getCurrentUser(): Promise<CurrentUser> {
   return request<CurrentUser>('/admin/v1/auth/me')
+}
+
+/** Saves the signed-in administrator's own theme. Affects no one else's account. */
+export async function saveThemePreference(theme: ThemePreference): Promise<void> {
+  await request<void>('/admin/v1/auth/me/theme', {
+    method: 'PUT',
+    body: JSON.stringify({ theme }),
+  })
 }
 
 export function getReadiness(): Promise<HealthReport> {

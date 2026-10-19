@@ -1,5 +1,6 @@
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthContext'
+import { ThemeProvider } from './theme/ThemeContext'
 import { AppShell } from './components/AppShell'
 import { DashboardPage } from './pages/DashboardPage'
 import { DeviceDetailPage } from './pages/DeviceDetailPage'
@@ -28,7 +29,9 @@ import { AuditLogPage } from './pages/AuditLogPage'
 export default function App() {
   return (
     <AuthProvider>
-      <AuthGate />
+      <ThemeProvider>
+        <AuthGate />
+      </ThemeProvider>
     </AuthProvider>
   )
 }

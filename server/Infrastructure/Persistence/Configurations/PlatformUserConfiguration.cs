@@ -61,6 +61,15 @@ internal sealed class PlatformUserConfiguration : IEntityTypeConfiguration<Platf
         builder.Property(u => u.TotpSealedSecret).HasMaxLength(512);
         builder.Property(u => u.TotpConfirmedAt);
         builder.Property(u => u.TotpLastCounter);
+
+        // Every existing administrator starts on "system", which on a dark OS is
+        // the console they already know. Plain text, not an enum conversion: see
+        // ThemePreferences for why.
+        builder.Property(u => u.ThemePreference)
+            .HasMaxLength(ThemePreferences.MaxLength)
+            .HasDefaultValue(ThemePreferences.System)
+            .IsRequired();
+
         builder.Property(u => u.CreatedAt).IsRequired();
         builder.Property(u => u.UpdatedAt).IsRequired();
 

@@ -184,4 +184,37 @@ public sealed class PlatformUserTests
 
         user.Status.ShouldBe(PlatformUserStatus.Invited);
     }
+
+    [Fact]
+    public void A_new_administrator_follows_the_system_theme()
+    {
+        CreateUser().ThemePreference.ShouldBe(ThemePreferences.System);
+    }
+
+    [Theory]
+    [InlineData("light")]
+    [InlineData("dark")]
+    [InlineData("system")]
+    public void A_theme_choice_is_recorded(string theme)
+    {
+        var user = CreateUser();
+
+        user.SetThemePreference(theme);
+
+        user.ThemePreference.ShouldBe(theme);
+    }
+
+    [Theory]
+    [InlineData("Light")]
+    [InlineData("blue")]
+    [InlineData("")]
+    public void An_unknown_theme_is_refused_and_the_choice_is_kept(string theme)
+    {
+        var user = CreateUser();
+        user.SetThemePreference(ThemePreferences.Dark);
+
+        Should.Throw<ArgumentException>(() => user.SetThemePreference(theme));
+
+        user.ThemePreference.ShouldBe(ThemePreferences.Dark);
+    }
 }

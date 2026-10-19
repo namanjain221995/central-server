@@ -160,6 +160,30 @@ public sealed class PlatformUser : AuditableEntity
     /// <summary>Whether this account has a usable second factor.</summary>
     public bool HasConfirmedMfa => TotpSealedSecret is not null && TotpConfirmedAt is not null;
 
+    /// <summary>
+    /// Light, dark or system (<see cref="ThemePreferences"/>): this administrator's
+    /// own console appearance, on every device they sign in from.
+    /// </summary>
+    /// <remarks>
+    /// A preference, not a permission or a security setting: it changes nothing
+    /// anyone can do, which is why setting it is not audited and why it is the one
+    /// thing on this entity the administrator alone may change about themselves
+    /// without re-proving who they are.
+    /// </remarks>
+    public string ThemePreference { get; private set; } = ThemePreferences.System;
+
+    /// <summary>Records this administrator's theme choice.</summary>
+    public void SetThemePreference(string preference)
+    {
+        if (!ThemePreferences.IsValid(preference))
+        {
+            throw new ArgumentException(
+                $"Theme must be one of: {string.Join(", ", ThemePreferences.All)}.", nameof(preference));
+        }
+
+        ThemePreference = preference;
+    }
+
     /// <summary>Stores a freshly issued, not-yet-proven TOTP secret.</summary>
     /// <remarks>
     /// Leaves <see cref="TotpConfirmedAt"/> null on purpose. Re-enrolling resets

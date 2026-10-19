@@ -16,7 +16,11 @@
       as well as hue.
 --------------------------------------------------------------------------- */
 
-:root {
+/* .theme-scope-dark and .theme-scope-light apply one theme's tokens to a single
+   element whatever the page's theme is: the Appearance previews are drawn from
+   the real token sets this way, rather than from copied colours. */
+:root,
+.theme-scope-dark {
   /* --- Surfaces: four layers, dark to light, so depth reads without shadow --- */
   --color-bg: #0b1220;              /* app background, deepest */
   --color-sidebar: #070d18;         /* navigation, deeper than the canvas */
@@ -81,6 +85,28 @@
   /* Neutral fill — kept because inline styles use it for wells and chips. */
   --color-neutral-bg: #1e293b;
 
+  /* --- Interaction and chrome. Named by role so the light theme can give each
+     its own value; these were literals until the console gained a light theme. --- */
+  --color-hover: rgba(255, 255, 255, 0.045);        /* row and nav hover wash */
+  --color-hover-strong: rgba(255, 255, 255, 0.06);  /* ghost buttons, menu items */
+  --color-control-hover: #22304a;                   /* bordered button hover fill */
+  --color-border-hover: #3a5075;                    /* control border on hover */
+  --color-border-subtle: rgba(34, 48, 72, 0.6);     /* table and key/value rules */
+  --color-topbar: rgba(19, 28, 46, 0.82);           /* translucent top bar */
+  --color-backdrop: rgba(4, 8, 16, 0.72);           /* behind dialogs */
+  --color-scrollbar-thumb-hover: #3d5480;
+  --color-primary-text: #dbe9ff;        /* text on a primary tint: active nav */
+  --color-primary-text-soft: #cfe0ff;   /* avatar initials, hovered feature icon */
+  --color-primary-icon: #9dc2ff;        /* feature icons on a primary tint */
+  --color-primary-bg-strong: rgba(59, 130, 246, 0.22);
+  --color-primary-glow: rgba(59, 130, 246, 0.16);   /* sign-in page halo */
+  --color-primary-shadow: rgba(59, 130, 246, 0.28);
+  --color-brand-gradient-end: #1e50a8;
+  --color-on-crit: #1a0a0a;             /* text on a solid danger fill */
+  --color-on-warn: #1a1405;             /* text on a solid warning fill */
+  --color-skeleton: #1a2438;            /* loading placeholder */
+  --color-skeleton-shine: #24314a;      /* its moving highlight */
+
   /* --- Geometry --- */
   --radius-sm: 4px;
   --radius: 6px;
@@ -110,6 +136,94 @@
   -webkit-font-smoothing: antialiased;
 }
 
+/* ---------------------------------------------------------------------------
+   Light theme.
+
+   The dark values above stay the default, so a page that has not chosen yet
+   looks exactly as it always has. theme.ts resolves the administrator's choice
+   (Light, Dark or System) to one of two values on <html data-theme>, and only
+   the token values change here; no component has a light-specific rule.
+
+   Not an inversion. Surfaces are white cards on a cool grey canvas, so depth
+   comes from the canvas being darker than the cards (the dark theme does the
+   opposite). Accent and status colours step down to deeper shades, because
+   the dark theme's light tints fail contrast on white. Ratios are against
+   white (#ffffff) unless noted; every text colour clears 4.5:1.
+--------------------------------------------------------------------------- */
+:root[data-theme='light'],
+.theme-scope-light {
+  --color-bg: #f3f5f9;
+  --color-sidebar: #e9edf4;
+  --color-surface: #ffffff;
+  --color-elevated: #ffffff;
+  --color-inset: #f8fafc;
+
+  --color-text: #111a2b;            /* 17.4:1 */
+  --color-text-secondary: #3a4a62;  /*  9.0:1 */
+  --color-text-muted: #5a6a82;      /*  5.5:1; 5.0:1 on the canvas, 4.7:1 on the sidebar */
+
+  --color-border: #d6dde8;
+  --color-border-strong: #bcc7d6;
+
+  --color-primary: #1d5fd6;               /* 5.7:1 as link text */
+  --color-primary-hover: #174dae;
+  --color-primary-solid: #2563eb;         /* white on this: 5.2:1 */
+  --color-primary-solid-hover: #1d4ed8;   /* 6.7:1 */
+  --color-primary-active: #1e40af;        /* 8.7:1 */
+  --color-primary-fg: #ffffff;
+  --color-primary-bg: rgba(37, 99, 235, 0.08);
+  --color-primary-border: rgba(37, 99, 235, 0.32);
+
+  /* The broadcast orange already passes on white; it is unchanged. */
+
+  --color-ok: #157a3c;              /* 5.4:1 */
+  --color-ok-bg: rgba(22, 163, 74, 0.1);
+  --color-ok-border: rgba(22, 163, 74, 0.36);
+
+  --color-warn: #8f5a00;            /* 5.8:1 */
+  --color-warn-bg: rgba(217, 119, 6, 0.11);
+  --color-warn-border: rgba(217, 119, 6, 0.4);
+
+  --color-crit: #b42318;            /* 6.6:1 */
+  --color-crit-bg: rgba(220, 38, 38, 0.08);
+  --color-crit-border: rgba(220, 38, 38, 0.34);
+
+  --color-info: #0b6aa2;            /* 5.8:1 */
+  --color-info-bg: rgba(2, 132, 199, 0.09);
+  --color-info-border: rgba(2, 132, 199, 0.34);
+
+  --color-neutral-bg: #eef2f7;
+
+  --color-hover: rgba(17, 26, 43, 0.04);
+  --color-hover-strong: rgba(17, 26, 43, 0.06);
+  --color-control-hover: #eef2f8;
+  --color-border-hover: #a7b4c7;
+  --color-border-subtle: rgba(188, 199, 214, 0.6);
+  --color-topbar: rgba(255, 255, 255, 0.86);
+  --color-backdrop: rgba(17, 26, 43, 0.42);
+  --color-scrollbar-thumb-hover: #a7b4c7;
+  --color-primary-text: #174dae;
+  --color-primary-text-soft: #174dae;
+  --color-primary-icon: #1d5fd6;
+  --color-primary-bg-strong: rgba(37, 99, 235, 0.14);
+  --color-primary-glow: rgba(37, 99, 235, 0.1);
+  --color-primary-shadow: rgba(37, 99, 235, 0.24);
+  --color-brand-gradient-end: #1e40af;
+  /* The light theme's danger and warning fills are deep, so text on them is white. */
+  --color-on-crit: #ffffff;
+  --color-on-warn: #ffffff;
+  /* Grey on white cards; the dark theme's elevated colour would be invisible here. */
+  --color-skeleton: #e6ebf2;
+  --color-skeleton-shine: #f4f6fa;
+
+  /* A light UI is shaped by soft shadows rather than a light rim. */
+  --shadow-sm: 0 1px 2px rgba(17, 26, 43, 0.08);
+  --shadow-md: 0 4px 12px rgba(17, 26, 43, 0.1);
+  --shadow-lg: 0 16px 48px rgba(17, 26, 43, 0.18);
+
+  color-scheme: light;
+}
+
 * { box-sizing: border-box; }
 
 body { margin: 0; min-height: 100vh; background: var(--color-bg); }
@@ -136,7 +250,7 @@ h1, h2, h3 { color: var(--color-text); }
   border-radius: var(--radius-pill);
   border: 2px solid var(--color-bg);
 }
-::-webkit-scrollbar-thumb:hover { background: #3d5480; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-scrollbar-thumb-hover); }
 
 /* --- Application frame --------------------------------------------------- */
 
@@ -167,9 +281,9 @@ h1, h2, h3 { color: var(--color-text); }
   width: 30px; height: 30px;
   flex-shrink: 0;
   border-radius: 7px;
-  background: linear-gradient(140deg, var(--color-primary-solid), #1e50a8);
+  background: linear-gradient(140deg, var(--color-primary-solid), var(--color-brand-gradient-end));
   display: grid; place-items: center;
-  color: #fff;
+  color: var(--color-primary-fg);
   box-shadow: var(--shadow-sm);
 }
 
@@ -230,7 +344,7 @@ h1, h2, h3 { color: var(--color-text); }
 }
 
 .sidebar-nav a:hover {
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--color-hover);
   color: var(--color-text);
 }
 .sidebar-nav a:hover .nav-icon { opacity: 1; }
@@ -239,7 +353,7 @@ h1, h2, h3 { color: var(--color-text); }
    not depend on colour perception alone. */
 .sidebar-nav a.active {
   background: var(--color-primary-bg);
-  color: #dbe9ff;
+  color: var(--color-primary-text);
   font-weight: 600;
 }
 .sidebar-nav a.active .nav-icon { opacity: 1; color: var(--color-primary); }
@@ -353,7 +467,7 @@ h1, h2, h3 { color: var(--color-text); }
 }
 
 .sidebar-toggle:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--color-hover-strong);
   color: var(--color-text);
   border-color: var(--color-border-strong);
 }
@@ -367,7 +481,7 @@ h1, h2, h3 { color: var(--color-text); }
 
 .topbar {
   height: var(--topbar-height);
-  background: rgba(19, 28, 46, 0.82);
+  background: var(--color-topbar);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--color-border);
   display: flex;
@@ -403,7 +517,7 @@ h1, h2, h3 { color: var(--color-text); }
   border-radius: var(--radius-pill);
   background: var(--color-primary-bg);
   border: 1px solid var(--color-primary-border);
-  color: #cfe0ff;
+  color: var(--color-primary-text-soft);
   display: grid; place-items: center;
   font-size: 11.5px; font-weight: 700;
   flex-shrink: 0;
@@ -732,8 +846,8 @@ button,
 
 button:hover:not(:disabled),
 .btn:hover:not(:disabled) {
-  background: #22304a;
-  border-color: #3a5075;
+  background: var(--color-control-hover);
+  border-color: var(--color-border-hover);
 }
 
 button:active:not(:disabled),
@@ -790,7 +904,7 @@ button:disabled,
 .btn-danger:hover:not(:disabled) {
   background: var(--color-crit);
   border-color: var(--color-crit);
-  color: #1a0a0a;
+  color: var(--color-on-crit);
 }
 
 .btn-warning {
@@ -801,7 +915,7 @@ button:disabled,
 .btn-warning:hover:not(:disabled) {
   background: var(--color-warn);
   border-color: var(--color-warn);
-  color: #1a1405;
+  color: var(--color-on-warn);
 }
 
 /* Lowest emphasis — for repeated row-level actions where a bordered button
@@ -812,7 +926,7 @@ button:disabled,
   color: var(--color-text-secondary);
 }
 .btn-ghost:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--color-hover-strong);
   border-color: transparent;
   color: var(--color-text);
 }
@@ -835,7 +949,7 @@ button:disabled,
   animation: spin 600ms linear infinite;
 }
 .btn-primary.btn-loading::after,
-.btn-accent.btn-loading::after { color: #fff; }
+.btn-accent.btn-loading::after { color: var(--color-primary-fg); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -897,7 +1011,7 @@ button:disabled,
 }
 
 .table td {
-  border-bottom: 1px solid rgba(34, 48, 72, 0.6);
+  border-bottom: 1px solid var(--color-border-subtle);
   padding: 0 12px;
   height: var(--row-height);
   color: var(--color-text-secondary);
@@ -961,7 +1075,7 @@ textarea { height: auto; padding: 9px 11px; resize: vertical; }
 
 input::placeholder, textarea::placeholder { color: var(--color-text-muted); opacity: 0.75; }
 
-input:hover:not(:disabled), select:hover:not(:disabled) { border-color: #3a5075; }
+input:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--color-border-hover); }
 
 input:focus, select:focus, textarea:focus {
   outline: none;
@@ -1028,8 +1142,8 @@ input[type='file']::file-selector-button {
   transition: background var(--transition), border-color var(--transition);
 }
 input[type='file']::file-selector-button:hover {
-  background: #22304a;
-  border-color: #3a5075;
+  background: var(--color-control-hover);
+  border-color: var(--color-border-hover);
 }
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
@@ -1113,7 +1227,7 @@ label.field-label {
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(4, 8, 16, 0.72);
+  background: var(--color-backdrop);
   backdrop-filter: blur(3px);
   z-index: 60;
   display: grid;
@@ -1200,7 +1314,7 @@ label.field-label {
   place-items: center;
   padding: 24px;
   background:
-    radial-gradient(900px 480px at 50% -10%, rgba(59, 130, 246, 0.16), transparent 65%),
+    radial-gradient(900px 480px at 50% -10%, var(--color-primary-glow), transparent 65%),
     var(--color-sidebar);
 }
 
@@ -1219,10 +1333,10 @@ label.field-label {
   width: 42px; height: 42px;
   margin: 0 auto 12px;
   border-radius: 11px;
-  background: linear-gradient(140deg, var(--color-primary-solid), #1e50a8);
+  background: linear-gradient(140deg, var(--color-primary-solid), var(--color-brand-gradient-end));
   display: grid; place-items: center;
-  color: #fff;
-  box-shadow: 0 6px 18px rgba(59, 130, 246, 0.28);
+  color: var(--color-primary-fg);
+  box-shadow: 0 6px 18px var(--color-primary-shadow);
 }
 
 .login-brand .name { font-size: 17px; font-weight: 650; letter-spacing: -0.1px; }
@@ -1340,7 +1454,7 @@ label.field-label {
 /* Skeletons for first paint, where a spinner would just say "something is
    happening" without hinting at the shape of what is coming. */
 .skeleton {
-  background: linear-gradient(90deg, var(--color-elevated) 25%, #24314a 50%, var(--color-elevated) 75%);
+  background: linear-gradient(90deg, var(--color-skeleton) 25%, var(--color-skeleton-shine) 50%, var(--color-skeleton) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.4s ease-in-out infinite;
   border-radius: var(--radius-sm);
@@ -1407,7 +1521,7 @@ code, .mono {
 }
 
 .list-item:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--color-hover);
   border-color: transparent;
 }
 
@@ -1522,10 +1636,10 @@ code, .mono {
   display: grid; place-items: center;
   background: var(--color-primary-bg);
   border: 1px solid var(--color-primary-border);
-  color: #9dc2ff;
+  color: var(--color-primary-icon);
   transition: background var(--transition), color var(--transition);
 }
-.feature-card:hover .feature-icon { background: rgba(59, 130, 246, 0.22); color: #cfe0ff; }
+.feature-card:hover .feature-icon { background: var(--color-primary-bg-strong); color: var(--color-primary-text-soft); }
 
 .feature-card .feature-body { min-width: 0; flex: 1; }
 
@@ -1605,13 +1719,13 @@ code, .mono {
 .kv dt {
   color: var(--color-text-muted);
   padding: 8px 14px 8px 0;
-  border-bottom: 1px solid rgba(34, 48, 72, 0.6);
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 .kv dd {
   margin: 0;
   padding: 8px 0;
   color: var(--color-text);
-  border-bottom: 1px solid rgba(34, 48, 72, 0.6);
+  border-bottom: 1px solid var(--color-border-subtle);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -1880,7 +1994,7 @@ details.evidence[open] > summary::before {
 }
 .menu-item:hover:not([aria-disabled='true']),
 .menu-item:focus {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--color-hover-strong);
   border-color: transparent;
 }
 .menu-item:focus-visible { outline-offset: -2px; }
@@ -2012,3 +2126,125 @@ details.evidence[open] > summary::before {
 /* A row of radio choices, each label clickable as one unit. */
 .radio-row { display: flex; flex-wrap: wrap; gap: 6px 18px; }
 .radio-row label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+
+/* ---------------------------------------------------------------------------
+   Appearance (Settings). Each option is a native radio inside a label, so the
+   whole card is the click target and arrow keys move between options. The
+   selected option is marked three ways: the orange accent border, a "Selected"
+   label with a tick, and the radio's own checked state for assistive tech.
+--------------------------------------------------------------------------- */
+.appearance-card { max-width: 820px; }
+.appearance-lede { margin: 4px 0 16px; }
+
+.appearance-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.appearance-option {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  cursor: pointer;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.appearance-option:hover { border-color: var(--color-border-hover); }
+.appearance-option.selected {
+  border-color: var(--color-accent-solid);
+  box-shadow: 0 0 0 1px var(--color-accent-solid);
+}
+.appearance-option:focus-within { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+/* Visually hidden, still focusable and announced. */
+.appearance-option input {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+
+.appearance-option-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.appearance-option-label { font-weight: 600; color: var(--color-text); }
+.appearance-option-description { font-size: 12.5px; color: var(--color-text-secondary); }
+
+.appearance-selected {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-solid);
+  color: var(--color-primary-fg);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.appearance-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  margin: 14px 0 0;
+  font-size: 13px;
+}
+.appearance-status.saved { color: var(--color-ok); }
+.appearance-status.error { color: var(--color-crit); }
+
+/* The miniature console. Every colour comes from the scoped theme's tokens. */
+.theme-preview {
+  display: grid;
+  height: 86px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.theme-preview.split { grid-template-columns: 1fr 1fr; }
+
+.theme-preview-pane {
+  display: grid;
+  grid-template-columns: 26% 1fr;
+  min-width: 0;
+  background: var(--color-bg);
+}
+.theme-preview-sidebar {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: 8px 6px;
+  background: var(--color-sidebar);
+  border-right: 1px solid var(--color-border);
+}
+.theme-preview-nav { display: block; height: 5px; border-radius: 3px; background: var(--color-border-strong); }
+.theme-preview-nav.active { background: var(--color-primary); }
+.theme-preview-main { display: grid; align-content: start; gap: 6px; padding: 7px 8px; min-width: 0; }
+.theme-preview-bar { display: block; height: 7px; border-radius: 3px; background: var(--color-surface); border: 1px solid var(--color-border); }
+.theme-preview-card {
+  display: grid;
+  gap: 5px;
+  padding: 7px;
+  border-radius: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+.theme-preview-line { display: block; height: 4px; width: 70%; border-radius: 2px; background: var(--color-text-muted); opacity: 0.6; }
+.theme-preview-line.strong { width: 45%; background: var(--color-text); opacity: 0.85; }
+.theme-preview-dot { display: block; width: 18px; height: 6px; border-radius: 3px; background: var(--color-primary-solid); }
+
+@media (prefers-reduced-motion: reduce) {
+  .appearance-option { transition: none; }
+}
+
+/* Set by theme.ts for the two frames in which the theme changes, so the new
+   palette lands at once instead of every control fading over from the old one. */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
+}

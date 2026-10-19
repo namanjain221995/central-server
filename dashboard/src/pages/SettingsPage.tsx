@@ -1,11 +1,13 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { Icon } from '../components/Icon'
 import { AccessLevelsPanel } from './AccessLevelsPanel'
 import { AdministratorsPanel } from './AdministratorsPanel'
+import { AppearancePanel } from './AppearancePanel'
 import { SecurityPanel } from './SecurityPanel'
 
-type Tab = 'administrators' | 'access-levels' | 'security'
+type Tab = 'administrators' | 'access-levels' | 'security' | 'appearance'
 
 /**
  * Who may use this console, and what each of them can do.
@@ -24,7 +26,17 @@ export function SettingsPage() {
 
   // Opens on whichever tab the signed-in administrator can actually use, so the
   // page never opens on a panel they are not allowed to see.
-  const [tab, setTab] = useState<Tab>(canViewAdministrators ? 'administrators' : 'access-levels')
+  // ?tab=appearance (or security) opens that tab directly; the two ungated tabs
+  // are the only ones a link may choose, so a link cannot open a gated panel.
+  const [searchParams] = useSearchParams()
+  const linked = searchParams.get('tab')
+  const [tab, setTab] = useState<Tab>(
+    linked === 'appearance' || linked === 'security'
+      ? linked
+      : canViewAdministrators
+        ? 'administrators'
+        : 'access-levels',
+  )
 
   return (
     <>
@@ -62,10 +74,22 @@ export function SettingsPage() {
           <Icon name="key" size={14} />
           My security
         </button>
+        {/* Ungated: it changes only the signed-in administrator's own preference. */}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'appearance'}
+          className={tab === 'appearance' ? 'active' : undefined}
+          onClick={() => setTab('appearance')}
+        >
+          <Icon name="dashboard" size={14} />
+          Appearance
+        </button>
       </div>
 
       {tab === 'security' && <SecurityPanel />}
-      {tab !== 'security' &&
+      {tab === 'appearance' && <AppearancePanel />}
+      {tab !== 'security' && tab !== 'appearance' &&
         (tab === 'administrators' && canViewAdministrators
           ? <AdministratorsPanel />
           : <AccessLevelsPanel />)}
