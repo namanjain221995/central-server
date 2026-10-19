@@ -211,6 +211,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Devices.DeviceLifecycleService>();
         services.AddScoped<Reporting.ReportReadService>();
         services.AddScoped<Devices.LocalAccountManagementService>();
+        services.AddScoped<Devices.BulkLocalAccountService>();
         services.AddScoped<Security.DeviceScopeAuthorizer>();
         services.AddSingleton<Security.ISecretProtector, Security.AesGcmSecretProtector>();
         services.AddScoped<Security.EphemeralSecretStore>();

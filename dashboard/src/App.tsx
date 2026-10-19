@@ -25,6 +25,7 @@ import { SettingsPage } from './pages/SettingsPage'
 import { TasksPage } from './pages/TasksPage'
 import { AgentReleasesPage } from './pages/AgentReleasesPage'
 import { AuditLogPage } from './pages/AuditLogPage'
+import { AccountsPage } from './pages/AccountsPage'
 
 export default function App() {
   return (
@@ -85,14 +86,17 @@ function AuthGate() {
                 // dead end into a signpost.
                 alternative={
                   <>
-                    Local Windows accounts are managed per machine — open a device under{' '}
-                    <Link to="/devices">Devices</Link> and use its <strong>Users</strong> tab.
+                    Fleet-wide local Windows accounts are now managed from{' '}
+                    <Link to="/accounts">Accounts</Link>. To change a single machine's accounts,
+                    open a device under <Link to="/devices">Devices</Link> and use its{' '}
+                    <strong>Users</strong> tab.
                   </>
                 }
               />
             }
           />
           <Route path="groups" element={<GroupsPage />} />
+          <Route path="accounts" element={<AccountsPage />} />
           <Route path="software" element={<SoftwarePage />} />
           <Route path="company-apps" element={<CompanyAppsPage />} />
           <Route path="policies" element={<PoliciesPage />} />
