@@ -1,6 +1,9 @@
 using EndpointPlatform.Api.Security;
+using EndpointPlatform.Domain.Identity;
+using EndpointPlatform.Infrastructure.Persistence;
 using EndpointPlatform.Infrastructure.Security;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace EndpointPlatform.Api.Endpoints;
 
@@ -37,6 +40,14 @@ public static class AuthEndpoints
         // The current password is re-verified in the service regardless of session.
         group.MapPost("/change-password", ChangePasswordAsync)
             .WithName("AdminChangePassword")
+            .RequireAuthorization();
+
+        // The signed-in administrator's own console theme. Authenticated, behind no
+        // permission: it is a preference about their own screen, it can only ever
+        // address the caller's own row (the user id comes from the session, never
+        // from the request), and it changes nothing anyone is allowed to do.
+        group.MapPut("/me/theme", SetThemeAsync)
+            .WithName("AdminSetTheme")
             .RequireAuthorization();
 
         // --- multi-factor ----------------------------------------------------
@@ -141,7 +152,8 @@ public static class AuthEndpoints
             user.DisplayName,
             outcome.ExpiresAt,
             outcome.Permissions,
-            outcome.Token!));
+            outcome.Token!,
+            user.ThemePreference));
     }
 
     /// <summary>
@@ -264,7 +276,8 @@ public static class AuthEndpoints
         string DisplayName,
         DateTimeOffset SessionExpiresAt,
         IReadOnlyList<string> Permissions,
-        string SessionToken);
+        string SessionToken,
+        string ThemePreference);
 
     /// <summary>
     /// Changes the signed-in administrator's own password.
@@ -381,7 +394,8 @@ public static class AuthEndpoints
             user.DisplayName,
             outcome.ExpiresAt,
             outcome.Permissions,
-            outcome.Token!));
+            outcome.Token!,
+            user.ThemePreference));
     }
 
     private static async Task<IResult> LogoutAsync(
@@ -401,9 +415,53 @@ public static class AuthEndpoints
         return Results.NoContent();
     }
 
-    private static IResult Me(HttpContext httpContext)
+    private static async Task<IResult> SetThemeAsync(
+        SetThemeRequest request,
+        HttpContext httpContext,
+        EndpointPlatformDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (!ThemePreferences.IsValid(request.Theme))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["theme"] = [$"Theme must be one of: {string.Join(", ", ThemePreferences.All)}."],
+            });
+        }
+
+        var actor = AdminActor.Required(httpContext.User);
+
+        var user = await dbContext.PlatformUsers.SingleOrDefaultAsync(
+            u => u.Id == actor.UserId && u.OrganizationId == actor.OrganizationId, cancellationToken);
+
+        if (user is null)
+        {
+            return Results.NotFound();
+        }
+
+        user.SetThemePreference(request.Theme!);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return Results.NoContent();
+    }
+
+    private static async Task<IResult> Me(
+        HttpContext httpContext,
+        EndpointPlatformDbContext dbContext,
+        CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
+
+        // The one field here that is not on the session: it changes from any of the
+        // administrator's devices, so it is read fresh rather than frozen at sign-in.
+        var themePreference = await dbContext.PlatformUsers
+            .AsNoTracking()
+            .Where(u => u.Id == actor.UserId && u.OrganizationId == actor.OrganizationId)
+            .Select(u => u.ThemePreference)
+            .SingleOrDefaultAsync(cancellationToken)
+            ?? ThemePreferences.System;
 
         var permissions = httpContext.User
             .FindAll(AdminAuthenticationHandler.PermissionClaimType)
@@ -428,6 +486,7 @@ public static class AuthEndpoints
             // that never load the console.
             MfaEnrolmentRequired = httpContext.User.HasClaim(
                 AdminAuthenticationHandler.MfaEnrolmentRequiredClaimType, bool.TrueString),
+            ThemePreference = themePreference,
         });
     }
 
@@ -492,6 +551,9 @@ public static class AuthEndpoints
 /// because the front end is never the boundary -- a mistyped password that
 /// reached the hasher would lock the account's owner out of their own account.
 /// </param>
+/// <summary>Body of PUT /admin/v1/auth/me/theme: <c>light</c>, <c>dark</c> or <c>system</c>.</summary>
+public sealed record SetThemeRequest(string? Theme);
+
 public sealed record ChangePasswordRequest(
     string? CurrentPassword,
     string? NewPassword,

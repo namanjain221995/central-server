@@ -3,14 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Declared here as well as in CSS so the browser paints the dark canvas
-         before the stylesheet arrives, instead of flashing white first. -->
-    <meta name="color-scheme" content="dark" />
+    <!-- The administrator's theme is applied before anything paints:
+         theme-init.js sets <html data-theme> from the browser's copy of the
+         preference, and the canvas below matches it, so there is no flash of the
+         other theme while the stylesheet and the account preference load. -->
+    <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#0b1220" />
     <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
     <title>Endpoint Platform</title>
+    <script src="/theme-init.js"></script>
     <style>
       html { background: #0b1220; }
+      html[data-theme='light'] { background: #f3f5f9; }
     </style>
   </head>
   <body>
