@@ -174,9 +174,11 @@ public sealed class ScreenLockTests
         definition.HighRisk.ShouldBeTrue("it takes a machine over completely until it is deliberately released");
         definition.DefaultTimeToLiveSeconds.ShouldBe(7 * 24 * 3600,
             "an offline device should still come up locked on reconnect, up to a week");
-        definition.MinimumAgentVersion.ShouldBe("1.19.0");
+        definition.MinimumAgentVersion.ShouldBe("1.19.1");
         DeviceTaskCatalog.IsSupportedBy(definition, "1.18.9").ShouldBeFalse();
-        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.0").ShouldBeTrue();
+        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.0").ShouldBeFalse(
+            "the 1.19.0 overlay never saw its Ctrl+Alt+U chord; a device it locked had no on-device way out");
+        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.1").ShouldBeTrue();
         DeviceTaskCatalog.IsSupportedBy(definition, "1.19.2+ci").ShouldBeTrue();
         DeviceTaskCatalog.IsSupportedBy(definition, null).ShouldBeFalse();
     }
@@ -192,6 +194,10 @@ public sealed class ScreenLockTests
         definition.HighRisk.ShouldBeFalse("it lifts a lock rather than imposing one");
         definition.DefaultTimeToLiveSeconds.ShouldBe(7 * 24 * 3600);
         definition.MinimumAgentVersion.ShouldBe("1.19.0");
+        // Deliberately below the engage's minimum: a device locked while on 1.19.0
+        // must still be releasable from the dashboard, its only way out.
+        DeviceTaskCatalog.IsSupportedBy(definition, "1.19.0").ShouldBeTrue();
+        DeviceTaskCatalog.IsSupportedBy(DeviceTaskCatalog.Require(DeviceTaskType.EngageScreenLock), "1.19.0").ShouldBeFalse();
     }
 
     // -------------------------------------------------------------- wire format

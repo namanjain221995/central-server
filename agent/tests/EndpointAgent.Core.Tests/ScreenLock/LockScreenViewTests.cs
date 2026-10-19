@@ -113,6 +113,68 @@ public sealed class LockScreenViewTests
         LockInputFilter.DecideKey(true, ctrlDown: true, altDown: true, LockInputFilter.VkU, keyDown: true).ShouldBe(LockKeyAction.PassToPrompt);
     }
 
+    // ----------------------------------------------------- modifier tracking
+
+    [Fact]
+    public void The_chord_fires_from_tracked_modifiers_even_though_the_hook_swallowed_them()
+    {
+        // The 1.19.0 failure: Ctrl and Alt were swallowed, so the system never saw
+        // them held and the chord was dead. The tracker sees the raw events instead.
+        var modifiers = new LockModifierState();
+
+        modifiers.Observe(LockInputFilter.VkLControl, keyDown: true).ShouldBeTrue();
+        modifiers.Observe(LockInputFilter.VkLMenu, keyDown: true).ShouldBeTrue();
+        modifiers.Observe(LockInputFilter.VkU, keyDown: true).ShouldBeFalse("U is not a modifier");
+
+        LockInputFilter.DecideKey(prompting: false, modifiers.CtrlDown, modifiers.AltDown, LockInputFilter.VkU, keyDown: true)
+            .ShouldBe(LockKeyAction.OpenPrompt);
+    }
+
+    [Fact]
+    public void Releasing_a_modifier_clears_it_and_either_side_counts()
+    {
+        var modifiers = new LockModifierState();
+
+        modifiers.Observe(LockInputFilter.VkRControl, keyDown: true);
+        modifiers.Observe(LockInputFilter.VkRMenu, keyDown: true); // AltGr-style right Alt
+        modifiers.CtrlDown.ShouldBeTrue();
+        modifiers.AltDown.ShouldBeTrue();
+
+        modifiers.Observe(LockInputFilter.VkRControl, keyDown: false);
+        modifiers.CtrlDown.ShouldBeFalse();
+        modifiers.AltDown.ShouldBeTrue("Alt is still held");
+
+        modifiers.Observe(LockInputFilter.VkRMenu, keyDown: false);
+        modifiers.AltDown.ShouldBeFalse();
+    }
+
+    [Fact]
+    public void Releasing_one_ctrl_does_not_forget_the_other_still_held()
+    {
+        var modifiers = new LockModifierState();
+
+        modifiers.Observe(LockInputFilter.VkLControl, keyDown: true);
+        modifiers.Observe(LockInputFilter.VkRControl, keyDown: true);
+        modifiers.Observe(LockInputFilter.VkLControl, keyDown: false);
+
+        modifiers.CtrlDown.ShouldBeTrue();
+    }
+
+    [Fact]
+    public void The_generic_modifier_codes_are_accepted_too()
+    {
+        var modifiers = new LockModifierState();
+
+        modifiers.Observe(LockInputFilter.VkControl, keyDown: true);
+        modifiers.Observe(LockInputFilter.VkMenu, keyDown: true);
+
+        modifiers.CtrlDown.ShouldBeTrue();
+        modifiers.AltDown.ShouldBeTrue();
+        LockInputFilter.IsControlKey(LockInputFilter.VkControl).ShouldBeTrue();
+        LockInputFilter.IsAltKey(LockInputFilter.VkRMenu).ShouldBeTrue();
+        LockInputFilter.IsControlKey(LockInputFilter.VkU).ShouldBeFalse();
+    }
+
     [Fact]
     public void The_mouse_is_always_swallowed()
     {
