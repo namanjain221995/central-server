@@ -1,5 +1,7 @@
+using EndpointPlatform.Domain.Tasks;
 using EndpointPlatform.Infrastructure.Configuration;
 using EndpointPlatform.Infrastructure.Persistence;
+using EndpointPlatform.Infrastructure.ScreenLocks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -128,8 +130,27 @@ public sealed class DeviceReadService(
                 d.Status,
                 d.LastSeenAt,
                 d.EnrolledAt,
+                d.ScreenLockedReported,
             })
             .ToListAsync(cancellationToken);
+
+        // "Locked" is derived, never stored (like online/offline): the latest
+        // engage/release tasks per device combined with what the agent last
+        // reported. One extra query for the page's devices, computed in memory the
+        // way the derivation rule requires -- a device with no screen-lock task is
+        // simply not locked and never appears here.
+        var pageDeviceIds = rows.Select(d => d.Id).ToList();
+        var lockTasks = await _dbContext.DeviceTasks
+            .AsNoTracking()
+            .Where(t => pageDeviceIds.Contains(t.DeviceId)
+                        && (t.Type == DeviceTaskType.EngageScreenLock
+                            || t.Type == DeviceTaskType.ReleaseScreenLock))
+            .Select(t => new { t.DeviceId, t.Type, t.Status, t.CreatedAt })
+            .ToListAsync(cancellationToken);
+        var lockTasksByDevice = lockTasks
+            .ToLookup(
+                t => t.DeviceId,
+                t => new ScreenLockTaskSnapshot(t.Type, t.Status, t.CreatedAt));
 
         var items = rows
             .Select(d => new DeviceListItem(
@@ -150,7 +171,8 @@ public sealed class DeviceReadService(
                 // itself fails closed on anything unparseable.
                 d.Status == Domain.Devices.DeviceStatus.Active
                     && latestVersion != null
-                    && Domain.Agents.AgentVersionNumber.IsNewer(latestVersion, d.AgentVersion)))
+                    && Domain.Agents.AgentVersionNumber.IsNewer(latestVersion, d.AgentVersion),
+                ScreenLockService.DeriveDeviceLocked(d.ScreenLockedReported, lockTasksByDevice[d.Id])))
             .ToList();
 
         return new DevicePage(items, totalCount, page, pageSize);
@@ -207,7 +229,13 @@ public sealed record DeviceListItem(
     /// <summary>Newest published agent version for this device's platform, or null when none is.</summary>
     string? LatestAgentVersion,
     /// <summary>True when a strictly newer published agent exists for this device.</summary>
-    bool AgentUpdateAvailable);
+    bool AgentUpdateAvailable,
+    /// <summary>
+    /// True when the device is behind a persistent full-screen lock right now.
+    /// Derived from its engage/release tasks and the agent's reported lock state,
+    /// never stored -- the same way <see cref="IsOnline"/> is derived.
+    /// </summary>
+    bool ScreenLocked);
 
 public sealed record DevicePage(
     IReadOnlyList<DeviceListItem> Items,

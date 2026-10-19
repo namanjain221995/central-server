@@ -41,6 +41,10 @@ public static class SystemRoles
         Permissions.Device.Restart,
         Permissions.Device.Shutdown,
         Permissions.Device.Lock,
+        // The persistent full-screen lock, deliberately NOT granted to Helpdesk:
+        // the session lock (device.lock) is a support action, but taking a machine
+        // over until an administrator releases it is a change-control decision.
+        Permissions.Device.ScreenLock,
         Permissions.Device.SignOutUser,
         Permissions.Device.Enroll,
         Permissions.Device.Retire,

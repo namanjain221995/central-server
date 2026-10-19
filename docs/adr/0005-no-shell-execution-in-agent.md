@@ -281,3 +281,89 @@ now acceptable, and what still holds:
 
 `AgentSafetyTests` is unchanged and still pins the rest: no process creation
 outside the one host, no PowerShell, the notifier inside the scan.
+
+## Amendment: the screen lock
+
+The screen lock (agent 1.19.0) is the heaviest thing the agent does to a user: a
+full-screen overlay in every session that blocks the keyboard and mouse, survives
+a reboot, and comes off only two ways. It crosses the service/session boundary in
+both directions, so how it does that is recorded here.
+
+- **A second service-launched image, deliberately.** The overlay,
+  `EndpointAgent.LockScreen.exe`, is started in each interactive session by the
+  service, the same way and down the same reviewed code path as the notifier
+  (`WTSEnumerateSessions` → `WTSQueryUserToken` → `CreateProcessAsUserW` in
+  `WindowsSessionProcessHost`, as the session's user and never elevated). It is a
+  *second* image rather than a mode of the notifier because it needs what the
+  notifier must never have: the foreground, low-level keyboard and mouse hooks, and
+  a UI framework (WinForms, for a logo, wrapped text and a passphrase box on every
+  monitor). Keeping those in a separate project leaves the notifier's own rule and
+  test intact. `CreateProcessAsUserW` is still pinned to that one host, still passes
+  the image as `lpApplicationName` with a command line of the quoted image and
+  nothing else, and there is still no parameter through which an argument could be
+  supplied: the overlay reads **nothing from its command line** about what to show.
+  `AgentSafetyTests` now pins **both** reviewed image names explicitly
+  (`EndpointAgent.SessionNotice.exe` and `EndpointAgent.LockScreen.exe`); a third
+  would be a deliberate change to that assertion.
+- **The overlay asks the service; it is never told on the command line.** A
+  dedicated duplex pipe, `EndpointPlatformAgent.ScreenLock`, carries exactly two
+  bounded operations, one line of strictly parsed JSON each way (protocol in
+  `ScreenLockPipeProtocol`): `show` (read-only: the plain-text message and contact
+  line to display, and whether the device is still locked) and `submit` (a
+  candidate unlock code, at most 256 plain-text characters). A line that is too
+  long, is not exactly the expected properties for its operation, names an unknown
+  version or operation, or carries a code that is not plain text is refused unread.
+  There is no path, package, command or id anywhere in it, and nothing the overlay
+  receives is executed: the message and contact line are drawn as plain text with
+  mnemonics off, never parsed, never a link.
+- **The verifier lives and dies in SYSTEM.** A lock carries a PBKDF2-SHA256
+  verifier (algorithm, iterations, salt, hash) that the server derived from the IT
+  unlock code. It is persisted only in the ACL-protected state directory and
+  **never travels to a user session**. The overlay sends a *candidate* code over
+  the pipe; the service does the PBKDF2 and a constant-time compare and answers a
+  single bool. So a user who owns the overlay process learns nothing that would let
+  them derive the code offline, and a wrong guess reveals nothing by timing.
+- **Bounded, and wrong codes rate-limited.** The service answers one request per
+  connection, reads at most a bounded line, waits at most five seconds, and admits
+  at most ten `submit` codes a minute per session (and a looser bound on the
+  read-only `show` poll) before answering `TooManyRequests` without touching the
+  verifier -- so the pipe cannot be used to brute-force the code at machine speed.
+  The pipe's protected DACL gives the service account full control and interactive
+  users read and write and nothing else; the name is claimed with
+  `FirstPipeInstance`; and the overlay trusts only a server in session 0, for the
+  reasons the notifier amendment gives.
+- **A reversible lockdown, undone exactly.** On engage the service disables Task
+  Manager (`HKLM\...\Policies\System\DisableTaskMgr`) and sets the power, sleep and
+  lid-button actions to "Do nothing", through the registry and the power-management
+  API (`powrprof.dll`) -- typed API writes, **no `powercfg` process and no shell**.
+  Every setting's prior value is captured *before* it is changed, and a setting is
+  only ever changed when its prior value was captured, so there is never a change
+  that cannot be undone. The captured values are persisted with the lock and handed
+  back on release, which restores every one of them -- the `DisableTaskMgr` value is
+  deleted again when it was absent before -- then clears the lock. Restore runs
+  before the clear, so a crash in between re-locks on the next boot rather than
+  leaving the machine half-locked-down with nothing to undo it.
+- **Two ways out, and the recovery path is sacred.** A `ReleaseScreenLock` task
+  from the server releases the device (`EngageScreenLock`/`ReleaseScreenLock`
+  executors, permission-checked and audited like every task). And an IT operator at
+  the device presses Ctrl+Alt+U and types the code, which the overlay submits for
+  the service to verify. A corrupt or missing lock file reads as **not locked**, the
+  recovery-safe misreading: a damaged file frees a user, it never strands one
+  behind a verifier that can no longer be matched.
+- **Honest limits of a user-mode lock.** The low-level hooks cannot intercept
+  Ctrl+Alt+Del -- the Secure Attention Sequence is Winlogon's, on a desktop no user
+  process can reach -- so the overlay cannot suppress the SAS menu; it is topmost
+  and watchdog-relaunched, so it covers the desktop again when the user returns, but
+  that is all. It cannot stop a hard power-off; the next boot re-locks. And a local
+  administrator can end the overlay process (the watchdog restarts it, but the lock
+  is not a defence against the machine's own administrator) or clear the state. The
+  always-available second way out -- the server release -- depends on none of the
+  on-device machinery, so a user mistyping, or a hook that a hostile local admin
+  disabled, never strands a device.
+
+`AgentSafetyTests` still pins the rest, and was tightened rather than loosened: the
+process-creation scan is unchanged and now covers the overlay's sources too
+(process *control* -- the watchdog's image-guarded `Kill`/`GetProcessById` -- is the
+Phase 9 kind, not the launch vector); `CreateProcessAsUserW` stays pinned to the one
+host; the two reviewed image names are both asserted; `EndpointAgent.Core`
+references no process API; and PowerShell stays banned in every agent assembly.

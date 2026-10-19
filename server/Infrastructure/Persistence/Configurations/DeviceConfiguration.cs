@@ -39,6 +39,12 @@ internal sealed class DeviceConfiguration : IEntityTypeConfiguration<Device>
             .HasMaxLength(32)
             .IsRequired();
 
+        // Nullable on purpose: three states, not two. Null is "no agent has ever
+        // reported its lock state" (an older build, or one that has never locked),
+        // which the derived status reads as "defer to the tasks", distinct from a
+        // reported false meaning "the agent says it is unlocked right now".
+        builder.Property(d => d.ScreenLockedReported);
+
         builder.Property(d => d.EnrolledWithTokenId).IsRequired();
         builder.Property(d => d.EnrolledAt).IsRequired();
         builder.Property(d => d.CreatedAt).IsRequired();

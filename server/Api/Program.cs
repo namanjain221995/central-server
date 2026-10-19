@@ -273,6 +273,7 @@ public sealed class Program
             app.MapGroupEndpoints();
             app.MapRestartScheduleEndpoints();
             app.MapAnnouncementEndpoints();
+            app.MapScreenLockEndpoints();
             app.MapTaskEndpoints();
             app.MapAgentReleaseEndpoints();
             app.MapUsbEndpoints();

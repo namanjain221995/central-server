@@ -144,6 +144,14 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     public DbSet<Domain.Announcements.AnnouncementDevice> AnnouncementDevices =>
         Set<Domain.Announcements.AnnouncementDevice>();
 
+    public DbSet<Domain.ScreenLocks.ScreenLock> ScreenLocks => Set<Domain.ScreenLocks.ScreenLock>();
+
+    public DbSet<Domain.ScreenLocks.ScreenLockDevice> ScreenLockDevices =>
+        Set<Domain.ScreenLocks.ScreenLockDevice>();
+
+    public DbSet<Domain.Security.OrganizationSecuritySetting> OrganizationSecuritySettings =>
+        Set<Domain.Security.OrganizationSecuritySetting>();
+
     public DbSet<EnrollmentToken> EnrollmentTokens => Set<EnrollmentToken>();
 
     public DbSet<AgentCredential> AgentCredentials => Set<AgentCredential>();

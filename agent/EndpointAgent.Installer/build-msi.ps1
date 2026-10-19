@@ -31,7 +31,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ServerBaseUrl,
 
-    [string]$Version = '1.18.0',
+    [string]$Version = '1.19.0',
 
     [switch]$SkipPublish
 )
@@ -89,6 +89,15 @@ if (-not $SkipPublish) {
     & dotnet publish (Join-Path $repoRoot 'agent\EndpointAgent.CompanyPortal\EndpointAgent.CompanyPortal.csproj') `
         -c Release -p:PublishAgent=true -p:Version=$Version -o $publishDir --nologo
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish (Company Portal) failed with exit code $LASTEXITCODE." }
+
+    # The lock overlay joins the same folder, same runtime identifier and
+    # self-contained runtime, so it reuses the runtime the service published and the
+    # desktop runtime the portal added rather than shipping a third set.
+    # AgentBinaries.wxs globs the folder, so it is packaged without being listed.
+    Write-Host "Publishing lock overlay into the same folder..." -ForegroundColor Cyan
+    & dotnet publish (Join-Path $repoRoot 'agent\EndpointAgent.LockScreen\EndpointAgent.LockScreen.csproj') `
+        -c Release -p:PublishAgent=true -p:Version=$Version -o $publishDir --nologo
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish (lock overlay) failed with exit code $LASTEXITCODE." }
 }
 
 $exe = Join-Path $publishDir 'EndpointAgent.Service.exe'
@@ -99,6 +108,9 @@ if (-not (Test-Path $notifier)) { throw "Publish output is missing $notifier." }
 
 $portal = Join-Path $publishDir 'EndpointAgent.CompanyPortal.exe'
 if (-not (Test-Path $portal)) { throw "Publish output is missing $portal." }
+
+$overlay = Join-Path $publishDir 'EndpointAgent.LockScreen.exe'
+if (-not (Test-Path $overlay)) { throw "Publish output is missing $overlay." }
 Write-Host ("  published {0} files, {1:N0} MB" -f `
     (Get-ChildItem $publishDir -Recurse -File).Count, `
     ((Get-ChildItem $publishDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB))

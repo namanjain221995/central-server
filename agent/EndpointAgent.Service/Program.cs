@@ -237,6 +237,26 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Windows.CompanyPortal.CompanyPortalPipeServer>();
             builder.Services.AddHostedService(sp =>
                 sp.GetRequiredService<EndpointAgent.Windows.CompanyPortal.CompanyPortalPipeServer>());
+
+            // The persistent full-screen lock. A server task locks every session,
+            // the lock survives reboot, and it is released only by a ReleaseScreenLock
+            // task or the correct on-device unlock code -- which is verified HERE, in
+            // SYSTEM, against a PBKDF2 verifier the user process never sees. The
+            // manager is both the hosted watchdog and the pipe's handler, and it owns
+            // the launcher (overlay into each session, one fixed image, no arguments)
+            // and the reversible machine lockdown (ADR-0005, screen-lock amendment).
+            builder.Services.AddSingleton<EndpointAgent.Core.ScreenLock.IScreenLockStore, EndpointAgent.Core.ScreenLock.FileScreenLockStore>();
+            builder.Services.AddSingleton<EndpointAgent.Core.ScreenLock.IScreenLockLauncher, EndpointAgent.Windows.ScreenLock.ScreenLockOverlayLauncher>();
+            builder.Services.AddSingleton<EndpointAgent.Core.ScreenLock.IScreenLockdown, EndpointAgent.Windows.ScreenLock.WindowsScreenLockdown>();
+            builder.Services.AddSingleton<EndpointAgent.Core.ScreenLock.ScreenLockManager>();
+            builder.Services.AddSingleton<EndpointAgent.Core.ScreenLock.IScreenLockPipeHandler>(sp =>
+                sp.GetRequiredService<EndpointAgent.Core.ScreenLock.ScreenLockManager>());
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<EndpointAgent.Core.ScreenLock.ScreenLockManager>());
+            builder.Services.AddSingleton<EndpointAgent.Windows.ScreenLock.ScreenLockPipeServer>();
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<EndpointAgent.Windows.ScreenLock.ScreenLockPipeServer>());
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.EngageScreenLockExecutor>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ReleaseScreenLockExecutor>();
+
             builder.Services.AddSingleton<IPackageInstaller, WindowsMsiPackageInstaller>();
             builder.Services.AddSingleton<ILocalAccountsControl, WindowsLocalAccountControl>();
             builder.Services.AddSingleton<ISecretRedeemer, EndpointAgent.Core.Communication.ServerSecretRedeemer>();

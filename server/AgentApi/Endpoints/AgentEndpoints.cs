@@ -760,7 +760,11 @@ public static class AgentEndpoints
             // Uptime, both ends on the agent's clock; the device turns it into a
             // boot time on ours. A nonsensical value is ignored, not refused:
             // it costs a "restarted?" answer, never a heartbeat.
-            request.BootedAt is { } booted ? request.AgentTimestamp - booted : null);
+            request.BootedAt is { } booted ? request.AgentTimestamp - booted : null,
+            // The agent's own account of whether it is showing a lock right now.
+            // Null (older agents) leaves the last known value alone; a value lets a
+            // local IT-unlock-code release reflect in the console's derived status.
+            request.ScreenLocked);
 
         // Heartbeats are routine, high-volume signals - they update last_seen but
         // do not each produce an audit entry, which would bury real events under
