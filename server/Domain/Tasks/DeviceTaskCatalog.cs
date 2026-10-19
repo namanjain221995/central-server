@@ -128,13 +128,18 @@ public static class DeviceTaskCatalog
             // not expired just because the machine was unreachable for a while.
             // Gated on the agent that has the lock executor: an older one would fail
             // the task as unknown, which reads exactly like the lock failing to engage.
+            // 1.19.1, not 1.19.0: the 1.19.0 overlay never saw its own Ctrl+Alt+U
+            // chord, so a device it locked had no on-device way out. The server must
+            // not put a device into that state.
             new(DeviceTaskType.EngageScreenLock, Permissions.Device.ScreenLock, HighRisk: true, 7 * 24 * 3600,
-                MinimumAgentVersion: "1.19.0"),
+                MinimumAgentVersion: "1.19.1"),
 
             // Not high-risk: it lifts a lock rather than imposing one, the undo of
             // EngageScreenLock. Same permission and the same week of lifetime as the
             // engage, so an unlock issued for an offline device still reaches it on
-            // reconnect within the window the lock itself lives.
+            // reconnect within the window the lock itself lives. Deliberately LOWER
+            // than the engage's minimum: a device locked while on 1.19.0 must still be
+            // releasable from the dashboard, which is its only way out.
             new(DeviceTaskType.ReleaseScreenLock, Permissions.Device.ScreenLock, HighRisk: false, 7 * 24 * 3600,
                 MinimumAgentVersion: "1.19.0"),
         }.ToFrozenDictionary(d => d.Type);

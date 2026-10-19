@@ -33,8 +33,8 @@ namespace EndpointAgent.Windows.ScreenLock;
 /// <b>Stopping.</b> <see cref="StopAllOverlays"/> ends every overlay this device is
 /// running: the ones this launcher started, and -- belt-and-braces against a start
 /// that raced a release -- any other process of the overlay's image in an
-/// interactive session. Terminating it releases its input hooks and its
-/// <c>BlockInput</c> with it, so the desktop comes back at once.
+/// interactive session. Terminating it releases its input hooks with it, so the
+/// desktop comes back at once.
 /// </para>
 /// </remarks>
 [SupportedOSPlatform("windows")]

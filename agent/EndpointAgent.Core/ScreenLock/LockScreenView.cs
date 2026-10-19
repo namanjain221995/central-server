@@ -190,6 +190,19 @@ public static class LockInputFilter
             or VkShift or VkLShift or VkRShift
             or VkEnter or VkEscape or VkSpace;
 
+    /// <summary>True for Ctrl in any form a key event can name it: the generic code, or the left/right code a low-level hook reports.</summary>
+    public static bool IsControlKey(int virtualKey) => virtualKey is VkControl or VkLControl or VkRControl;
+
+    /// <summary>True for Alt (VK_MENU) in any of its forms, including AltGr's right Alt.</summary>
+    public static bool IsAltKey(int virtualKey) => virtualKey is VkMenu or VkLMenu or VkRMenu;
+
+    public const int VkControl = 0x11;
+    public const int VkLControl = 0xA2;
+    public const int VkRControl = 0xA3;
+    public const int VkMenu = 0x12;
+    public const int VkLMenu = 0xA4;
+    public const int VkRMenu = 0xA5;
+
     private const int VkBack = 0x08;
     private const int VkEnter = 0x0D;
     private const int VkShift = 0x10;
@@ -202,4 +215,56 @@ public static class LockInputFilter
     private const int VkDelete = 0x2E;
     private const int VkLShift = 0xA0;
     private const int VkRShift = 0xA1;
+}
+
+/// <summary>
+/// Whether Ctrl and Alt are held right now, kept by the overlay from the raw key
+/// events its hook sees rather than asked of the system.
+/// </summary>
+/// <remarks>
+/// The hook swallows the modifier keys themselves -- a lone Ctrl or Alt must not
+/// reach the desktop either -- and a key a low-level hook swallows never updates
+/// the system's key-state table. So <c>GetAsyncKeyState</c> reported Ctrl and Alt
+/// as up at the instant U was pressed, and the chord never fired (agent 1.19.0).
+/// Each side is tracked on its own, because releasing the left Ctrl must not
+/// forget a right Ctrl still held; the generic codes are accepted too in case an
+/// event ever carries them. Pure, so the sequence that failed is a test.
+/// </remarks>
+public sealed class LockModifierState
+{
+    private bool _leftCtrl;
+    private bool _rightCtrl;
+    private bool _leftAlt;
+    private bool _rightAlt;
+
+    public bool CtrlDown => _leftCtrl || _rightCtrl;
+
+    public bool AltDown => _leftAlt || _rightAlt;
+
+    /// <summary>
+    /// Records one key event. Returns true when the key was a modifier this
+    /// tracks, false for any other key.
+    /// </summary>
+    public bool Observe(int virtualKey, bool keyDown)
+    {
+        switch (virtualKey)
+        {
+            case LockInputFilter.VkLControl:
+            case LockInputFilter.VkControl:
+                _leftCtrl = keyDown;
+                return true;
+            case LockInputFilter.VkRControl:
+                _rightCtrl = keyDown;
+                return true;
+            case LockInputFilter.VkLMenu:
+            case LockInputFilter.VkMenu:
+                _leftAlt = keyDown;
+                return true;
+            case LockInputFilter.VkRMenu:
+                _rightAlt = keyDown;
+                return true;
+            default:
+                return false;
+        }
+    }
 }

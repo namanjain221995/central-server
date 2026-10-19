@@ -33,6 +33,16 @@ namespace EndpointAgent.LockScreen;
 /// not depend on anything here.
 /// </para>
 /// <para>
+/// <b>The hooks alone block input; there is no <c>BlockInput</c>.</b> The 1.19.0
+/// overlay also held <c>BlockInput(true)</c> while waiting for Ctrl+Alt+U, and the
+/// chord never fired. The cause was the key-state table (see
+/// <see cref="LockModifierState"/>), but <c>BlockInput</c> is documented only as
+/// keeping input from applications, not as leaving it visible to hooks, and a lock
+/// that might not see its own unlock chord has no on-device way out. The hooks
+/// swallow every keyboard and mouse event themselves, and the service's watchdog
+/// restarts the overlay if it ever dies.
+/// </para>
+/// <para>
 /// <b>Nothing received is executed.</b> The message and contact line are set as
 /// plain <see cref="Label.Text"/> with mnemonics off; they are never parsed, never
 /// a link or a path. The only thing sent to the service is the code the operator
@@ -48,6 +58,7 @@ internal sealed class LockOverlayController : IDisposable
     private readonly List<Form> _forms = [];
     private readonly HookProc _keyboardProc;
     private readonly HookProc _mouseProc;
+    private readonly LockModifierState _modifiers = new();
 
     private Image? _logo;
     private Form? _contentForm;
@@ -75,9 +86,9 @@ internal sealed class LockOverlayController : IDisposable
         LoadLogo();
         BuildForms();
 
-        // Block input first, then install the hooks, then show: there must be no
-        // instant in which the desktop is both visible and live.
-        _ = NativeMethods.BlockInput(true);
+        // Hooks first, then show: there must be no instant in which the desktop is
+        // both visible and live. The hooks are the whole input block; the class
+        // remarks say why BlockInput is deliberately not used as a backstop.
         InstallHooks();
 
         foreach (var form in _forms)
@@ -324,10 +335,6 @@ internal sealed class LockOverlayController : IDisposable
 
         _prompting = true;
 
-        // The keyboard must now reach the passphrase box, so lift the belt-and-
-        // braces block; the hook still swallows every key that is not for the box.
-        _ = NativeMethods.BlockInput(false);
-
         if (_promptPanel is { } panel)
         {
             panel.Visible = true;
@@ -356,7 +363,6 @@ internal sealed class LockOverlayController : IDisposable
         }
 
         _codeBox?.Clear();
-        _ = NativeMethods.BlockInput(true);
         TakeForeground();
     }
 
@@ -450,7 +456,6 @@ internal sealed class LockOverlayController : IDisposable
         _poll?.Stop();
         _closing.Cancel();
         RemoveHooks();
-        _ = NativeMethods.BlockInput(false);
 
         foreach (var form in _forms)
         {
@@ -512,13 +517,22 @@ internal sealed class LockOverlayController : IDisposable
             var message = wParam.ToInt64();
             var keyDown = message is NativeMethods.WM_KEYDOWN or NativeMethods.WM_SYSKEYDOWN;
             var virtualKey = Marshal.ReadInt32(lParam); // KBDLLHOOKSTRUCT.vkCode is the first field.
-            var ctrl = IsDown(NativeMethods.VK_CONTROL);
-            var alt = IsDown(NativeMethods.VK_MENU);
+
+            // The modifiers are swallowed like every other key, and a swallowed key
+            // never reaches the system's key-state table, so GetAsyncKeyState alone
+            // never saw Ctrl or Alt held. The tracker follows the raw events; the
+            // system's view is only a fallback for a modifier pressed before the
+            // hook existed.
+            _modifiers.Observe(virtualKey, keyDown);
+            var ctrl = _modifiers.CtrlDown || IsDown(NativeMethods.VK_CONTROL);
+            var alt = _modifiers.AltDown || IsDown(NativeMethods.VK_MENU);
 
             switch (LockInputFilter.DecideKey(_prompting, ctrl, alt, virtualKey, keyDown))
             {
                 case LockKeyAction.OpenPrompt:
-                    OpenPrompt();
+                    // Posted, not run here: Windows silently unhooks a slow hook
+                    // procedure, so the UI work stays off the hook's critical path.
+                    _contentForm?.BeginInvoke((Action)OpenPrompt);
                     return new IntPtr(1); // swallow the chord's final key
 
                 case LockKeyAction.PassToPrompt:
@@ -550,7 +564,6 @@ internal sealed class LockOverlayController : IDisposable
     public void Dispose()
     {
         RemoveHooks();
-        _ = NativeMethods.BlockInput(false);
         _poll?.Dispose();
         _closing.Dispose();
         foreach (var form in _forms)
@@ -581,10 +594,6 @@ internal sealed class LockOverlayController : IDisposable
 
         [DllImport("user32.dll")]
         internal static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool BlockInput([MarshalAs(UnmanagedType.Bool)] bool fBlockIt);
 
         [DllImport("user32.dll")]
         internal static extern short GetAsyncKeyState(int vKey);
