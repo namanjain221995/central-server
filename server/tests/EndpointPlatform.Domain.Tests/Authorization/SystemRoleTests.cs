@@ -223,6 +223,59 @@ public sealed class SystemRoleTests
     }
 
     /// <summary>
+    /// IT remote support hands an administrator live control of a device's screen and
+    /// reveals its unattended password, so every remote-support authority stays with
+    /// IT Administrator and Super Administrator. Unlike the read-is-safe-for-everyone
+    /// split of Chrome or BitLocker, even <c>remotesupport.view</c> is administrator-
+    /// only: the list it unlocks exists only to drive takeover of a machine, so
+    /// Helpdesk — first-line support — does not see it, exactly as it cannot read a
+    /// BitLocker recovery key, and Auditor mutates nothing.
+    /// </summary>
+    /// <remarks>
+    /// The whole-catalogue assertion is the one that matters over time: it fails the
+    /// moment somebody adds a remote-support permission without deciding, here, which
+    /// roles hold it, rather than letting it inherit a default.
+    /// </remarks>
+    [Fact]
+    public void Only_administrators_can_provide_remote_support()
+    {
+        var catalogue = Permissions.All.ToDictionary(p => p.Key, StringComparer.Ordinal);
+
+        catalogue[Permissions.RemoteSupport.View].HighRisk.ShouldBeFalse();
+        catalogue[Permissions.RemoteSupport.Configure].HighRisk.ShouldBeTrue();
+        catalogue[Permissions.RemoteSupport.Connect].HighRisk.ShouldBeTrue();
+
+        foreach (var permission in new[]
+                 {
+                     Permissions.RemoteSupport.View,
+                     Permissions.RemoteSupport.Configure,
+                     Permissions.RemoteSupport.Connect,
+                 })
+        {
+            var holders = SystemRoles.All
+                .Where(r => r.Value.PermissionKeys.Contains(permission, StringComparer.Ordinal))
+                .Select(r => r.Key)
+                .ToArray();
+
+            holders.ShouldBe(
+                [SystemRoles.SuperAdministrator, SystemRoles.ItAdministrator],
+                ignoreOrder: true,
+                customMessage: $"'{permission}' must stay with administrators, never reaching Helpdesk or Auditor");
+        }
+
+        Permissions.AllKeys
+            .Where(k => k.StartsWith("remotesupport.", StringComparison.Ordinal))
+            .ShouldBe(
+                [
+                    Permissions.RemoteSupport.View,
+                    Permissions.RemoteSupport.Configure,
+                    Permissions.RemoteSupport.Connect,
+                ],
+                ignoreOrder: true,
+                customMessage: "a remote-support permission was added without deciding which roles hold it");
+    }
+
+    /// <summary>
     /// Only IT Administrator and Super Administrator may open USB storage access.
     /// </summary>
     /// <remarks>

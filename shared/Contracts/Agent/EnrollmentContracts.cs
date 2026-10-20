@@ -74,13 +74,21 @@ public sealed record EnrollResponse(
 /// back to the task-derived state, so an older agent is simply judged by the tasks
 /// it was sent. Optional and last so older agents and servers keep working.
 /// </param>
+/// <param name="RemoteSupportId">
+/// The device's RustDesk ID for IT remote support, read by the agent from the
+/// installed RustDesk's own configuration; null from agents that do not report it
+/// (before 1.20.0) or when RustDesk is not installed or has not yet registered with
+/// the rendezvous server. It is an identifier the admin dials, never a secret.
+/// Optional and last so older agents and servers keep working.
+/// </param>
 public sealed record HeartbeatRequest(
     string Hostname,
     string AgentVersion,
     string? OperatingSystem,
     DateTimeOffset AgentTimestamp,
     DateTimeOffset? BootedAt = null,
-    bool? ScreenLocked = null);
+    bool? ScreenLocked = null,
+    string? RemoteSupportId = null);
 
 /// <summary>Response body for a successful heartbeat.</summary>
 /// <param name="ServerTime">Server time, letting the agent detect its own skew.</param>

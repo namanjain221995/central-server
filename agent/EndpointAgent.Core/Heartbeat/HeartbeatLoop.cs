@@ -37,7 +37,8 @@ public sealed class HeartbeatLoop(
     IOptions<EnrollmentOptions> enrollmentOptions,
     TimeProvider timeProvider,
     ILogger<HeartbeatLoop> logger,
-    EndpointAgent.Core.ScreenLock.ScreenLockManager? screenLock = null)
+    EndpointAgent.Core.ScreenLock.ScreenLockManager? screenLock = null,
+    IRemoteSupportReader? remoteSupportReader = null)
 {
     private static readonly TimeSpan MinBackoff = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(5);
@@ -79,6 +80,10 @@ public sealed class HeartbeatLoop(
     // Optional: a device with no screen-lock feature wired (older composition, a
     // test) simply reports "not locked". Not null-guarded, because absent is valid.
     private readonly EndpointAgent.Core.ScreenLock.ScreenLockManager? _screenLock = screenLock;
+
+    // Optional, EXACTLY like _screenLock: a device with no remote-support feature
+    // wired (older composition, a test) simply reports no RustDesk ID. Absent is valid.
+    private readonly IRemoteSupportReader? _remoteSupportReader = remoteSupportReader;
 
     /// <summary>The agent build version reported to the server.</summary>
     public string AgentVersion { get; init; } = Core.AgentVersion.Current;
@@ -128,13 +133,21 @@ public sealed class HeartbeatLoop(
                 // with no screen-lock feature wired simply reports false.
                 var screenLocked = _screenLock?.CurrentlyLocked ?? false;
 
+                // The device's RustDesk ID for IT remote support, read from the
+                // installed RustDesk's own config, carried on every heartbeat (agent
+                // 1.20.0+). Null when RustDesk is not installed or not yet registered,
+                // or when no remote-support reader is wired. Mirrors the screen-lock
+                // ground-truth wiring: the console learns the ID purely by reporting.
+                var remoteSupportId = _remoteSupportReader?.ReadRustDeskId();
+
                 var request = BuildRequest(
                     _systemInfoProvider.GetHostName(),
                     AgentVersion,
                     await _systemInfoProvider.GetOperatingSystemDescriptionAsync(stoppingToken),
                     sentAt,
                     BootTime(sentAt),
-                    screenLocked);
+                    screenLocked,
+                    remoteSupportId);
 
                 AgentApiResult<HeartbeatResponse> result;
 
@@ -325,8 +338,9 @@ public sealed class HeartbeatLoop(
 
     /// <summary>
     /// Assembles the heartbeat the agent sends. Extracted so a test can prove the
-    /// device's live screen-lock state is carried on the wire -- the console's
-    /// "locked" status depends on it -- without standing up the whole loop.
+    /// device's live screen-lock state and RustDesk ID are carried on the wire --
+    /// the console's "locked" status and remote-support dial both depend on it --
+    /// without standing up the whole loop.
     /// </summary>
     internal static HeartbeatRequest BuildRequest(
         string hostname,
@@ -334,8 +348,10 @@ public sealed class HeartbeatLoop(
         string? operatingSystem,
         DateTimeOffset sentAt,
         DateTimeOffset? bootedAt,
-        bool screenLocked) =>
-        new(hostname, agentVersion, operatingSystem, sentAt, bootedAt, ScreenLocked: screenLocked);
+        bool screenLocked,
+        string? remoteSupportId) =>
+        new(hostname, agentVersion, operatingSystem, sentAt, bootedAt,
+            ScreenLocked: screenLocked, RemoteSupportId: remoteSupportId);
 
     /// <summary>
     /// When the machine last started: now minus the system tick count, which

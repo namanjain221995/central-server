@@ -130,6 +130,15 @@ public sealed class Device : AuditableEntity
     public bool? ScreenLockedReported { get; private set; }
 
     /// <summary>
+    /// The device's RustDesk ID for IT remote support, as the agent last read it
+    /// from the installed RustDesk's own configuration. Null until an agent that
+    /// reports it (1.20.0+) checks in with RustDesk installed and registered. An
+    /// identifier an administrator dials, never a secret; the unattended password is
+    /// sealed separately in the device's remote-support enrolment.
+    /// </summary>
+    public string? RemoteSupportId { get; private set; }
+
+    /// <summary>
     /// When an administrator last asked for a fresh inventory. The next heartbeat
     /// response tells the agent to upload one; comparing against
     /// <see cref="InventoryCollectedAt"/> decides whether the request is still
@@ -179,9 +188,13 @@ public sealed class Device : AuditableEntity
     /// -- while true or false records the agent's current account, which is what
     /// lets a lock cleared on the machine with the IT unlock code show as released.
     /// </param>
+    /// <param name="remoteSupportId">
+    /// The device's RustDesk ID for remote support, or null when the agent did not
+    /// say. Null leaves the last reported value untouched, mirroring screenLocked.
+    /// </param>
     public void RecordHeartbeat(
         string hostname, string agentVersion, string? operatingSystem, DateTimeOffset now,
-        TimeSpan? uptime = null, bool? screenLocked = null)
+        TimeSpan? uptime = null, bool? screenLocked = null, string? remoteSupportId = null)
     {
         // A retired device's heartbeats are rejected upstream; guard here too so a
         // coding error cannot quietly resurrect one.
@@ -210,6 +223,13 @@ public sealed class Device : AuditableEntity
         if (screenLocked is not null)
         {
             ScreenLockedReported = screenLocked;
+        }
+
+        // Only overwrite when the agent reported a RustDesk ID; a null or blank means
+        // "this build or install does not say", not "no RustDesk".
+        if (!string.IsNullOrWhiteSpace(remoteSupportId))
+        {
+            RemoteSupportId = Guard.OptionalMaxLength(remoteSupportId.Trim(), 64);
         }
 
         LastSeenAt = now;

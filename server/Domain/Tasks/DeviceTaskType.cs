@@ -222,4 +222,18 @@ public enum DeviceTaskType
     /// on reconnect rather than leaving it locked.
     /// </remarks>
     ReleaseScreenLock = 53,
+
+    /// <summary>
+    /// Configure the device's already-installed RustDesk for IT remote support by
+    /// setting a platform-managed unattended password, so an administrator can start
+    /// a remote-control session (agent 1.20.0+).
+    /// </summary>
+    /// <remarks>
+    /// RustDesk itself is installed separately (via Company Apps); this task only
+    /// sets the unattended access on an install that is already present. The password
+    /// is delivered as a one-time ephemeral-secret reference and never appears in the
+    /// persisted task payload or the audit trail. The device reports its RustDesk ID
+    /// on the heartbeat, so no result payload is required.
+    /// </remarks>
+    ConfigureRemoteSupport = 54,
 }

@@ -53,6 +53,7 @@ public static partial class AuditStateRedactor
         "numericalPassword", "secret", "secretRef", "apiKey", "token", "sessionToken",
         "credential", "privateKey", "passwordHash", "hash",
         "sealedRecoveryPassword", "ciphertext",
+        "unattendedPassword", "rustdeskPassword", "sealedPassword",
     };
 
     /// <summary>

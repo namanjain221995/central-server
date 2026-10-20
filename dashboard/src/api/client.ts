@@ -3117,3 +3117,96 @@ export function setScreenUnlockCode(code: string): Promise<void> {
     body: JSON.stringify({ code }),
   })
 }
+
+// ---------------------------------------------------------------------------
+// IT Remote Support. Authorized help-desk remote control of the company's own
+// managed Windows devices over RustDesk's public servers. Every capability is
+// permission-gated and audited; the device shows RustDesk's own connection
+// indicator while a session is live. Nothing here persists a RustDesk id or a
+// session password — the password is one-time, returned by `connect`, and held
+// in component state alone (never storage, a URL or router state).
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a device stands on remote support, as the server computes it.
+ *
+ * `NotInstalled` — no RustDesk id and not enrolled: RustDesk is not on the
+ * machine yet. `NotEnrolled` — a RustDesk id is present but the device is not
+ * enrolled for support. `Enrolling` — enrolled, but the device has not reported
+ * its RustDesk id back yet. `Ready` — enrolled and a RustDesk id is present, so
+ * a session can be started.
+ */
+export type RemoteSupportState = 'NotInstalled' | 'NotEnrolled' | 'Enrolling' | 'Ready'
+
+export interface RemoteSupportDeviceRow {
+  deviceId: string
+  hostname: string
+  displayName: string | null
+  isOnline: boolean
+  lastSeenAt: string | null
+  rustDeskId: string | null
+  state: RemoteSupportState
+}
+
+/** The one-time credentials a `connect` returns. Held in component state only. */
+export interface RemoteSupportSession {
+  deviceId: string
+  rustDeskId: string
+  password: string
+}
+
+/** The fleet as remote support sees it. Mirrors getDevices: one authorized read. */
+export function getRemoteSupportDevices(): Promise<RemoteSupportDeviceRow[]> {
+  return request<RemoteSupportDeviceRow[]>('/admin/v1/remote-support/devices')
+}
+
+/**
+ * Installs and enrols RustDesk on a device for support. Returns the queued
+ * task, if one was created; the device reaches `Ready` once it reports its
+ * RustDesk id back. POST with no body, like the other device actions.
+ */
+export function configureRemoteSupport(deviceId: string): Promise<{ status: string; taskId: string | null }> {
+  return request<{ status: string; taskId: string | null }>(
+    `/admin/v1/devices/${encodeURIComponent(deviceId)}/remote-support/configure`,
+    { method: 'POST' },
+  )
+}
+
+/**
+ * Starts a remote session after step-up authentication, returning the device's
+ * RustDesk id and a one-time password.
+ *
+ * A raw fetch rather than the shared helper, mirroring revealRecoveryKey: the
+ * endpoint is rate-limited and answers failure as an RFC 7807 problem, and this
+ * surfaces the server's own human reason — rate limited, wrong password, not
+ * ready — which the shared helper would flatten into a status code.
+ *
+ * The returned password is held in component state and nowhere else — never in
+ * localStorage, sessionStorage, the URL or router state — and never placed in
+ * the rustdesk:// link.
+ */
+export async function startRemoteSupportSession(
+  deviceId: string,
+  currentPassword: string,
+  justification: string,
+): Promise<RemoteSupportSession> {
+  const response = await fetch(
+    `/api/admin/v1/devices/${encodeURIComponent(deviceId)}/remote-support/connect`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ currentPassword, justification }),
+    },
+  )
+
+  if (!response.ok) {
+    const problem = await response.json().catch(() => null)
+    throw new ApiError(
+      response.status,
+      problem?.title ?? problem?.detail ?? `Remote session request failed with HTTP ${response.status}`,
+      response.headers.get('X-Correlation-Id'),
+    )
+  }
+
+  return (await response.json()) as RemoteSupportSession
+}

@@ -144,6 +144,10 @@ public sealed class Program
             builder.Services.AddSingleton<RevealRateLimiter>();
             builder.Services.AddScoped<RecoveryEscrowService>();
             builder.Services.AddScoped<Infrastructure.BitLocker.EscrowAttemptAdminService>();
+            // Registered in the Admin API, not the shared infrastructure, for the same
+            // reason as the escrow services above: it unseals the RustDesk unattended
+            // password with the escrow key, which the Agent API must never hold.
+            builder.Services.AddScoped<Infrastructure.RemoteSupport.RemoteSupportService>();
 
             builder.Services
                 .AddAuthentication(AdminAuthenticationHandler.SchemeName)
@@ -275,6 +279,7 @@ public sealed class Program
             app.MapRestartScheduleEndpoints();
             app.MapAnnouncementEndpoints();
             app.MapScreenLockEndpoints();
+            app.MapRemoteSupportEndpoints();
             app.MapTaskEndpoints();
             app.MapAgentReleaseEndpoints();
             app.MapUsbEndpoints();

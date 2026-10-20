@@ -6,7 +6,7 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>EndpointAgent.LockScreen</RootNamespace>
     <AssemblyName>EndpointAgent.LockScreen</AssemblyName>
-    <VersionPrefix>1.19.2</VersionPrefix>
+    <VersionPrefix>1.20.0</VersionPrefix>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>

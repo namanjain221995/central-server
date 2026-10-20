@@ -94,6 +94,13 @@ public static class SystemRoles
         // for the organization rather than supporting one caller -- and Auditor
         // is read-only and never gets it.
         Permissions.Announcement.Send,
+        // Deliberately not granted to Helpdesk. Remote support hands over live
+        // control of a machine's screen and the reveal of its unattended password,
+        // which is a change-control/security decision like reading a BitLocker
+        // recovery key, not a first-line support action.
+        Permissions.RemoteSupport.View,
+        Permissions.RemoteSupport.Configure,
+        Permissions.RemoteSupport.Connect,
         Permissions.Policy.View,
         Permissions.Policy.Create,
         Permissions.Policy.Assign,

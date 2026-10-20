@@ -894,6 +894,11 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasColumnType("uuid")
                         .HasColumnName("organization_id");
 
+                    b.Property<string>("RemoteSupportId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("remote_support_id");
+
                     b.Property<bool?>("ScreenLockedReported")
                         .HasColumnType("boolean")
                         .HasColumnName("screen_locked_reported");
@@ -3260,6 +3265,67 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("policy_versions", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.RemoteSupport.RemoteSupportEnrollment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("ConfiguredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("configured_at");
+
+                    b.Property<string>("ConfiguredByDisplay")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("configured_by_display");
+
+                    b.Property<Guid>("ConfiguredByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("configured_by_user_id");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<int>("KeyVersion")
+                        .HasColumnType("integer")
+                        .HasColumnName("key_version");
+
+                    b.Property<DateTimeOffset?>("LastRevealedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_revealed_at");
+
+                    b.Property<Guid?>("LastRevealedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("last_revealed_by_user_id");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("organization_id");
+
+                    b.Property<int>("RevealedCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("revealed_count");
+
+                    b.Property<string>("SealedPassword")
+                        .IsRequired()
+                        .HasMaxLength(4096)
+                        .HasColumnType("character varying(4096)")
+                        .HasColumnName("sealed_password");
+
+                    b.HasKey("Id")
+                        .HasName("pk_remote_support_enrollments");
+
+                    b.HasIndex("DeviceId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_remote_support_enrollments_device_id");
+
+                    b.ToTable("remote_support_enrollments", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Restarts.RestartSchedule", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4610,6 +4676,16 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_policy_versions_policies_policy_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.RemoteSupport.RemoteSupportEnrollment", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_remote_support_enrollments_devices_device_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Restarts.RestartSchedule", b =>
