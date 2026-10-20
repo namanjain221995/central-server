@@ -11,9 +11,16 @@ namespace EndpointAgent.Windows;
 /// <c>CERT_E_UNTRUSTEDROOT</c>).
 /// </summary>
 /// <remarks>
-/// Revocation checking is left to the platform default without forcing a network
-/// fetch, so verification works on an offline endpoint. This is a trust decision
-/// about the publisher chain, not a freshness guarantee.
+/// Revocation is deliberately not checked, so verification carries no revocation
+/// network dependency. Chain building, by contrast, is allowed to retrieve a
+/// missing intermediate or root certificate over the network: a package from a
+/// publisher whose CA certificates are not already cached on the endpoint -- a
+/// freshly provisioned machine that has never verified, say, a Sectigo-signed
+/// file -- otherwise fails with <c>CERT_E_CHAINING</c> (0x800B010A) even though
+/// its signature is perfectly valid. The install path is online by definition
+/// (the package was just downloaded), so permitting that retrieval is what lets a
+/// new device verify the same packages a developer's machine already can. This is
+/// a trust decision about the publisher chain, not a freshness guarantee.
 /// </remarks>
 [SupportedOSPlatform("windows")]
 internal static class WinTrust
@@ -27,7 +34,6 @@ internal static class WinTrust
     private const uint WtdStateActionVerify = 1;
     private const uint WtdStateActionClose = 2;
     private const uint WtdRevocationCheckNone = 0x00000010;
-    private const uint WtdCacheOnlyUrlRetrieval = 0x00001000;
 
     public static int VerifyEmbeddedSignature(string filePath)
     {
@@ -58,7 +64,7 @@ internal static class WinTrust
                 dwStateAction = WtdStateActionVerify,
                 hWVTStateData = IntPtr.Zero,
                 pwszURLReference = IntPtr.Zero,
-                dwProvFlags = WtdRevocationCheckNone | WtdCacheOnlyUrlRetrieval,
+                dwProvFlags = WtdRevocationCheckNone,
                 dwUIContext = 0,
                 pSignatureSettings = IntPtr.Zero,
             };
