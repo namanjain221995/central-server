@@ -93,6 +93,15 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    heading: 'Support',
+    items: [
+      // Authorized help-desk remote control of a managed device over RustDesk.
+      // Its own group: it is neither estate, access nor configuration — it is a
+      // live, audited action taken on one machine at a time.
+      { to: '/remote-support', label: 'IT Remote Support', icon: 'remote' },
+    ],
+  },
+  {
     heading: 'Operations',
     items: [
       { to: '/tasks', label: 'Tasks', icon: 'tasks' },

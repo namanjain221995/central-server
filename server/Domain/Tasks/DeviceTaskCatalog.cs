@@ -143,6 +143,14 @@ public static class DeviceTaskCatalog
             // releasable from the dashboard, which is its only way out.
             new(DeviceTaskType.ReleaseScreenLock, Permissions.Device.ScreenLock, HighRisk: false, 7 * 24 * 3600,
                 MinimumAgentVersion: "1.19.0"),
+
+            // Configure RustDesk unattended access for remote support. High-risk: it
+            // sets a credential that grants live control of the machine. A week of
+            // lifetime so a device offline now is configured when it reconnects within
+            // the window. Gated on the agent that carries the RustDesk configure
+            // executor; an older one would fail it as unknown.
+            new(DeviceTaskType.ConfigureRemoteSupport, Permissions.RemoteSupport.Configure, HighRisk: true, 7 * 24 * 3600,
+                MinimumAgentVersion: "1.20.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

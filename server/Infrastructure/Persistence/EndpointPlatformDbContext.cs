@@ -152,6 +152,9 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     public DbSet<Domain.Security.OrganizationSecuritySetting> OrganizationSecuritySettings =>
         Set<Domain.Security.OrganizationSecuritySetting>();
 
+    public DbSet<Domain.RemoteSupport.RemoteSupportEnrollment> RemoteSupportEnrollments =>
+        Set<Domain.RemoteSupport.RemoteSupportEnrollment>();
+
     public DbSet<EnrollmentToken> EnrollmentTokens => Set<EnrollmentToken>();
 
     public DbSet<AgentCredential> AgentCredentials => Set<AgentCredential>();

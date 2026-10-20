@@ -45,6 +45,10 @@ internal sealed class DeviceConfiguration : IEntityTypeConfiguration<Device>
         // reported false meaning "the agent says it is unlocked right now".
         builder.Property(d => d.ScreenLockedReported);
 
+        // The RustDesk ID the agent last reported for remote support; nullable, an
+        // identifier and not a secret, bounded to match Device.RecordHeartbeat.
+        builder.Property(d => d.RemoteSupportId).HasMaxLength(64);
+
         builder.Property(d => d.EnrolledWithTokenId).IsRequired();
         builder.Property(d => d.EnrolledAt).IsRequired();
         builder.Property(d => d.CreatedAt).IsRequired();

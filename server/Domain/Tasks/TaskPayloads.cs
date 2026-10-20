@@ -316,6 +316,18 @@ public static class TaskPayloads
     public sealed record LocalGroupMembership(
         string GroupSid, string GroupName, string MemberSid, string MemberName);
 
+    // ---- Remote support (RustDesk) ----
+
+    /// <summary>
+    /// Configure an already-installed RustDesk for IT remote support by setting its
+    /// unattended password. The password never rides in the payload: it travels as a
+    /// one-time ephemeral-secret reference the agent redeems out-of-band (the same
+    /// mechanism as <see cref="CreateLocalUser"/>), so the plaintext never enters the
+    /// persisted PayloadJson or the audit trail.
+    /// </summary>
+    /// <param name="PasswordSecretRef">One-time reference the agent redeems to obtain the unattended password.</param>
+    public sealed record ConfigureRemoteSupport(string PasswordSecretRef);
+
     // ---- Announcements ----
 
     /// <summary>

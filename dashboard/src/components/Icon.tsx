@@ -48,8 +48,21 @@ export type IconName =
   | 'portal'
   | 'megaphone'
   | 'lock'
+  | 'remote'
 
 const PATHS: Record<IconName, ReactNode> = {
+  // A monitor with a broadcast mark: a display on its stand, and a corner dot
+  // radiating two signal arcs. IT Remote Support reaches a managed screen from
+  // afar, and the glyph says "a device, reached over a connection" without
+  // borrowing RustDesk's own mark.
+  remote: (
+    <>
+      <rect x="2" y="4" width="20" height="13" rx="2" />
+      <path d="M8 21h8M12 17v4" />
+      <circle cx="9" cy="10.5" r="1" />
+      <path d="M12 10.5a3 3 0 0 0-3-3M15 10.5a6 6 0 0 0-6-6" />
+    </>
+  ),
   // A padlock: a rounded body under a shackle arc. The Full-Screen Lock holds a
   // device on a notice until an administrator (or the on-device code) releases
   // it, and the closed padlock says "held" rather than the open one's "unlocked".

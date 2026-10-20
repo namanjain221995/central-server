@@ -1,3 +1,4 @@
+using EndpointAgent.Core.Abstractions;
 using EndpointAgent.Core.Heartbeat;
 using EndpointAgent.Core.ScreenLock;
 using EndpointAgent.Core.Tests.ScreenLock;
@@ -73,7 +74,35 @@ public sealed class HeartbeatLoopTests
     }
 
     private static HeartbeatRequest Build(ScreenLockManager manager) =>
-        HeartbeatLoop.BuildRequest("host", "1.19.0", "Windows 11", DateTimeOffset.UtcNow, null, manager.CurrentlyLocked);
+        HeartbeatLoop.BuildRequest(
+            "host", "1.19.0", "Windows 11", DateTimeOffset.UtcNow, null, manager.CurrentlyLocked, remoteSupportId: null);
+
+    /// <summary>
+    /// The heartbeat the agent builds carries the device's RustDesk ID, read from the
+    /// installed RustDesk's own config. This is the only way the console learns the
+    /// ID to dial: the agent reports it, the server never asks the device for it.
+    /// A device with RustDesk not installed (or no reader wired) reports no ID.
+    /// </summary>
+    [Fact]
+    public void The_built_heartbeat_carries_the_rustdesk_id_from_the_reader()
+    {
+        BuildWith(new FakeRemoteSupportReader { Id = "123456789" }).RemoteSupportId
+            .ShouldBe("123456789", "the reader's ID is carried on the wire");
+
+        BuildWith(new FakeRemoteSupportReader { Id = null }).RemoteSupportId
+            .ShouldBeNull("a device with RustDesk not installed or not yet registered reports no ID");
+    }
+
+    private static HeartbeatRequest BuildWith(IRemoteSupportReader reader) =>
+        HeartbeatLoop.BuildRequest(
+            "host", "1.20.0", "Windows 11", DateTimeOffset.UtcNow, null,
+            screenLocked: false, remoteSupportId: reader.ReadRustDeskId());
+
+    private sealed class FakeRemoteSupportReader : IRemoteSupportReader
+    {
+        public string? Id { get; set; }
+        public string? ReadRustDeskId() => Id;
+    }
 
     private sealed class FakeStore : IScreenLockStore
     {

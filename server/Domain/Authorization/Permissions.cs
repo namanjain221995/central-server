@@ -114,6 +114,32 @@ public static class Permissions
         public const string RecoveryKeyRead = "bitlocker.recovery_key.read";
     }
 
+    /// <summary>
+    /// IT remote-support (RustDesk) access to a managed device.
+    /// </summary>
+    public static class RemoteSupport
+    {
+        /// <summary>See the remote-support device list and each device's RustDesk ID (never a secret).</summary>
+        public const string View = "remotesupport.view";
+
+        /// <summary>
+        /// Enrol a device for remote support: set a platform-managed unattended
+        /// password on its RustDesk and queue the configuration task.
+        /// </summary>
+        public const string Configure = "remotesupport.configure";
+
+        /// <summary>
+        /// Reveal a device's unattended password and start a remote-control session.
+        /// </summary>
+        /// <remarks>
+        /// The sensitive act of this feature -- it hands over live control of a
+        /// machine's screen -- so, like reading a BitLocker recovery key, it is its
+        /// own permission, step-up re-authenticated, rate limited and audited on
+        /// every use.
+        /// </remarks>
+        public const string Connect = "remotesupport.connect";
+    }
+
     public static class LocalUser
     {
         public const string View = "user.view";
@@ -264,6 +290,11 @@ public static class Permissions
         // High risk: it interrupts every signed-in user on the targeted machines
         // at once, so the UI confirms it and the audit log records it elevated.
         new(Announcement.Send, "Announcements", "Send a message to device screens", HighRisk: true),
+
+        new(RemoteSupport.View, "Remote support", "View remote-support devices and their RustDesk IDs", HighRisk: false),
+        new(RemoteSupport.Configure, "Remote support", "Enrol a device for remote support", HighRisk: true),
+        new(RemoteSupport.Connect, "Remote support",
+            "Reveal a device's unattended password and start a remote-control session", HighRisk: true),
 
         new(Policy.View, "Policies", "View policies and compliance results", HighRisk: false),
         new(Policy.Create, "Policies", "Create and version policies", HighRisk: false),

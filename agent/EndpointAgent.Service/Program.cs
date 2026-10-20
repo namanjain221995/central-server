@@ -316,6 +316,17 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.AddLocalUserToGroupExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.RemoveLocalUserFromGroupExecutor>();
 
+            // IT remote support (RustDesk). RustDesk is installed separately via
+            // Company Apps; this slice only configures an already-installed RustDesk
+            // with a platform-managed unattended password (the executor, redeeming a
+            // one-time secret) and reports the device's RustDesk ID on the heartbeat
+            // (the reader, read by HeartbeatLoop's optional IRemoteSupportReader). The
+            // control runs rustdesk.exe through the sanctioned Task Scheduler pattern,
+            // so the agent still launches nothing itself (ADR-0005).
+            builder.Services.AddSingleton<IRemoteSupportControl, EndpointAgent.Windows.RemoteSupport.WindowsRemoteSupportControl>();
+            builder.Services.AddSingleton<IRemoteSupportReader, EndpointAgent.Windows.RemoteSupport.WindowsRemoteSupportReader>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ConfigureRemoteSupportExecutor>();
+
             builder.Services.AddHttpClient<IAgentApiClient, AgentApiClient>((serviceProvider, client) =>
                 {
                     var options = serviceProvider.GetRequiredService<IOptions<AgentOptions>>().Value;

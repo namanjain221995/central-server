@@ -764,7 +764,10 @@ public static class AgentEndpoints
             // The agent's own account of whether it is showing a lock right now.
             // Null (older agents) leaves the last known value alone; a value lets a
             // local IT-unlock-code release reflect in the console's derived status.
-            request.ScreenLocked);
+            request.ScreenLocked,
+            // The device's RustDesk ID for remote support, read from the installed
+            // RustDesk; null (older agents / no RustDesk) leaves the last value alone.
+            request.RemoteSupportId);
 
         // Heartbeats are routine, high-volume signals - they update last_seen but
         // do not each produce an audit entry, which would bury real events under
@@ -1228,6 +1231,11 @@ public static class AgentEndpoints
         if (request.OperatingSystem is { Length: > 256 })
         {
             return "Operating system must be at most 256 characters.";
+        }
+
+        if (request.RemoteSupportId is { Length: > 64 })
+        {
+            return "Remote support id must be at most 64 characters.";
         }
 
         return null;
