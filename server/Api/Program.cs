@@ -263,6 +263,7 @@ public sealed class Program
             app.MapBulkLocalAccountEndpoints();
             app.MapLocalAdminElevationEndpoints();
             app.MapDriverEndpoints();
+            app.MapDriverUpdateEndpoints();
             app.MapBitLockerEndpoints();
             app.MapDriverPackageEndpoints();
             app.MapBitLockerEscrowEndpoints();

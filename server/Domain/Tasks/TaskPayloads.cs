@@ -396,4 +396,47 @@ public static class TaskPayloads
     /// id so the agent releases exactly the one an administrator chose to lift.
     /// </summary>
     public sealed record ReleaseScreenLock(Guid LockId);
+
+    // ---- Windows Update driver updates ----
+    //
+    // Two tasks, matching the two things an operator does from the console: find out
+    // what driver updates a machine has waiting, and install the ones they chose. Both
+    // carry only an issue time, never a credential -- the endpoint talks to Windows
+    // Update over its own channel, so there is nothing here that is a secret and the
+    // payloads are safe in the task audit record.
+
+    /// <summary>
+    /// Ask the device to query Windows Update for applicable driver updates and
+    /// report the pending list, installing nothing.
+    /// </summary>
+    /// <param name="IssuedAt">
+    /// When the server issued the scan. Carried so the endpoint can refuse a payload
+    /// older than its freshness window and so the result and the request line up in
+    /// the log; a scan is otherwise parameterless.
+    /// </param>
+    public sealed record ScanDriverUpdates(DateTimeOffset IssuedAt);
+
+    /// <summary>
+    /// Install the named Windows Update driver updates. Each id is a Windows Update
+    /// update id the device previously reported as pending from a
+    /// <see cref="ScanDriverUpdates"/> scan.
+    /// </summary>
+    /// <remarks>
+    /// The server never sends a preview/beta update here: the console auto-selects
+    /// only non-preview updates, and a caller naming one explicitly is still just
+    /// naming an id the device decides for itself whether to act on. The endpoint
+    /// re-queries Windows Update and installs only updates it still offers, so a
+    /// captured task cannot install something the machine no longer considers
+    /// applicable.
+    /// </remarks>
+    /// <param name="UpdateIds">
+    /// The Windows Update update ids (GUID strings) to install. Never empty; the
+    /// server refuses an empty selection before queuing.
+    /// </param>
+    /// <param name="IssuedAt">
+    /// When the server issued the install. The endpoint refuses a payload older than
+    /// its freshness window, so a captured task cannot be replayed into an install
+    /// long afterwards.
+    /// </param>
+    public sealed record InstallDriverUpdate(IReadOnlyList<string> UpdateIds, DateTimeOffset IssuedAt);
 }

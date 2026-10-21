@@ -6,7 +6,7 @@
     <RootNamespace>EndpointAgent.Service</RootNamespace>
     <AssemblyName>EndpointAgent.Service</AssemblyName>
     <UserSecretsId>endpoint-agent-service</UserSecretsId>
-    <VersionPrefix>1.20.1</VersionPrefix>
+    <VersionPrefix>1.21.0</VersionPrefix>
 
     <!--
       Self-contained: the endpoint must not need the .NET runtime installed. An

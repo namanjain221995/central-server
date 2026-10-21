@@ -1162,6 +1162,80 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("device_drivers", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceDriverUpdate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CollectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("collected_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<string>("DriverClass")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("driver_class");
+
+                    b.Property<string>("DriverProvider")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("driver_provider");
+
+                    b.Property<DateTimeOffset?>("DriverVersionDate")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("driver_version_date");
+
+                    b.Property<bool>("IsPreview")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_preview");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<long?>("SizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("size_bytes");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("UpdateId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("update_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_device_driver_updates");
+
+                    b.HasIndex("DeviceId")
+                        .HasDatabaseName("ix_device_driver_updates_device_id");
+
+                    b.HasIndex("DeviceId", "UpdateId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_device_driver_updates_device_update");
+
+                    b.ToTable("device_driver_updates", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceHardware", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4343,6 +4417,16 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_device_drivers_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceDriverUpdate", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_device_driver_updates_devices_device_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceHardware", b =>
