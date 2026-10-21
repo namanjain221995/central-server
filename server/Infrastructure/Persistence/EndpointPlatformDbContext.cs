@@ -72,6 +72,13 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     public DbSet<DeviceDriver> DeviceDrivers => Set<DeviceDriver>();
 
     /// <remarks>
+    /// The pending Windows Update driver updates per device, replaced wholesale by
+    /// each <c>ScanDriverUpdates</c> result. No rows for a device means it reported
+    /// nothing pending, not that it was never scanned.
+    /// </remarks>
+    public DbSet<DeviceDriverUpdate> DeviceDriverUpdates => Set<DeviceDriverUpdate>();
+
+    /// <remarks>
     /// One row per device, upserted. A device without a row has never reported
     /// the Chrome section; one with a NotInstalled row has, and said no.
     /// </remarks>

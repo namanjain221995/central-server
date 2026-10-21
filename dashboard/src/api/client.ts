@@ -1995,6 +1995,107 @@ export function getUpdateOverview(): Promise<UpdateOverview> {
   return request<UpdateOverview>('/admin/v1/updates/overview')
 }
 
+// ---------------------------------------------------------------------------
+// Windows Driver Updates. Unlike the read-only Windows Update visibility above,
+// this feature acts: it scans a device for driver updates Windows Update is
+// offering, and installs the ones an administrator chose. Every mutation is a
+// typed task the device pulls on its next check-in, so the console follows the
+// returned taskId to what actually happened on Windows via getDeviceTasks and
+// useTaskTracker -- it never claims an install is done merely because the
+// server accepted the request.
+
+export interface DriverUpdateOverviewSummary {
+  /** Active devices whose last scan found at least one pending driver update. */
+  devicesWithPending: number
+  /** Total pending driver updates across those devices. */
+  totalPending: number
+  /** Devices whose last driver install left a reboot pending. */
+  devicesRebootPending: number
+}
+
+/** One device's line in the driver-updates overview, as the server computes it. */
+export interface DriverUpdateDeviceRow {
+  deviceId: string
+  hostname: string
+  displayName: string | null
+  isOnline: boolean
+  lastSeenAt: string | null
+  /** Pending driver updates the last scan found. */
+  pendingCount: number
+  /** Of those, how many are preview/optional, so the UI can offer "non-preview only". */
+  previewCount: number
+  lastScanAt: string | null
+  rebootPending: boolean
+}
+
+export interface DriverUpdateOverview {
+  summary: DriverUpdateOverviewSummary
+  devices: DriverUpdateDeviceRow[]
+}
+
+/** One pending driver update Windows Update is offering a device. */
+export interface DriverUpdateItem {
+  updateId: string
+  revision: number
+  title: string
+  driverClass: string | null
+  driverProvider: string | null
+  driverVerDate: string | null
+  /** A preview/optional driver; "auto-select non-preview" leaves these unchecked. */
+  isPreview: boolean
+  sizeBytes: number | null
+}
+
+export interface DeviceDriverUpdates {
+  lastScanAt: string | null
+  rebootPending: boolean
+  updates: DriverUpdateItem[]
+}
+
+/** What the server accepted when a driver scan or install was queued. */
+export interface DriverUpdateTaskQueued {
+  taskId: string
+  status: string
+}
+
+export function getDriverUpdateOverview(): Promise<DriverUpdateOverview> {
+  return request<DriverUpdateOverview>('/admin/v1/driver-updates/overview')
+}
+
+export function getDeviceDriverUpdates(deviceId: string): Promise<DeviceDriverUpdates> {
+  return request<DeviceDriverUpdates>(`/admin/v1/devices/${encodeURIComponent(deviceId)}/driver-updates`)
+}
+
+/** Re-scans one device for driver updates. 202 with the scan task's id. */
+export function scanDriverUpdates(deviceId: string): Promise<DriverUpdateTaskQueued> {
+  return request<DriverUpdateTaskQueued>(
+    `/admin/v1/devices/${encodeURIComponent(deviceId)}/driver-updates/scan`,
+    { method: 'POST' },
+  )
+}
+
+/**
+ * Installs the chosen driver updates on one device. 202 with the install task's
+ * id; 409 (problem+json) when none are eligible or the agent is too old, whose
+ * `detail` the caller surfaces rather than guessing.
+ */
+export function installDriverUpdates(deviceId: string, updateIds: string[]): Promise<DriverUpdateTaskQueued> {
+  return request<DriverUpdateTaskQueued>(
+    `/admin/v1/devices/${encodeURIComponent(deviceId)}/driver-updates/install`,
+    { method: 'POST', body: JSON.stringify({ updateIds }) },
+  )
+}
+
+/** Queues a scan on every device with pending driver updates. Returns how many were queued. */
+export function scanAllDriverUpdates(): Promise<{ queued: number }> {
+  return request<{ queued: number }>('/admin/v1/driver-updates/scan-all', { method: 'POST' })
+}
+
+/** Queues a non-preview install on every device that has pending driver updates. */
+export function installAllDriverUpdates(): Promise<{ queued: number }> {
+  return request<{ queued: number }>('/admin/v1/driver-updates/install-all', { method: 'POST' })
+}
+
 export interface PackageRow {
   id: string
   name: string

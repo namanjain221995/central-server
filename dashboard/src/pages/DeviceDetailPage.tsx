@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { signingLabel, upgradeTargets } from './agentUpdateView'
 import {
@@ -39,6 +39,7 @@ import { DeviceDriversPanel } from './DeviceDriversPanel'
 import { DeviceBitLockerPanel } from './DeviceBitLockerPanel'
 import { TaskProgress } from '../components/TaskProgress'
 import { useTaskTracker } from '../components/useTaskTracker'
+import { waitForFreshInventory } from '../components/inventorySync'
 import {
   ApiError,
   cancelDeviceTask,
@@ -304,6 +305,36 @@ export function DeviceDetailPage() {
     }, 30_000)
     return () => clearInterval(timer)
   }, [load])
+
+  // Opening a device should show fresh inventory, not whatever was last
+  // uploaded. So the first time this device's state is known, request a refresh
+  // and reload once it has landed — exactly the chase a careful administrator
+  // would do by hand with the button. Guarded to fire once per open (the ref is
+  // keyed by device id), and skipped for an offline or retired machine, which
+  // would only leave a request waiting with nothing to answer it. Deliberately
+  // the single-device page only: doing this for every row of the devices list
+  // would be a refresh storm across the whole fleet.
+  const autoRefreshedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!deviceId || !device) return
+    if (autoRefreshedFor.current === deviceId) return
+    autoRefreshedFor.current = deviceId
+    if (device.status === 'Retired' || !device.isOnline || device.inventoryRefreshPending) return
+
+    let cancelled = false
+    void (async () => {
+      try {
+        const fresh = await waitForFreshInventory(deviceId)
+        if (!cancelled && fresh) await load()
+      } catch {
+        // Best effort: opening a device must still work if the refresh cannot be
+        // queued or the device never reports back in time.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [deviceId, device, load])
 
   async function onRefreshInventory() {
     if (!deviceId) return

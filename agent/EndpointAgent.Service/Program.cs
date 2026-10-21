@@ -327,6 +327,17 @@ public static class Program
             builder.Services.AddSingleton<IRemoteSupportReader, EndpointAgent.Windows.RemoteSupport.WindowsRemoteSupportReader>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ConfigureRemoteSupportExecutor>();
 
+            // Windows Update optional DRIVER updates. One service drives the Windows
+            // Update Agent COM API in-process (an online scan, then a download+install
+            // of the selected updates) and WUA does the work -- the agent launches
+            // nothing (ADR-0005), exactly like the update-history collector and the
+            // Task Scheduler launcher. The scan executor reports what is offered; the
+            // install executor applies the selected updates and carries the
+            // reboot-required flag back as success (the InstallDriverPackage convention).
+            builder.Services.AddSingleton<IDriverUpdateService, WindowsDriverUpdateService>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ScanDriverUpdatesExecutor>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.InstallDriverUpdateExecutor>();
+
             builder.Services.AddHttpClient<IAgentApiClient, AgentApiClient>((serviceProvider, client) =>
                 {
                     var options = serviceProvider.GetRequiredService<IOptions<AgentOptions>>().Value;

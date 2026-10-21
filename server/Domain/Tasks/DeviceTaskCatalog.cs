@@ -151,6 +151,24 @@ public static class DeviceTaskCatalog
             // executor; an older one would fail it as unknown.
             new(DeviceTaskType.ConfigureRemoteSupport, Permissions.RemoteSupport.Configure, HighRisk: true, 7 * 24 * 3600,
                 MinimumAgentVersion: "1.20.0"),
+
+            // Querying Windows Update for driver updates changes nothing on the
+            // endpoint, so it rides on driver.view -- the same permission that reads
+            // the driver inventory -- and is not high-risk. A half-hour lifetime: a
+            // scan an offline machine finally picks up is still worth running, but a
+            // query is cheap to re-issue, so it is not armed for days. Gated on the
+            // agent that has the Windows Update driver executor; an older one would
+            // fail it as an unknown type, which reads exactly like the scan failing.
+            new(DeviceTaskType.ScanDriverUpdates, Permissions.Driver.View, HighRisk: false, 1800,
+                MinimumAgentVersion: "1.21.0"),
+
+            // Installing a Windows Update driver puts kernel code on the machine, so
+            // it carries driver.manage and is high-risk, exactly like sideloading an
+            // approved driver package. A maintenance lifetime, not interactive: a
+            // driver install that fires when a laptop reappears is still the right
+            // thing to do. Same agent gate as the scan that produced the update ids.
+            new(DeviceTaskType.InstallDriverUpdate, Permissions.Driver.Manage, HighRisk: true, 3600,
+                MinimumAgentVersion: "1.21.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

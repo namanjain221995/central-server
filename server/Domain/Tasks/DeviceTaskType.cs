@@ -236,4 +236,51 @@ public enum DeviceTaskType
     /// on the heartbeat, so no result payload is required.
     /// </remarks>
     ConfigureRemoteSupport = 54,
+
+    /// <summary>
+    /// Ask the device to query Windows Update for applicable driver updates and
+    /// report the pending list, without installing anything (agent 1.21.0+).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read-only on the endpoint: it runs an online Windows Update search for
+    /// drivers and returns what it found -- update id, revision, title, class,
+    /// provider, date, size and whether the update is a preview -- so the console
+    /// can show which machines have driver updates waiting. Nothing is downloaded
+    /// or installed. The result replaces the device's pending-driver-update list
+    /// wholesale, the same way an inventory section does, so a scan that finds
+    /// nothing clears the list rather than leaving stale rows.
+    /// </para>
+    /// <para>
+    /// A short-to-moderate lifetime: a scan that an offline machine finally picks
+    /// up hours later is still useful, but a query is cheap to re-issue, so it is
+    /// not kept armed for days. Gated on the agent that carries the Windows Update
+    /// driver executor; an older one would fail it as an unknown type.
+    /// </para>
+    /// </remarks>
+    ScanDriverUpdates = 55,
+
+    /// <summary>
+    /// Install one or more named Windows Update driver updates the device
+    /// previously reported as pending (agent 1.21.0+).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A different thing from <see cref="InstallDriverPackage"/>, which sideloads an
+    /// administrator-approved INF package this platform hosts. This installs updates
+    /// that Windows Update itself offers, named by their Windows Update id, so the
+    /// endpoint downloads and installs them through the Windows Update Agent exactly
+    /// as Settings would. High risk, because a driver runs in the kernel. The result
+    /// reports, per update, whether it succeeded and whether a reboot is now pending,
+    /// so the console can hand a reboot-pending machine to Restart Management rather
+    /// than restarting it blind.
+    /// </para>
+    /// <para>
+    /// A maintenance lifetime: unlike an interactive action, a driver install that
+    /// fires when a laptop reappears is still the right thing to do. Gated on the
+    /// agent that carries the Windows Update driver executor; an older one would
+    /// fail it as an unknown type, which would read exactly like the install failing.
+    /// </para>
+    /// </remarks>
+    InstallDriverUpdate = 56,
 }
