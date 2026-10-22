@@ -3,40 +3,53 @@ import { useAuth } from '../auth/AuthContext'
 import {
   ApiError,
   bulkCreateLocalUser,
+  bulkDeleteLocalUser,
+  bulkDisableLocalUser,
+  bulkEnableLocalUser,
   bulkResetLocalPassword,
   deviceName,
   getDevices,
   getGroups,
-  type BulkLocalAccountResult,
   type DeviceGroupSummary,
   type DeviceListItem,
 } from '../api/client'
 import { Icon } from '../components/Icon'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import {
+  actionLabel,
+  actionVerb,
   provisionSummary,
   resultBadges,
   validateCreateForm,
+  validateLifecycleForm,
   validateResetForm,
   type AccountsAction,
   type AccountsTargetMode,
+  type BulkOutcome,
 } from './accountsView'
 
 const DEVICE_PAGE_SIZE = 100
 
 /**
- * Fleet-wide local Windows account management: create one account, or reset its
- * password, across all devices, a group, or a selection. It drives the server's
- * bulk endpoint, which fans the existing per-device task out; this page only
- * collects the account and the target and reports the server's own counts back.
+ * Fleet-wide local Windows account management: create one account, reset its
+ * password, or disable/enable/delete it, across all devices, a group, or a
+ * selection. It drives the server's bulk endpoints, which fan the existing
+ * per-device task out; this page only collects the account and the target and
+ * reports the server's own counts back.
  */
 export function AccountsPage() {
   const { hasPermission } = useAuth()
   const canCreate = hasPermission('user.create')
   const canReset = hasPermission('user.reset_password')
   const canGrantAdmin = hasPermission('user.change_type')
-  const canUse = canCreate || canReset
+  // The same permission covers disable and enable, as it does on a device's
+  // Users tab: both flip the one switch.
+  const canDisable = hasPermission('user.disable')
+  const canDelete = hasPermission('user.delete')
+  const canUse = canCreate || canReset || canDisable || canDelete
 
-  const [action, setAction] = useState<AccountsAction>(canCreate ? 'create' : 'reset')
+  const [action, setAction] = useState<AccountsAction>(
+    canCreate ? 'create' : canReset ? 'reset' : canDisable ? 'disable' : 'delete')
 
   // Shared target.
   const [mode, setMode] = useState<AccountsTargetMode>('all')
@@ -61,8 +74,9 @@ export function AccountsPage() {
 
   // Submission.
   const [busy, setBusy] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [outcome, setOutcome] = useState<{ summary: string; result: BulkLocalAccountResult } | null>(null)
+  const [outcome, setOutcome] = useState<{ summary: string; result: BulkOutcome } | null>(null)
 
   useEffect(() => {
     if (!canUse) return
@@ -102,10 +116,40 @@ export function AccountsPage() {
     return deviceIds.length > 0 ? { deviceIds } : null
   }
 
+  // Disable/enable/delete act on an account that already exists, so only its
+  // name and the target matter; every provisioning field disappears.
+  const needsPassword = action === 'create' || action === 'reset'
+
   const target = { mode, groupId, deviceIds }
   const problem = action === 'create'
     ? validateCreateForm({ username, password, confirmPassword, accountType }, target)
-    : validateResetForm({ username, password, confirmPassword }, target)
+    : action === 'reset'
+      ? validateResetForm({ username, password, confirmPassword }, target)
+      : validateLifecycleForm({ username }, target)
+
+  async function submitAction(selected: { allDevices?: boolean; groupId?: string; deviceIds?: string[] }) {
+    switch (action) {
+      case 'create':
+        return bulkCreateLocalUser({
+          username: username.trim(),
+          fullName: fullName.trim() || undefined,
+          description: description.trim() || undefined,
+          password,
+          enabled,
+          mustChangePasswordAtNextLogon: mustChange,
+          accountType,
+          ...selected,
+        })
+      case 'reset':
+        return bulkResetLocalPassword({ username: username.trim(), password, ...selected })
+      case 'disable':
+        return bulkDisableLocalUser({ username: username.trim(), ...selected })
+      case 'enable':
+        return bulkEnableLocalUser({ username: username.trim(), ...selected })
+      case 'delete':
+        return bulkDeleteLocalUser({ username: username.trim(), ...selected })
+    }
+  }
 
   async function onSubmit() {
     const selected = buildTarget()
@@ -115,20 +159,9 @@ export function AccountsPage() {
     setError(null)
     setOutcome(null)
     try {
-      const result = action === 'create'
-        ? await bulkCreateLocalUser({
-            username: username.trim(),
-            fullName: fullName.trim() || undefined,
-            description: description.trim() || undefined,
-            password,
-            enabled,
-            mustChangePasswordAtNextLogon: mustChange,
-            accountType,
-            ...selected,
-          })
-        : await bulkResetLocalPassword({ username: username.trim(), password, ...selected })
+      const result = await submitAction(selected)
 
-      setOutcome({ summary: provisionSummary(result, action === 'create' ? 'created' : 'reset'), result })
+      setOutcome({ summary: provisionSummary(result, actionVerb[action]), result })
       // Clear the secret; keep the rest so a follow-up on another target is quick.
       setPassword('')
       setConfirmPassword('')
@@ -154,8 +187,8 @@ export function AccountsPage() {
 
       <div className="page-header">
         <div className="lede">
-          Create a local Windows account, or reset its password, across all devices, a group, or a
-          selection. Offline machines apply the change when they next check in.
+          Create, disable, enable or delete a local Windows account, or reset its password, across
+          all devices, a group, or a selection. Offline machines apply the change when they next check in.
         </div>
       </div>
 
@@ -165,13 +198,32 @@ export function AccountsPage() {
           <div className="radio-row">
             {canCreate && (
               <label><input type="radio" name="acct-action" checked={action === 'create'}
-                onChange={() => { setAction('create'); setOutcome(null) }} /> Create account</label>
+                onChange={() => { setAction('create'); setOutcome(null) }} /> {actionLabel.create}</label>
             )}
             {canReset && (
               <label><input type="radio" name="acct-action" checked={action === 'reset'}
-                onChange={() => { setAction('reset'); setOutcome(null) }} /> Reset password</label>
+                onChange={() => { setAction('reset'); setOutcome(null) }} /> {actionLabel.reset}</label>
+            )}
+            {canDisable && (
+              <label><input type="radio" name="acct-action" checked={action === 'disable'}
+                onChange={() => { setAction('disable'); setOutcome(null) }} /> {actionLabel.disable}</label>
+            )}
+            {canDisable && (
+              <label><input type="radio" name="acct-action" checked={action === 'enable'}
+                onChange={() => { setAction('enable'); setOutcome(null) }} /> {actionLabel.enable}</label>
+            )}
+            {canDelete && (
+              <label><input type="radio" name="acct-action" checked={action === 'delete'}
+                onChange={() => { setAction('delete'); setOutcome(null) }} /> {actionLabel.delete}</label>
             )}
           </div>
+          {action === 'delete' && (
+            <div className="warn-banner">
+              The account will be permanently deleted from every targeted device. The user's
+              Windows profile folder may remain on the device, but the account and its sign-in
+              cannot be recovered.
+            </div>
+          )}
         </div>
 
         <div className="form-grid">
@@ -181,6 +233,9 @@ export function AccountsPage() {
               onChange={(e) => setUsername(e.target.value)} placeholder="e.g. itadmin" />
             {action === 'reset' && (
               <span className="field-hint">The account must already exist on the devices.</span>
+            )}
+            {!needsPassword && (
+              <span className="field-hint">Devices where this account does not exist are skipped.</span>
             )}
           </div>
 
@@ -192,21 +247,25 @@ export function AccountsPage() {
             </div>
           )}
 
-          <div className="field">
-            <label className="field-label" htmlFor="acct-password">Password</label>
-            <input id="acct-password" type="password" value={password} autoComplete="new-password"
-              onChange={(e) => setPassword(e.target.value)} />
-            <span className="field-hint">At least 8 characters. The same password is set on every targeted device.</span>
-          </div>
+          {needsPassword && (
+            <div className="field">
+              <label className="field-label" htmlFor="acct-password">Password</label>
+              <input id="acct-password" type="password" value={password} autoComplete="new-password"
+                onChange={(e) => setPassword(e.target.value)} />
+              <span className="field-hint">At least 8 characters. The same password is set on every targeted device.</span>
+            </div>
+          )}
 
-          <div className="field">
-            <label className="field-label" htmlFor="acct-confirm">Confirm password</label>
-            <input id="acct-confirm" type="password" value={confirmPassword} autoComplete="new-password"
-              onChange={(e) => setConfirmPassword(e.target.value)} />
-            {confirmPassword.length > 0 && password !== confirmPassword && (
-              <span className="field-message">Passwords do not match.</span>
-            )}
-          </div>
+          {needsPassword && (
+            <div className="field">
+              <label className="field-label" htmlFor="acct-confirm">Confirm password</label>
+              <input id="acct-confirm" type="password" value={confirmPassword} autoComplete="new-password"
+                onChange={(e) => setConfirmPassword(e.target.value)} />
+              {confirmPassword.length > 0 && password !== confirmPassword && (
+                <span className="field-message">Passwords do not match.</span>
+              )}
+            </div>
+          )}
 
           {action === 'create' && (
             <div className="field full">
@@ -341,12 +400,29 @@ export function AccountsPage() {
 
         <div className="toolbar" style={{ marginTop: 12 }}>
           <span className="spacer" />
-          <button className={`btn-accent${busy ? ' btn-loading' : ''}`} disabled={busy || problem !== null}
-            title={problem ?? undefined} onClick={onSubmit}>
-            {action === 'create' ? 'Create account' : 'Reset password'}
+          <button className={`${action === 'delete' ? 'btn-danger' : 'btn-accent'}${busy ? ' btn-loading' : ''}`}
+            disabled={busy || problem !== null} title={problem ?? undefined}
+            // Deletion is the one action that cannot be walked back, so it alone
+            // goes through a confirmation; disable is reversed by enable.
+            onClick={() => { if (action === 'delete') setConfirmingDelete(true); else void onSubmit() }}>
+            {actionLabel[action]}
           </button>
         </div>
       </div>
+
+      {confirmingDelete && (
+        <ConfirmDialog
+          title={`Delete '${username.trim()}' from the targeted devices?`}
+          confirmLabel="Delete account"
+          onCancel={() => setConfirmingDelete(false)}
+          onConfirm={() => { setConfirmingDelete(false); void onSubmit() }}
+        >
+          The account '{username.trim()}' will be permanently deleted from every targeted device
+          and cannot be recovered from this console. The user's Windows profile folder may remain
+          on each device, but the account and its sign-in are gone. Devices where the account does
+          not exist are skipped.
+        </ConfirmDialog>
+      )}
     </>
   )
 }
