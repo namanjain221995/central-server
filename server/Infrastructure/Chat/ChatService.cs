@@ -106,6 +106,15 @@ public sealed class ChatService(
     /// <summary>Most messages returned in one read, so a long chat cannot be pulled in a single huge payload.</summary>
     public const int MaxMessagesPerFetch = 500;
 
+    /// <summary>
+    /// What the EMPLOYEE's window shows as the administrator's name -- the window
+    /// header and every admin message bubble. A generic label, deliberately: the
+    /// operator's sign-in email is an internal identifier and has no business on an
+    /// employee's screen. The real actor is still recorded on the session row, in
+    /// the audit trail, and shown in the admin console.
+    /// </summary>
+    public const string EmployeeFacingAdminDisplay = "IT Support";
+
     private readonly EndpointPlatformDbContext _dbContext = dbContext;
     private readonly DeviceTaskService _taskService = taskService;
     private readonly AuditWriter _auditWriter = auditWriter;
@@ -163,10 +172,12 @@ public sealed class ChatService(
 
         // The task service applies the minimum-agent gate and writes the task's own
         // audit record; nothing is tightened here. The device is active, so the only
-        // refusal it can give is the agent-version floor.
+        // refusal it can give is the agent-version floor. The payload deliberately
+        // carries the generic employee-facing label, never the operator's email:
+        // this string is what the window header shows on the employee's screen.
         var task = await _taskService.QueueAsync(
             organizationId, deviceId, DeviceTaskType.StartLiveChat,
-            new TaskPayloads.StartLiveChat(session.Id, actorDisplay),
+            new TaskPayloads.StartLiveChat(session.Id, EmployeeFacingAdminDisplay),
             actorId, actorDisplay, cancellationToken);
 
         if (task is null)
@@ -438,7 +449,15 @@ public sealed class ChatService(
             return null;
         }
 
-        var messages = await FetchMessagesAsync(sessionId, afterSeq, cancellationToken);
+        // The employee's window never sees the operator's email: every admin line is
+        // re-labelled with the generic support name before it leaves for the device.
+        // The admin console's own read (GetMessagesAsync) keeps the real names.
+        var messages = (await FetchMessagesAsync(sessionId, afterSeq, cancellationToken))
+            .Select(m => m.Sender == nameof(ChatMessageSender.Admin)
+                ? m with { SenderDisplay = EmployeeFacingAdminDisplay }
+                : m)
+            .ToList();
+
         return new ChatAgentMessagesResult(status == ChatSessionStatus.Active, messages);
     }
 
