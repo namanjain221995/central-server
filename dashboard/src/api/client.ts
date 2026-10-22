@@ -2784,6 +2784,47 @@ export function bulkDeleteLocalUser(input: BulkAccountLifecycleInput): Promise<B
   })
 }
 
+/** The account's state on one active device, from that device's reported inventory. */
+export interface FleetAccountDevice {
+  deviceId: string
+  hostname: string
+  isAdmin: boolean
+  enabled: boolean
+}
+
+/**
+ * One local account's presence across the fleet: how many active devices
+ * reported it, on how many it is an administrator or enabled, and the devices
+ * themselves. Counts are the server's aggregation of the same per-device
+ * inventory the Users tab shows.
+ */
+export interface FleetAccountRow {
+  name: string
+  /** A Windows built-in (Administrator, Guest, …) — the bulk disable/delete endpoints refuse these. */
+  isBuiltIn: boolean
+  onDevices: number
+  adminOn: number
+  enabledOn: number
+  devices: FleetAccountDevice[]
+}
+
+/** Fleet-wide roll-up: every reported local account against the active-device count. */
+export interface FleetAccountSummary {
+  activeDevices: number
+  /** True when the server capped the listing (200 accounts / 500 devices per account); counts stay true. */
+  truncated: boolean
+  accounts: FleetAccountRow[]
+}
+
+/**
+ * Read-only companion to the bulk actions above. Answers 403 for a role that
+ * can act but not read the inventory; the page hides the view silently then,
+ * leaving the form usable.
+ */
+export function getFleetAccountSummary(): Promise<FleetAccountSummary> {
+  return request<FleetAccountSummary>('/admin/v1/local-users/fleet-summary')
+}
+
 // ---------------------------------------------------------------------------
 // Pending agent enrollment
 //

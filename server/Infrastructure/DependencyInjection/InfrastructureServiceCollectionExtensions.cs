@@ -220,6 +220,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Reporting.ReportReadService>();
         services.AddScoped<Devices.LocalAccountManagementService>();
         services.AddScoped<Devices.BulkLocalAccountService>();
+        services.AddScoped<Devices.FleetAccountReadService>();
         services.AddScoped<Security.DeviceScopeAuthorizer>();
         services.AddSingleton<Security.ISecretProtector, Security.AesGcmSecretProtector>();
         services.AddScoped<Security.EphemeralSecretStore>();

@@ -5,6 +5,7 @@ import {
   bulkDisableLocalUser,
   bulkEnableLocalUser,
   bulkResetLocalPassword,
+  getFleetAccountSummary,
 } from '../../api/client'
 
 /**
@@ -72,6 +73,12 @@ describe('Bulk local-account API paths', () => {
       () => bulkDeleteLocalUser({ username: 'itadmin', allDevices: true }),
       'POST',
       '/api/admin/v1/local-users/bulk/delete',
+    ],
+    [
+      'getFleetAccountSummary',
+      () => getFleetAccountSummary(),
+      'GET',
+      '/api/admin/v1/local-users/fleet-summary',
     ],
   ])('%s requests the mapped route with one /api prefix', async (_name, call, method, expected) => {
     const { urls, inits } = captureRequests()
