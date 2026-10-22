@@ -455,8 +455,11 @@ public static class TaskPayloads
     /// messages for the right session.
     /// </param>
     /// <param name="AdminDisplay">
-    /// The administrator's display name, shown in the window so the person knows who
-    /// they are talking to. Not a secret and not an authenticator.
+    /// What the window header shows as who the person is talking to. The server
+    /// sends the generic employee-facing label ("IT Support"), never the operator's
+    /// sign-in email -- that is an internal identifier with no business on an
+    /// employee's screen; the real actor lives on the session row and in the audit
+    /// trail. Not a secret and not an authenticator.
     /// </param>
     public sealed record StartLiveChat(Guid SessionId, string AdminDisplay);
 
