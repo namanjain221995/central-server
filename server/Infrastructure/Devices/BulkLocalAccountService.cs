@@ -11,9 +11,9 @@ using Microsoft.Extensions.Options;
 namespace EndpointPlatform.Infrastructure.Devices;
 
 /// <summary>
-/// Applies ONE local-account change across a fleet: create a Windows account, or
-/// reset an account's password, on every active device in an organization, a group,
-/// or an explicit selection.
+/// Applies ONE local-account change across a fleet: create a Windows account, reset
+/// an account's password, or disable, enable or delete an account, on every active
+/// device in an organization, a group, or an explicit selection.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -241,6 +241,201 @@ public sealed class BulkLocalAccountService(
         return BulkLocalAccountResult.Completed(targets.Count, tally.Queued, tally.Rejected, tally.Offline, tally.Skipped);
     }
 
+    // ----------------------------------------------- disable / enable / delete
+
+    /// <summary>
+    /// Disables an existing account, named by username, on every resolved device.
+    /// See <see cref="DeleteAccountAsync"/> for the shared lifecycle semantics.
+    /// </summary>
+    public Task<BulkLocalAccountLifecycleResult> DisableAccountAsync(
+        Guid organizationId, string username,
+        bool allDevices, Guid? groupId, IReadOnlyCollection<Guid>? deviceIds,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
+        Guid actorId, string actorDisplay,
+        CancellationToken cancellationToken = default) =>
+        LifecycleAsync(LifecycleOperation.Disable, organizationId, username,
+            allDevices, groupId, deviceIds, scopedDeviceIds, actorId, actorDisplay, cancellationToken);
+
+    /// <summary>
+    /// Re-enables an existing account, named by username, on every resolved device.
+    /// See <see cref="DeleteAccountAsync"/> for the shared lifecycle semantics.
+    /// </summary>
+    public Task<BulkLocalAccountLifecycleResult> EnableAccountAsync(
+        Guid organizationId, string username,
+        bool allDevices, Guid? groupId, IReadOnlyCollection<Guid>? deviceIds,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
+        Guid actorId, string actorDisplay,
+        CancellationToken cancellationToken = default) =>
+        LifecycleAsync(LifecycleOperation.Enable, organizationId, username,
+            allDevices, groupId, deviceIds, scopedDeviceIds, actorId, actorDisplay, cancellationToken);
+
+    /// <summary>
+    /// Deletes an existing account, named by username, on every resolved device.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Like a bulk reset, the same username is a different SID on every machine, so
+    /// the SID is resolved per device from the last reported inventory
+    /// (case-insensitive SAM-name match). A device that has never reported the
+    /// account is recorded as skipped-without-the-account, not an error.
+    /// </para>
+    /// <para>
+    /// <b>Protected accounts refuse the whole request.</b> If the username resolves,
+    /// on any targeted device, to the built-in Administrator (RID 500) — the account
+    /// <see cref="LocalAccountSafetyRules"/> protects from delete and disable — the
+    /// request returns <see cref="BulkLocalAccountLifecycleOutcome.ProtectedAccount"/>
+    /// before anything is queued anywhere. The per-device engine would refuse it one
+    /// machine at a time anyway; refusing up front keeps a protected fleet-wide delete
+    /// from half-running against the devices where the name happens to be ordinary.
+    /// </para>
+    /// <para>
+    /// Every queued task goes through the per-device
+    /// <see cref="LocalAccountManagementService"/>, so the last-administrator guard
+    /// (and the agent's authoritative live re-check) apply per device exactly as they
+    /// do from a single device's page; a device the guard refuses is tallied as
+    /// rejected while the rest of the fleet proceeds.
+    /// </para>
+    /// </remarks>
+    public Task<BulkLocalAccountLifecycleResult> DeleteAccountAsync(
+        Guid organizationId, string username,
+        bool allDevices, Guid? groupId, IReadOnlyCollection<Guid>? deviceIds,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
+        Guid actorId, string actorDisplay,
+        CancellationToken cancellationToken = default) =>
+        LifecycleAsync(LifecycleOperation.Delete, organizationId, username,
+            allDevices, groupId, deviceIds, scopedDeviceIds, actorId, actorDisplay, cancellationToken);
+
+    private enum LifecycleOperation
+    {
+        Disable,
+        Enable,
+        Delete,
+    }
+
+    private Task<BulkLocalAccountLifecycleResult> LifecycleAsync(
+        LifecycleOperation operation, Guid organizationId, string username,
+        bool allDevices, Guid? groupId, IReadOnlyCollection<Guid>? deviceIds,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
+        Guid actorId, string actorDisplay,
+        CancellationToken cancellationToken)
+    {
+        var strategy = _dbContext.Database.CreateExecutionStrategy();
+        return strategy.ExecuteAsync(() => LifecycleInTransactionAsync(
+            operation, organizationId, username,
+            allDevices, groupId, deviceIds, scopedDeviceIds, actorId, actorDisplay, cancellationToken));
+    }
+
+    private async Task<BulkLocalAccountLifecycleResult> LifecycleInTransactionAsync(
+        LifecycleOperation operation, Guid organizationId, string username,
+        bool allDevices, Guid? groupId, IReadOnlyCollection<Guid>? deviceIds,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
+        Guid actorId, string actorDisplay,
+        CancellationToken cancellationToken)
+    {
+        // A retried attempt starts clean; nothing from a failed one may be re-saved.
+        _dbContext.ChangeTracker.Clear();
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+        var targets = await ResolveTargetsAsync(
+            organizationId, allDevices, groupId, deviceIds, scopedDeviceIds, cancellationToken);
+        if (targets.Count == 0)
+        {
+            return BulkLocalAccountLifecycleResult.NotFound();
+        }
+
+        // Windows local usernames are case-insensitive; match the last-reported name
+        // that way and map each device to the SID the task needs — same resolution as
+        // a bulk password reset.
+        var targetIds = targets.Select(t => t.Id).ToHashSet();
+        var lowered = username.Trim().ToLowerInvariant();
+        var reported = await _dbContext.DeviceLocalUsers.AsNoTracking()
+            .Where(u => targetIds.Contains(u.DeviceId) && u.Name.ToLower() == lowered)
+            .Select(u => new { u.DeviceId, u.Sid })
+            .ToListAsync(cancellationToken);
+        var sidByDevice = reported
+            .GroupBy(x => x.DeviceId)
+            .ToDictionary(g => g.Key, g => g.First().Sid);
+
+        // The protected-account guard, applied fleet-wide and up front: the built-in
+        // Administrator (RID 500) may never be deleted or disabled. One match refuses
+        // the WHOLE request so no sibling device gets the task either. Enable is not
+        // covered, mirroring LocalAccountSafetyRules exactly: re-enabling the built-in
+        // Administrator is a deliberate, permitted administrative act.
+        if (operation is not LifecycleOperation.Enable
+            && sidByDevice.Values.Any(LocalAccountSafetyRules.IsBuiltInAdministrator))
+        {
+            return BulkLocalAccountLifecycleResult.Protected(operation == LifecycleOperation.Delete
+                ? "The built-in Administrator account is protected and cannot be deleted."
+                : "The built-in Administrator account is protected and cannot be disabled.");
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        var tally = new LifecycleTally();
+
+        foreach (var target in targets)
+        {
+            if (target.Status == DeviceStatus.Retired)
+            {
+                tally.SkippedOther++;
+                continue;
+            }
+
+            if (!sidByDevice.TryGetValue(target.Id, out var sid))
+            {
+                // The account has never been reported on this device, so there is no
+                // SID to act on. Recorded as skipped, not a failure.
+                tally.SkippedNoAccount++;
+                continue;
+            }
+
+            var context = new LocalAccountRequestContext(organizationId, target.Id, actorId, actorDisplay);
+            var result = operation switch
+            {
+                LifecycleOperation.Delete => await _localAccounts.DeleteUserAsync(context, sid, cancellationToken),
+                LifecycleOperation.Enable => await _localAccounts.SetUserEnabledAsync(context, sid, enabled: true, cancellationToken),
+                _ => await _localAccounts.SetUserEnabledAsync(context, sid, enabled: false, cancellationToken),
+            };
+
+            tally.Record(result, target, now, _staleAfter);
+        }
+
+        var (action, permission) = operation switch
+        {
+            LifecycleOperation.Delete =>
+                ("device.local_user.bulk_delete", Domain.Authorization.Permissions.LocalUser.Delete),
+            LifecycleOperation.Enable =>
+                ("device.local_user.bulk_enable", Domain.Authorization.Permissions.LocalUser.Disable),
+            _ =>
+                ("device.local_user.bulk_disable", Domain.Authorization.Permissions.LocalUser.Disable),
+        };
+
+        StageAudit(organizationId, actorId, actorDisplay,
+            action, permission,
+            targetDisplay: username,
+            state: new
+            {
+                username,
+                targeted = targets.Count,
+                tally.Queued,
+                tally.Rejected,
+                tally.Offline,
+                tally.SkippedNoAccount,
+                tally.SkippedOther,
+            });
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        _logger.LogInformation(
+            "Bulk local-account {Operation} '{Username}' by {Actor}: {Targeted} targeted, {Queued} queued ({Offline} offline), {Rejected} rejected, {SkippedNoAccount} without the account, {SkippedOther} otherwise skipped.",
+            operation, username, actorDisplay, targets.Count, tally.Queued, tally.Offline,
+            tally.Rejected, tally.SkippedNoAccount, tally.SkippedOther);
+
+        return BulkLocalAccountLifecycleResult.Completed(
+            targets.Count, tally.Queued, tally.Rejected, tally.Offline,
+            tally.SkippedNoAccount, tally.SkippedOther);
+    }
+
     // ------------------------------------------------------------- resolution
 
     /// <summary>
@@ -341,6 +536,47 @@ public sealed class BulkLocalAccountService(
             }
         }
     }
+
+    /// <summary>
+    /// Running counts over a lifecycle fan-out. Unlike <see cref="Tally"/>, skips are
+    /// split: a device that never reported the account is a different answer from a
+    /// retired device, and the operator reads them differently.
+    /// </summary>
+    private sealed class LifecycleTally
+    {
+        public int Queued { get; private set; }
+
+        public int Rejected { get; private set; }
+
+        public int Offline { get; private set; }
+
+        public int SkippedNoAccount { get; set; }
+
+        public int SkippedOther { get; set; }
+
+        public void Record(LocalAccountOperationResult result, TargetDevice target, DateTimeOffset now, TimeSpan staleAfter)
+        {
+            switch (result.Status)
+            {
+                case LocalAccountOperationStatus.Queued:
+                    Queued++;
+                    if (target.LastSeenAt is null || now - target.LastSeenAt > staleAfter)
+                    {
+                        Offline++;
+                    }
+
+                    break;
+
+                case LocalAccountOperationStatus.Rejected:
+                    Rejected++;
+                    break;
+
+                default:
+                    SkippedOther++;
+                    break;
+            }
+        }
+    }
 }
 
 /// <summary>What a bulk operation came to.</summary>
@@ -368,4 +604,47 @@ public sealed record BulkLocalAccountResult(
 
     public static BulkLocalAccountResult NotFound() =>
         new(BulkLocalAccountOutcome.NotFound, 0, 0, 0, 0, 0);
+}
+
+/// <summary>What a bulk lifecycle operation (disable, enable or delete) came to.</summary>
+public enum BulkLocalAccountLifecycleOutcome
+{
+    /// <summary>The target resolved to devices and the per-device tasks were fanned out.</summary>
+    Completed,
+
+    /// <summary>Nothing resolved: an unknown or foreign group, or a selection all out of org/scope.</summary>
+    NotFound,
+
+    /// <summary>
+    /// The username resolved, somewhere in the fleet, to a protected built-in account.
+    /// Nothing was queued on any device.
+    /// </summary>
+    ProtectedAccount,
+}
+
+/// <summary>
+/// The outcome of a bulk disable, enable or delete. Counts are meaningful only when
+/// <see cref="Outcome"/> is <see cref="BulkLocalAccountLifecycleOutcome.Completed"/>;
+/// <see cref="Error"/> only when it is
+/// <see cref="BulkLocalAccountLifecycleOutcome.ProtectedAccount"/>.
+/// </summary>
+/// <param name="Offline">Of <paramref name="Queued"/>, those offline now — the task waits for reconnect.</param>
+/// <param name="Rejected">Devices a per-device safety rule refused (e.g. the last enabled administrator).</param>
+/// <param name="SkippedNoAccount">Devices that never reported an account with that username.</param>
+/// <param name="SkippedOther">Retired devices, and devices the per-device engine could not act on.</param>
+public sealed record BulkLocalAccountLifecycleResult(
+    BulkLocalAccountLifecycleOutcome Outcome,
+    int Targeted, int Queued, int Rejected, int Offline, int SkippedNoAccount, int SkippedOther,
+    string? Error)
+{
+    public static BulkLocalAccountLifecycleResult Completed(
+        int targeted, int queued, int rejected, int offline, int skippedNoAccount, int skippedOther) =>
+        new(BulkLocalAccountLifecycleOutcome.Completed,
+            targeted, queued, rejected, offline, skippedNoAccount, skippedOther, null);
+
+    public static BulkLocalAccountLifecycleResult NotFound() =>
+        new(BulkLocalAccountLifecycleOutcome.NotFound, 0, 0, 0, 0, 0, 0, null);
+
+    public static BulkLocalAccountLifecycleResult Protected(string error) =>
+        new(BulkLocalAccountLifecycleOutcome.ProtectedAccount, 0, 0, 0, 0, 0, 0, error);
 }

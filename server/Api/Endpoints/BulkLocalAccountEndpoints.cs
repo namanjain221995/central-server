@@ -6,9 +6,9 @@ using EndpointPlatform.Infrastructure.Security;
 namespace EndpointPlatform.Api.Endpoints;
 
 /// <summary>
-/// Fleet-wide local Windows account management: create one account, or reset an
-/// account's password, across all devices, a group (department), or an explicit
-/// selection.
+/// Fleet-wide local Windows account management: create one account, reset an
+/// account's password, or disable, enable or delete an account, across all devices,
+/// a group (department), or an explicit selection.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -24,6 +24,15 @@ namespace EndpointPlatform.Api.Endpoints;
 /// the handler exactly as the per-device route does — so there is no route around the
 /// change-type gate. Reset is its own lower authority
 /// (<see cref="Permissions.LocalUser.ResetPassword"/>), which Helpdesk holds.
+/// </para>
+/// <para>
+/// Disable and enable share <see cref="Permissions.LocalUser.Disable"/> and delete is
+/// <see cref="Permissions.LocalUser.Delete"/> — the same permissions the per-device
+/// routes and the task catalogue use, so the bulk routes grant nothing new. A
+/// username that resolves to the built-in Administrator anywhere in the fleet is
+/// refused outright (400) before any device is touched; the per-device
+/// last-administrator guard still applies machine by machine and surfaces as the
+/// rejected count.
 /// </para>
 /// </remarks>
 public static class BulkLocalAccountEndpoints
@@ -42,6 +51,21 @@ public static class BulkLocalAccountEndpoints
         group.MapPost("/reset-password", ResetPasswordAsync)
             .WithName("BulkResetLocalUserPassword")
             .RequirePermission(Permissions.LocalUser.ResetPassword);
+
+        // Enable shares the disable permission deliberately, exactly as the
+        // per-device routes and the task catalogue pair them: they are two
+        // directions of one authority over whether an account may sign in.
+        group.MapPost("/disable", DisableAsync)
+            .WithName("BulkDisableLocalUser")
+            .RequirePermission(Permissions.LocalUser.Disable);
+
+        group.MapPost("/enable", EnableAsync)
+            .WithName("BulkEnableLocalUser")
+            .RequirePermission(Permissions.LocalUser.Disable);
+
+        group.MapPost("/delete", DeleteAsync)
+            .WithName("BulkDeleteLocalUser")
+            .RequirePermission(Permissions.LocalUser.Delete);
 
         return endpoints;
     }
@@ -160,6 +184,80 @@ public static class BulkLocalAccountEndpoints
         return ToResult(result);
     }
 
+    // ----------------------------------------------- disable / enable / delete
+
+    public sealed record BulkAccountLifecycleRequest(
+        string? Username,
+        bool AllDevices = false,
+        Guid? GroupId = null,
+        IReadOnlyList<Guid>? DeviceIds = null);
+
+    private static Task<IResult> DisableAsync(
+        BulkAccountLifecycleRequest request,
+        BulkLocalAccountService service,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken) =>
+        LifecycleAsync(request, service.DisableAccountAsync, scope, httpContext, cancellationToken);
+
+    private static Task<IResult> EnableAsync(
+        BulkAccountLifecycleRequest request,
+        BulkLocalAccountService service,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken) =>
+        LifecycleAsync(request, service.EnableAccountAsync, scope, httpContext, cancellationToken);
+
+    private static Task<IResult> DeleteAsync(
+        BulkAccountLifecycleRequest request,
+        BulkLocalAccountService service,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken) =>
+        LifecycleAsync(request, service.DeleteAccountAsync, scope, httpContext, cancellationToken);
+
+    /// <summary>The one signature all three lifecycle operations share on the service.</summary>
+    private delegate Task<BulkLocalAccountLifecycleResult> LifecycleCall(
+        Guid organizationId, string username,
+        bool allDevices, Guid? groupId, IReadOnlyCollection<Guid>? deviceIds,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
+        Guid actorId, string actorDisplay,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The shared lifecycle handler: validate the username and the target shape once
+    /// up front, resolve the caller's device scope, and fan out. Which task each
+    /// device gets — and the per-device safety rules — belong to the service.
+    /// </summary>
+    private static async Task<IResult> LifecycleAsync(
+        BulkAccountLifecycleRequest request,
+        LifecycleCall operation,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Username))
+        {
+            return Results.Problem("username is required.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (ValidateTarget(request.AllDevices, request.GroupId, request.DeviceIds) is { } targetProblem)
+        {
+            return targetProblem;
+        }
+
+        var actor = AdminActor.Required(httpContext.User);
+        var scopedDeviceIds = await scope.ScopedDeviceIdsOrNullAsync(
+            actor.UserId, actor.OrganizationId, cancellationToken);
+
+        var result = await operation(
+            actor.OrganizationId, request.Username.Trim(),
+            request.AllDevices, request.GroupId, request.DeviceIds, scopedDeviceIds,
+            actor.UserId, actor.Email, cancellationToken);
+
+        return ToResult(result);
+    }
+
     // ---------------------------------------------------------------- helpers
 
     /// <summary>Exactly one of allDevices, a group, or a device selection; and a sane id ceiling.</summary>
@@ -203,6 +301,28 @@ public static class BulkLocalAccountEndpoints
 
         // Unknown or foreign group, out-of-scope, or an empty selection — one 404 for
         // every shade of "resolved to no devices you may act on".
+        _ => Results.NotFound(),
+    };
+
+    private static IResult ToResult(BulkLocalAccountLifecycleResult result) => result.Outcome switch
+    {
+        BulkLocalAccountLifecycleOutcome.Completed => Results.Ok(new
+        {
+            result.Targeted,
+            result.Queued,
+            result.Rejected,
+            result.Offline,
+            result.SkippedNoAccount,
+            result.SkippedOther,
+        }),
+
+        // The username resolved, somewhere in the fleet, to a protected built-in
+        // account. The whole request is one clear refusal, never a partial fan-out.
+        BulkLocalAccountLifecycleOutcome.ProtectedAccount =>
+            Results.Problem(result.Error, statusCode: StatusCodes.Status400BadRequest),
+
+        // Same rule as create/reset: everything that resolved to no devices the
+        // caller may act on is one 404.
         _ => Results.NotFound(),
     };
 }

@@ -2701,6 +2701,22 @@ export interface BulkLocalAccountResult {
   skipped: number
 }
 
+/**
+ * Aggregate outcome of a bulk disable, enable or delete. Unlike create/reset,
+ * the skips are split: a device that never reported the account is a different
+ * fact from one skipped for any other reason, and the operator needs to see it.
+ */
+export interface BulkAccountLifecycleResult {
+  targeted: number
+  queued: number
+  rejected: number
+  offline: number
+  /** Devices whose reported inventory has no account with the given name. */
+  skippedNoAccount: number
+  /** Devices skipped for any other reason. */
+  skippedOther: number
+}
+
 /** Exactly one of these three names the devices a bulk operation acts on. */
 interface BulkTargetInput {
   allDevices?: boolean
@@ -2732,6 +2748,37 @@ export function bulkCreateLocalUser(input: BulkCreateLocalUserInput): Promise<Bu
 
 export function bulkResetLocalPassword(input: BulkResetLocalPasswordInput): Promise<BulkLocalAccountResult> {
   return request<BulkLocalAccountResult>('/admin/v1/local-users/bulk/reset-password', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+/**
+ * Disable, enable and delete act on an account that already exists, so they name
+ * only the account and the target. The server answers 400 (problem detail) when
+ * the name is a protected or built-in account; devices that never reported the
+ * account are counted in `skippedNoAccount` rather than failed.
+ */
+export interface BulkAccountLifecycleInput extends BulkTargetInput {
+  username: string
+}
+
+export function bulkDisableLocalUser(input: BulkAccountLifecycleInput): Promise<BulkAccountLifecycleResult> {
+  return request<BulkAccountLifecycleResult>('/admin/v1/local-users/bulk/disable', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function bulkEnableLocalUser(input: BulkAccountLifecycleInput): Promise<BulkAccountLifecycleResult> {
+  return request<BulkAccountLifecycleResult>('/admin/v1/local-users/bulk/enable', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export function bulkDeleteLocalUser(input: BulkAccountLifecycleInput): Promise<BulkAccountLifecycleResult> {
+  return request<BulkAccountLifecycleResult>('/admin/v1/local-users/bulk/delete', {
     method: 'POST',
     body: JSON.stringify(input),
   })
