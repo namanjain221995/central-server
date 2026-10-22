@@ -209,6 +209,26 @@ public static class Permissions
         public const string Send = "announcement.send";
     }
 
+    /// <summary>
+    /// Live IT-support chat with the person at a managed device.
+    /// </summary>
+    /// <remarks>
+    /// Unlike remote support -- which hands over live control of a machine and so
+    /// stays administrator-only -- chatting with a user to help them is a first-line
+    /// support activity, so Helpdesk holds it too. It is two permissions rather than
+    /// one so that read-only visibility (watching active chats) could later be split
+    /// from the ability to open one and speak, but today both sit with the same
+    /// support roles.
+    /// </remarks>
+    public static class Chat
+    {
+        /// <summary>See active chat sessions and read their messages.</summary>
+        public const string View = "chat.view";
+
+        /// <summary>Start a chat with a device, send a message and end the session.</summary>
+        public const string Start = "chat.start";
+    }
+
     public static class Policy
     {
         public const string View = "policy.view";
@@ -295,6 +315,9 @@ public static class Permissions
         new(RemoteSupport.Configure, "Remote support", "Enrol a device for remote support", HighRisk: true),
         new(RemoteSupport.Connect, "Remote support",
             "Reveal a device's unattended password and start a remote-control session", HighRisk: true),
+
+        new(Chat.View, "Support", "View active live-chat sessions and their messages", HighRisk: false),
+        new(Chat.Start, "Support", "Start a live chat with a device and send messages", HighRisk: false),
 
         new(Policy.View, "Policies", "View policies and compliance results", HighRisk: false),
         new(Policy.Create, "Policies", "Create and version policies", HighRisk: false),

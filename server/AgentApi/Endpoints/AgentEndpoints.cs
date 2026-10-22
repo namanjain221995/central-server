@@ -108,6 +108,16 @@ public static class AgentEndpoints
         group.MapGet(AgentProtocol.Routes.BitLockerEscrowStatus, GetEscrowStatusAsync)
             .WithName("AgentBitLockerEscrowStatus");
 
+        group.MapGet(
+                AgentProtocol.Routes.Chat + "/{sessionId:guid}" + AgentProtocol.Routes.ChatMessagesSuffix,
+                GetChatMessagesAsync)
+            .WithName("AgentGetChatMessages");
+
+        group.MapPost(
+                AgentProtocol.Routes.Chat + "/{sessionId:guid}" + AgentProtocol.Routes.ChatMessagesSuffix,
+                PostChatMessageAsync)
+            .WithName("AgentPostChatMessage");
+
         return endpoints;
     }
 
@@ -515,6 +525,100 @@ public static class AgentEndpoints
         return applied ? Results.NoContent() : Results.NotFound();
     }
 
+    /// <summary>
+    /// Returns the device's own chat session: whether it is still open and the
+    /// messages after the agent's cursor. A simple immediate return of what exists
+    /// now -- a real long-poll hold is Phase 2.
+    /// </summary>
+    /// <remarks>
+    /// Scoped to the authenticated device: a session that is not this device's
+    /// answers 404, so a stolen credential cannot read another machine's chat.
+    /// </remarks>
+    private static async Task<IResult> GetChatMessagesAsync(
+        Guid sessionId,
+        [FromQuery] int? after,
+        [FromHeader(Name = AgentProtocol.Headers.Credential)] string? credentialHeader,
+        [FromHeader(Name = AgentProtocol.Headers.ProtocolVersion)] int? protocolVersion,
+        AgentAuthenticationService authenticationService,
+        Infrastructure.Chat.ChatService chatService,
+        CancellationToken cancellationToken)
+    {
+        if (protocolVersion != AgentProtocol.Version)
+        {
+            return Results.Problem(title: "Unsupported agent protocol version.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var auth = await authenticationService.AuthenticateAsync(credentialHeader, cancellationToken);
+        if (!auth.Success)
+        {
+            return Results.Unauthorized();
+        }
+
+        var result = await chatService.GetMessagesForDeviceAsync(
+            auth.Device!.Id, sessionId, after ?? 0, cancellationToken);
+
+        if (result is null)
+        {
+            return Results.NotFound();
+        }
+
+        return Results.Ok(new ChatPollResponse(
+            result.Active,
+            result.Messages
+                .Select(m => new ChatMessageDto(m.Seq, m.Sender, m.SenderDisplay, m.Body, m.SentAt))
+                .ToList()));
+    }
+
+    /// <summary>
+    /// Appends an employee's message to the device's own chat session. Plain text,
+    /// bounded; bumps the session's activity clock.
+    /// </summary>
+    /// <remarks>
+    /// Scoped to the authenticated device, so a credential can only write to its own
+    /// session. An ended session is a conflict and an empty or oversize body a bad
+    /// request; a session that is not this device's is 404.
+    /// </remarks>
+    private static async Task<IResult> PostChatMessageAsync(
+        Guid sessionId,
+        [FromBody] ChatSendRequest request,
+        [FromHeader(Name = AgentProtocol.Headers.Credential)] string? credentialHeader,
+        [FromHeader(Name = AgentProtocol.Headers.ProtocolVersion)] int? protocolVersion,
+        AgentAuthenticationService authenticationService,
+        Infrastructure.Chat.ChatService chatService,
+        CancellationToken cancellationToken)
+    {
+        if (protocolVersion != AgentProtocol.Version)
+        {
+            return Results.Problem(title: "Unsupported agent protocol version.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var auth = await authenticationService.AuthenticateAsync(credentialHeader, cancellationToken);
+        if (!auth.Success)
+        {
+            return Results.Unauthorized();
+        }
+
+        var result = await chatService.AppendEmployeeMessageAsync(
+            auth.Device!.Id, sessionId, request?.Body ?? "", cancellationToken);
+
+        return result.Outcome switch
+        {
+            Infrastructure.Chat.ChatSendOutcome.Sent => Results.Ok(),
+
+            Infrastructure.Chat.ChatSendOutcome.InvalidBody => Results.Problem(
+                title: "A chat message must be non-empty plain text of at most 2000 characters.",
+                statusCode: StatusCodes.Status400BadRequest),
+
+            Infrastructure.Chat.ChatSendOutcome.SessionEnded => Results.Problem(
+                title: "This chat session has ended.", statusCode: StatusCodes.Status409Conflict),
+
+            // SessionNotFound and anything else: not this device's session.
+            _ => Results.NotFound(),
+        };
+    }
+
     private static async Task<IResult> EnrollAsync(
         [FromBody] EnrollRequest request,
         [FromHeader(Name = AgentProtocol.Headers.ProtocolVersion)] int? protocolVersion,
@@ -781,13 +885,25 @@ public static class AgentEndpoints
 
         var policiesPending = await policyService.HasPendingComplianceAsync(device.Id, cancellationToken);
 
+        // An open chat wants a near-live cadence, so while one exists the server asks
+        // the device to check in every 15 seconds instead of its usual interval -- a
+        // simple substitute for a long-poll in Phase 1.
+        var chatActive = await dbContext.ChatSessions
+            .AnyAsync(s => s.DeviceId == device.Id
+                           && s.Status == Domain.Chat.ChatSessionStatus.Active, cancellationToken);
+        var heartbeatInterval = chatActive ? ChatHeartbeatIntervalSeconds : agentServerOptions.Value.HeartbeatIntervalSeconds;
+
         return Results.Ok(new HeartbeatResponse(
             now,
-            agentServerOptions.Value.HeartbeatIntervalSeconds,
+            heartbeatInterval,
             InventoryRequested: device.IsInventoryRefreshPending,
             TasksPending: tasksPending,
-            PoliciesPending: policiesPending));
+            PoliciesPending: policiesPending,
+            ChatActive: chatActive));
     }
+
+    /// <summary>Heartbeat cadence while a live chat is open: near-live without a long-poll.</summary>
+    private const int ChatHeartbeatIntervalSeconds = 15;
 
     private static async Task<IResult> InventoryAsync(
         [FromBody] InventoryReport report,

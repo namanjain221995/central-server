@@ -151,6 +151,50 @@ public static class DeviceTaskCatalog
             // executor; an older one would fail it as unknown.
             new(DeviceTaskType.ConfigureRemoteSupport, Permissions.RemoteSupport.Configure, HighRisk: true, 7 * 24 * 3600,
                 MinimumAgentVersion: "1.20.0"),
+
+            // Querying Windows Update for driver updates changes nothing on the
+            // endpoint, so it rides on driver.view -- the same permission that reads
+            // the driver inventory -- and is not high-risk. A half-hour lifetime: a
+            // scan an offline machine finally picks up is still worth running, but a
+            // query is cheap to re-issue, so it is not armed for days. Gated on the
+            // agent that has the Windows Update driver executor; an older one would
+            // fail it as an unknown type, which reads exactly like the scan failing.
+            new(DeviceTaskType.ScanDriverUpdates, Permissions.Driver.View, HighRisk: false, 1800,
+                MinimumAgentVersion: "1.21.0"),
+
+            // Installing a Windows Update driver puts kernel code on the machine, so
+            // it carries driver.manage and is high-risk, exactly like sideloading an
+            // approved driver package. A maintenance lifetime, not interactive: a
+            // driver install that fires when a laptop reappears is still the right
+            // thing to do. Same agent gate as the scan that produced the update ids.
+            new(DeviceTaskType.InstallDriverUpdate, Permissions.Driver.Manage, HighRisk: true, 3600,
+                MinimumAgentVersion: "1.21.0"),
+
+            // Open and close the live-chat window. Not high-risk: it shows a chat
+            // window and takes nothing over -- the most it does is interrupt the
+            // person at the machine with an offer to talk. A ten-minute lifetime,
+            // interactive: a chat the operator opened is only worth surfacing while
+            // they are still waiting at the console, not hours later when a laptop
+            // reappears. Both carry chat.start -- opening a chat and ending it are
+            // the same authority. Gated on the agent that has the chat executor; an
+            // older one would fail the task as unknown, which reads exactly like the
+            // chat failing to open.
+            new(DeviceTaskType.StartLiveChat, Permissions.Chat.Start, HighRisk: false, 600,
+                MinimumAgentVersion: "1.22.0"),
+            new(DeviceTaskType.EndLiveChat, Permissions.Chat.Start, HighRisk: false, 600,
+                MinimumAgentVersion: "1.22.0"),
+
+            // High-risk because it decides what software runs inside every signed-in
+            // browser session on the machine -- a forced extension reads what every
+            // user of that Chrome reads. An hour of lifetime, longer than the USB
+            // policy's: these rules are not time-boxed, so the policy a laptop picks
+            // up on reconnect is still the right one, while anything older is
+            // re-issued whole by the next rule change anyway (whole-state). Gated on
+            // the agent that has the ExtensionSettings executor: an older one would
+            // fail the task as unknown, which reads exactly like the policy failing
+            // to apply.
+            new(DeviceTaskType.ApplyChromeExtensionPolicy, Permissions.Chrome.Manage, HighRisk: true, 3600,
+                MinimumAgentVersion: "1.23.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

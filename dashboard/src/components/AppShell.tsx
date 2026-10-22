@@ -86,6 +86,10 @@ const NAV_SECTIONS: NavSection[] = [
       // many device screens at once, by group or by named device.
       { to: '/announcements', label: 'Announcements', icon: 'megaphone' },
       { to: '/updates', label: 'Updates', icon: 'updates' },
+      // Beside Updates: that page reports Windows Update state read-only, this
+      // one acts — scanning for and installing the driver updates Windows
+      // Update offers, with a reboot handoff when one is needed.
+      { to: '/driver-updates', label: 'Driver Updates', icon: 'settings' },
       // /agent-releases, not /agent: nginx proxies the /agent/ prefix to the
       // Agent API for enrolled endpoints, so an /agent SPA route breaks on
       // refresh and trailing slashes by landing in the API's namespace.
@@ -99,6 +103,10 @@ const NAV_SECTIONS: NavSection[] = [
       // Its own group: it is neither estate, access nor configuration — it is a
       // live, audited action taken on one machine at a time.
       { to: '/remote-support', label: 'IT Remote Support', icon: 'remote' },
+      // Beside IT Remote Support: a live, audited conversation with the signed-in
+      // employee on one device. No chat/message glyph exists, so it reuses the
+      // inbox icon rather than inventing one.
+      { to: '/live-chat', label: 'Live Chat', icon: 'inbox' },
     ],
   },
   {

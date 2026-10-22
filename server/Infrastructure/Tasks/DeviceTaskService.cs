@@ -326,6 +326,11 @@ public sealed class DeviceTaskService(
             await MarkRestartCancelledAsync(task, deviceId, now, cancellationToken);
         }
 
+        if (task.Type == DeviceTaskType.ScanDriverUpdates && succeeded)
+        {
+            await ApplyDriverUpdateScanAsync(deviceId, resultJson, now, cancellationToken);
+        }
+
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
@@ -388,4 +393,107 @@ public sealed class DeviceTaskService(
             "Restart task {RestartTaskId} marked Cancelled: device {DeviceId} aborted it on cancel task {CancelTaskId}.",
             restart.Id, deviceId, cancellation.Id);
     }
+
+    /// <summary>Most pending driver updates one scan may report, to bound a hostile result.</summary>
+    private const int MaxDriverUpdatesPerScan = 500;
+
+    /// <summary>
+    /// A driver-update scan succeeded, so the device's pending-update list is now
+    /// whatever the scan reported. Replaced wholesale, like a driver or software
+    /// inventory section: a scan that found nothing clears the rows rather than
+    /// leaving a stale list that reads as "still pending".
+    /// </summary>
+    /// <remarks>
+    /// The result is agent-supplied, so nothing in it is trusted: an item with no
+    /// update id or title is dropped, string lengths are bounded to what the store
+    /// accepts, the first of any duplicate update id wins, and the list is capped. A
+    /// result that will not parse leaves the previous list untouched and is logged,
+    /// not thrown -- a malformed scan should not fail the task completion that
+    /// carried it.
+    /// </remarks>
+    private async Task ApplyDriverUpdateScanAsync(
+        Guid deviceId, string? resultJson, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        DriverUpdateScanReport? report;
+        try
+        {
+            report = string.IsNullOrWhiteSpace(resultJson)
+                ? null
+                : JsonSerializer.Deserialize<DriverUpdateScanReport>(resultJson, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            _logger.LogWarning(
+                "Driver-update scan for device {DeviceId} returned an unreadable result; pending list left unchanged.",
+                deviceId);
+            return;
+        }
+
+        if (report is null)
+        {
+            _logger.LogWarning(
+                "Driver-update scan for device {DeviceId} returned no result body; pending list left unchanged.",
+                deviceId);
+            return;
+        }
+
+        var existing = await _dbContext.DeviceDriverUpdates
+            .Where(u => u.DeviceId == deviceId)
+            .ToListAsync(cancellationToken);
+        _dbContext.DeviceDriverUpdates.RemoveRange(existing);
+
+        var collectedAt = report.ScannedAt ?? now;
+        var reported = new List<DeviceDriverUpdate>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in report.Updates ?? [])
+        {
+            if (reported.Count >= MaxDriverUpdatesPerScan)
+            {
+                _logger.LogWarning(
+                    "Driver-update scan for device {DeviceId} reported more than {Max} updates; the rest were dropped.",
+                    deviceId, MaxDriverUpdatesPerScan);
+                break;
+            }
+
+            // The update id is Windows Update's identity for the update and is a
+            // GUID, so an absent one or one too long to be a GUID is a malformed
+            // item, not an update. A missing title likewise -- there is nothing to
+            // show the operator.
+            if (string.IsNullOrWhiteSpace(item.UpdateId) || item.UpdateId.Length > 64
+                || string.IsNullOrWhiteSpace(item.Title))
+            {
+                continue;
+            }
+
+            // A repeat of an update id is a malformed result rather than two
+            // updates; keep the first and drop the rest, as the inventory ingestion
+            // does with a repeated device instance id.
+            if (!seen.Add(item.UpdateId))
+            {
+                continue;
+            }
+
+            reported.Add(new DeviceDriverUpdate(
+                deviceId,
+                item.UpdateId,
+                item.Revision,
+                Truncate(item.Title, 512)!,
+                Truncate(item.DriverClass, 128),
+                Truncate(item.DriverProvider, 256),
+                item.DriverVerDate,
+                item.IsPreview,
+                item.SizeBytes,
+                collectedAt));
+        }
+
+        _dbContext.DeviceDriverUpdates.AddRange(reported);
+
+        _logger.LogInformation(
+            "Driver-update scan for device {DeviceId}: {Count} update(s) pending.", deviceId, reported.Count);
+    }
+
+    /// <summary>Caps a string to <paramref name="max"/> characters, preserving null.</summary>
+    private static string? Truncate(string? value, int max) =>
+        string.IsNullOrEmpty(value) || value.Length <= max ? value : value[..max];
 }

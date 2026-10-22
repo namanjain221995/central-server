@@ -236,4 +236,93 @@ public enum DeviceTaskType
     /// on the heartbeat, so no result payload is required.
     /// </remarks>
     ConfigureRemoteSupport = 54,
+
+    /// <summary>
+    /// Ask the device to query Windows Update for applicable driver updates and
+    /// report the pending list, without installing anything (agent 1.21.0+).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read-only on the endpoint: it runs an online Windows Update search for
+    /// drivers and returns what it found -- update id, revision, title, class,
+    /// provider, date, size and whether the update is a preview -- so the console
+    /// can show which machines have driver updates waiting. Nothing is downloaded
+    /// or installed. The result replaces the device's pending-driver-update list
+    /// wholesale, the same way an inventory section does, so a scan that finds
+    /// nothing clears the list rather than leaving stale rows.
+    /// </para>
+    /// <para>
+    /// A short-to-moderate lifetime: a scan that an offline machine finally picks
+    /// up hours later is still useful, but a query is cheap to re-issue, so it is
+    /// not kept armed for days. Gated on the agent that carries the Windows Update
+    /// driver executor; an older one would fail it as an unknown type.
+    /// </para>
+    /// </remarks>
+    ScanDriverUpdates = 55,
+
+    /// <summary>
+    /// Install one or more named Windows Update driver updates the device
+    /// previously reported as pending (agent 1.21.0+).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A different thing from <see cref="InstallDriverPackage"/>, which sideloads an
+    /// administrator-approved INF package this platform hosts. This installs updates
+    /// that Windows Update itself offers, named by their Windows Update id, so the
+    /// endpoint downloads and installs them through the Windows Update Agent exactly
+    /// as Settings would. High risk, because a driver runs in the kernel. The result
+    /// reports, per update, whether it succeeded and whether a reboot is now pending,
+    /// so the console can hand a reboot-pending machine to Restart Management rather
+    /// than restarting it blind.
+    /// </para>
+    /// <para>
+    /// A maintenance lifetime: unlike an interactive action, a driver install that
+    /// fires when a laptop reappears is still the right thing to do. Gated on the
+    /// agent that carries the Windows Update driver executor; an older one would
+    /// fail it as an unknown type, which would read exactly like the install failing.
+    /// </para>
+    /// </remarks>
+    InstallDriverUpdate = 56,
+
+    /// <summary>
+    /// Open a live IT-support chat window on the device so the person at it can
+    /// talk to an administrator (agent 1.22.0+).
+    /// </summary>
+    /// <remarks>
+    /// Names the chat session it belongs to in its payload, together with the
+    /// administrator's display name to show in the window. Carries no secret -- the
+    /// messages themselves travel over the device-credentialed chat endpoints, not
+    /// in the task payload. Gated on the agent that has the chat executor; an older
+    /// one would fail the task as an unknown type, which reads exactly like the chat
+    /// failing to open.
+    /// </remarks>
+    StartLiveChat = 57,
+
+    /// <summary>
+    /// Close the live IT-support chat window that <see cref="StartLiveChat"/>
+    /// opened (agent 1.22.0+). The undo half of the start/end pair.
+    /// </summary>
+    /// <remarks>
+    /// Names the session it closes, the way <see cref="ReleaseScreenLock"/> names
+    /// the lock it lifts, so the agent closes exactly the window an administrator
+    /// ended and both logs name the same session.
+    /// </remarks>
+    EndLiveChat = 58,
+
+    /// <summary>
+    /// Apply the complete Chrome extension policy for this device (agent 1.23.0+):
+    /// which extensions are force-installed, blocked, allowed or removed, enforced
+    /// through Chrome's own enterprise <c>ExtensionSettings</c> policy in HKLM.
+    /// </summary>
+    /// <remarks>
+    /// Whole-state, like <see cref="ApplyUsbPolicy"/> and
+    /// <see cref="ApplyLocalAdminElevation"/>: every rule the device has travels in
+    /// every task, and an extension absent from the payload has NO rule -- the agent
+    /// writes exactly the named rules and clears whatever else it had written. That
+    /// makes the task idempotent, makes lifting a rule the absence of an entry
+    /// rather than a second message that could be lost, and lets a re-send repair
+    /// drift. An empty rule list is therefore valid and meaningful: it clears the
+    /// platform's extension policy from the device.
+    /// </remarks>
+    ApplyChromeExtensionPolicy = 59,
 }

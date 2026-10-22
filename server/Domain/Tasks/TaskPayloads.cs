@@ -396,4 +396,121 @@ public static class TaskPayloads
     /// id so the agent releases exactly the one an administrator chose to lift.
     /// </summary>
     public sealed record ReleaseScreenLock(Guid LockId);
+
+    // ---- Windows Update driver updates ----
+    //
+    // Two tasks, matching the two things an operator does from the console: find out
+    // what driver updates a machine has waiting, and install the ones they chose. Both
+    // carry only an issue time, never a credential -- the endpoint talks to Windows
+    // Update over its own channel, so there is nothing here that is a secret and the
+    // payloads are safe in the task audit record.
+
+    /// <summary>
+    /// Ask the device to query Windows Update for applicable driver updates and
+    /// report the pending list, installing nothing.
+    /// </summary>
+    /// <param name="IssuedAt">
+    /// When the server issued the scan. Carried so the endpoint can refuse a payload
+    /// older than its freshness window and so the result and the request line up in
+    /// the log; a scan is otherwise parameterless.
+    /// </param>
+    public sealed record ScanDriverUpdates(DateTimeOffset IssuedAt);
+
+    /// <summary>
+    /// Install the named Windows Update driver updates. Each id is a Windows Update
+    /// update id the device previously reported as pending from a
+    /// <see cref="ScanDriverUpdates"/> scan.
+    /// </summary>
+    /// <remarks>
+    /// The server never sends a preview/beta update here: the console auto-selects
+    /// only non-preview updates, and a caller naming one explicitly is still just
+    /// naming an id the device decides for itself whether to act on. The endpoint
+    /// re-queries Windows Update and installs only updates it still offers, so a
+    /// captured task cannot install something the machine no longer considers
+    /// applicable.
+    /// </remarks>
+    /// <param name="UpdateIds">
+    /// The Windows Update update ids (GUID strings) to install. Never empty; the
+    /// server refuses an empty selection before queuing.
+    /// </param>
+    /// <param name="IssuedAt">
+    /// When the server issued the install. The endpoint refuses a payload older than
+    /// its freshness window, so a captured task cannot be replayed into an install
+    /// long afterwards.
+    /// </param>
+    public sealed record InstallDriverUpdate(IReadOnlyList<string> UpdateIds, DateTimeOffset IssuedAt);
+
+    // ---- Live chat support ----
+    //
+    // Carry no secret: the chat messages themselves travel over the device-
+    // credentialed chat endpoints, not in a task payload. These two tasks only tell
+    // the endpoint to open and close the chat window for a named session.
+
+    /// <summary>
+    /// Open the live IT-support chat window on the device for a session.
+    /// </summary>
+    /// <param name="SessionId">
+    /// The chat session this window belongs to. It keys the window, so the matching
+    /// <see cref="EndLiveChat"/> closes exactly this one and the agent fetches
+    /// messages for the right session.
+    /// </param>
+    /// <param name="AdminDisplay">
+    /// What the window header shows as who the person is talking to. The server
+    /// sends the generic employee-facing label ("IT Support"), never the operator's
+    /// sign-in email -- that is an internal identifier with no business on an
+    /// employee's screen; the real actor lives on the session row and in the audit
+    /// trail. Not a secret and not an authenticator.
+    /// </param>
+    public sealed record StartLiveChat(Guid SessionId, string AdminDisplay);
+
+    /// <summary>
+    /// Close the live chat window that <see cref="StartLiveChat"/> opened. Names the
+    /// session by id so the agent closes exactly the one an administrator ended.
+    /// </summary>
+    public sealed record EndLiveChat(Guid SessionId);
+
+    // ---- Chrome extension control ----
+    //
+    // One whole-state task, like ApplyUsbPolicy: every rule the device has travels
+    // in every task, and an extension absent from the payload has no rule. Nothing
+    // here is a secret -- an extension id and a mode name -- so the payload is safe
+    // in the task audit record that DeviceTaskService writes for every queued task.
+
+    /// <summary>
+    /// One rule: what Chrome must do about one extension on this device.
+    /// </summary>
+    /// <param name="ExtensionId">
+    /// Chrome's 32-character identifier (letters a-p). The enforcement key the
+    /// agent writes the policy under; names are never used to match.
+    /// </param>
+    /// <param name="Mode">
+    /// Exactly one of the strings <c>ForceInstalled</c>, <c>Blocked</c>,
+    /// <c>Allowed</c> or <c>Removed</c> -- the names of
+    /// <c>Domain.Chrome.ChromeExtensionRuleMode</c>, written by the server from
+    /// that enum and matched exactly by the agent. A string on the wire for the
+    /// reason <see cref="ServiceAction"/> documents: an ordinal is one reordering
+    /// away from silently meaning something else, and the agent drops any rule
+    /// whose mode is not one of these exact strings.
+    /// </param>
+    public sealed record ChromeExtensionRulePayload(string ExtensionId, string Mode);
+
+    /// <summary>
+    /// The complete Chrome extension policy for one endpoint.
+    /// </summary>
+    /// <remarks>
+    /// Whole-state, not a delta: the agent writes exactly <paramref name="Rules"/>
+    /// into Chrome's <c>ExtensionSettings</c> policy and removes every entry it had
+    /// written that is no longer named. An empty list is therefore a valid and
+    /// meaningful payload -- it clears the platform's extension policy from the
+    /// device -- and it is what lifting the last rule produces.
+    /// </remarks>
+    /// <param name="Rules">Every rule the device has. Absent extension ids have no rule.</param>
+    /// <param name="IssuedAt">
+    /// When the server built this policy. The agent keeps the newest and ignores an
+    /// older one arriving late, so a delayed task cannot resurrect a rule that has
+    /// since been lifted.
+    /// </param>
+    public sealed record ApplyChromeExtensionPolicy(
+        IReadOnlyList<ChromeExtensionRulePayload> Rules,
+        DateTimeOffset IssuedAt);
 }

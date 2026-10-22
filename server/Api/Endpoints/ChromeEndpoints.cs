@@ -10,10 +10,10 @@ namespace EndpointPlatform.Api.Endpoints;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Read-only in this phase. Every route is behind <c>chrome.view</c>, and there is
-/// deliberately no route here that changes anything on an endpoint;
-/// <c>chrome.manage</c> is in the catalogue for the phases that will, and gates
-/// nothing yet.
+/// Read-only, deliberately: no route here changes anything on an endpoint. The
+/// write side -- the per-device extension rules behind <c>chrome.manage</c> --
+/// lives in <see cref="ChromeExtensionRuleEndpoints"/>, so this file stays exactly
+/// what an administrator holding only <c>chrome.view</c> can reach.
 /// </para>
 /// <para>
 /// The group route lists a group's members by the Groups page's own predicate, so

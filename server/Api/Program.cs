@@ -263,6 +263,7 @@ public sealed class Program
             app.MapBulkLocalAccountEndpoints();
             app.MapLocalAdminElevationEndpoints();
             app.MapDriverEndpoints();
+            app.MapDriverUpdateEndpoints();
             app.MapBitLockerEndpoints();
             app.MapDriverPackageEndpoints();
             app.MapBitLockerEscrowEndpoints();
@@ -273,6 +274,7 @@ public sealed class Program
             app.MapSecurityEndpoints();
             app.MapUpdateEndpoints();
             app.MapChromeEndpoints();
+            app.MapChromeExtensionRuleEndpoints();
             app.MapReportEndpoints();
             app.MapPolicyEndpoints();
             app.MapGroupEndpoints();
@@ -280,6 +282,7 @@ public sealed class Program
             app.MapAnnouncementEndpoints();
             app.MapScreenLockEndpoints();
             app.MapRemoteSupportEndpoints();
+            app.MapChatEndpoints();
             app.MapTaskEndpoints();
             app.MapAgentReleaseEndpoints();
             app.MapUsbEndpoints();

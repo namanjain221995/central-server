@@ -559,6 +559,131 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("bitlocker_recovery_escrows", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Chat.ChatMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("body");
+
+                    b.Property<Guid>("ChatSessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("chat_session_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Sender")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("sender");
+
+                    b.Property<string>("SenderDisplay")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("sender_display");
+
+                    b.Property<DateTimeOffset>("SentAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sent_at");
+
+                    b.Property<int>("Seq")
+                        .HasColumnType("integer")
+                        .HasColumnName("seq");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_chat_messages");
+
+                    b.HasIndex("ChatSessionId", "Seq")
+                        .HasDatabaseName("ix_chat_messages_chat_session_id_seq");
+
+                    b.ToTable("chat_messages", "endpoint_platform");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Chat.ChatSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<DateTimeOffset?>("EndedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("ended_at");
+
+                    b.Property<string>("EndedReason")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("ended_reason");
+
+                    b.Property<DateTimeOffset>("LastActivityAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_activity_at");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("organization_id");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("StartedByDisplay")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("started_by_display");
+
+                    b.Property<Guid>("StartedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("started_by_user_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_chat_sessions");
+
+                    b.HasIndex("DeviceId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chat_sessions_active_per_device")
+                        .HasFilter("status = 'Active'");
+
+                    b.HasIndex("OrganizationId", "Status")
+                        .HasDatabaseName("ix_chat_sessions_organization_id_status");
+
+                    b.ToTable("chat_sessions", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeExtension", b =>
                 {
                     b.Property<Guid>("Id")
@@ -655,6 +780,52 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasDatabaseName("ux_chrome_extensions_profile_extension");
 
                     b.ToTable("chrome_extensions", "endpoint_platform");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeExtensionRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<string>("DisplayName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("display_name");
+
+                    b.Property<string>("ExtensionId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("extension_id");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("mode");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_chrome_extension_rules");
+
+                    b.HasIndex("DeviceId", "ExtensionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chrome_extension_rules_device_extension");
+
+                    b.ToTable("chrome_extension_rules", "endpoint_platform");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeInstallation", b =>
@@ -1160,6 +1331,80 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasDatabaseName("ix_device_drivers_provider_version");
 
                     b.ToTable("device_drivers", "endpoint_platform");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceDriverUpdate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CollectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("collected_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<string>("DriverClass")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("driver_class");
+
+                    b.Property<string>("DriverProvider")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("driver_provider");
+
+                    b.Property<DateTimeOffset?>("DriverVersionDate")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("driver_version_date");
+
+                    b.Property<bool>("IsPreview")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_preview");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<long?>("SizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("size_bytes");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("UpdateId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("update_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_device_driver_updates");
+
+                    b.HasIndex("DeviceId")
+                        .HasDatabaseName("ix_device_driver_updates_device_id");
+
+                    b.HasIndex("DeviceId", "UpdateId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_device_driver_updates_device_update");
+
+                    b.ToTable("device_driver_updates", "endpoint_platform");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceHardware", b =>
@@ -4247,6 +4492,26 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasConstraintName("fk_bitlocker_recovery_escrows_devices_device_id");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Chat.ChatMessage", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Chat.ChatSession", null)
+                        .WithMany()
+                        .HasForeignKey("ChatSessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_chat_messages_chat_sessions_chat_session_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Chat.ChatSession", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_chat_sessions_devices_device_id");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeExtension", b =>
                 {
                     b.HasOne("EndpointPlatform.Domain.Chrome.ChromeProfile", null)
@@ -4262,6 +4527,16 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_chrome_extensions_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeExtensionRule", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_chrome_extension_rules_devices_device_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeInstallation", b =>
@@ -4343,6 +4618,16 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_device_drivers_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceDriverUpdate", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_device_driver_updates_devices_device_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceHardware", b =>

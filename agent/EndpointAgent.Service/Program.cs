@@ -257,6 +257,26 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.EngageScreenLockExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ReleaseScreenLockExecutor>();
 
+            // Live IT-support chat. A StartLiveChat task opens a small window on the
+            // signed-in employee's desktop; admin and employee exchange plain text;
+            // an EndLiveChat task (or the server ending the session, or the person
+            // closing the window) closes it. The manager is both the hosted
+            // short-poll loop and the pipe's handler, and it owns the launcher (one
+            // fixed window image into each session, no arguments). The window is
+            // launched ONLY through the one sanctioned session-launch host
+            // (WindowsSessionProcessHost), exactly like the lock overlay and the
+            // notifier (ADR-0005, live-chat amendment). Chat MESSAGES ride the
+            // device-credentialled chat endpoints, never a task payload.
+            builder.Services.AddSingleton<EndpointAgent.Core.Chat.ILiveChatWindowLauncher, EndpointAgent.Windows.LiveChat.LiveChatWindowLauncher>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Chat.ChatManager>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Chat.ILiveChatPipeHandler>(sp =>
+                sp.GetRequiredService<EndpointAgent.Core.Chat.ChatManager>());
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<EndpointAgent.Core.Chat.ChatManager>());
+            builder.Services.AddSingleton<EndpointAgent.Windows.LiveChat.LiveChatPipeServer>();
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<EndpointAgent.Windows.LiveChat.LiveChatPipeServer>());
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.StartLiveChatExecutor>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.EndLiveChatExecutor>();
+
             builder.Services.AddSingleton<IPackageInstaller, WindowsMsiPackageInstaller>();
             builder.Services.AddSingleton<ILocalAccountsControl, WindowsLocalAccountControl>();
             builder.Services.AddSingleton<ISecretRedeemer, EndpointAgent.Core.Communication.ServerSecretRedeemer>();
@@ -326,6 +346,30 @@ public static class Program
             builder.Services.AddSingleton<IRemoteSupportControl, EndpointAgent.Windows.RemoteSupport.WindowsRemoteSupportControl>();
             builder.Services.AddSingleton<IRemoteSupportReader, EndpointAgent.Windows.RemoteSupport.WindowsRemoteSupportReader>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ConfigureRemoteSupportExecutor>();
+
+            // Windows Update optional DRIVER updates. One service drives the Windows
+            // Update Agent COM API in-process (an online scan, then a download+install
+            // of the selected updates) and WUA does the work -- the agent launches
+            // nothing (ADR-0005), exactly like the update-history collector and the
+            // Task Scheduler launcher. The scan executor reports what is offered; the
+            // install executor applies the selected updates and carries the
+            // reboot-required flag back as success (the InstallDriverPackage convention).
+            builder.Services.AddSingleton<IDriverUpdateService, WindowsDriverUpdateService>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ScanDriverUpdatesExecutor>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.InstallDriverUpdateExecutor>();
+
+            // Chrome extension control. ApplyChromeExtensionPolicy carries the
+            // device's whole managed-extension policy; the writer puts it into the
+            // machine-wide Chrome policy key (HKLM\SOFTWARE\Policies\Google\Chrome,
+            // value ExtensionSettings) and Chrome itself force-installs, blocks,
+            // allows or removes the extensions. Pure registry data through typed
+            // Microsoft.Win32 API -- the agent launches nothing (ADR-0005) -- and
+            // clearing removes only the one value the writer owns, never the key,
+            // where other Chrome policies may live. Registered separately from the
+            // read-only IChromeCollector above, so inventory stays incapable of
+            // enforcement and enforcement incapable of inventory.
+            builder.Services.AddSingleton<IChromeExtensionPolicyWriter, WindowsChromeExtensionPolicyWriter>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ApplyChromeExtensionPolicyExecutor>();
 
             builder.Services.AddHttpClient<IAgentApiClient, AgentApiClient>((serviceProvider, client) =>
                 {

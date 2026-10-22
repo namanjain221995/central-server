@@ -72,6 +72,13 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     public DbSet<DeviceDriver> DeviceDrivers => Set<DeviceDriver>();
 
     /// <remarks>
+    /// The pending Windows Update driver updates per device, replaced wholesale by
+    /// each <c>ScanDriverUpdates</c> result. No rows for a device means it reported
+    /// nothing pending, not that it was never scanned.
+    /// </remarks>
+    public DbSet<DeviceDriverUpdate> DeviceDriverUpdates => Set<DeviceDriverUpdate>();
+
+    /// <remarks>
     /// One row per device, upserted. A device without a row has never reported
     /// the Chrome section; one with a NotInstalled row has, and said no.
     /// </remarks>
@@ -80,6 +87,15 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     public DbSet<Domain.Chrome.ChromeProfile> ChromeProfiles => Set<Domain.Chrome.ChromeProfile>();
 
     public DbSet<Domain.Chrome.ChromeExtension> ChromeExtensions => Set<Domain.Chrome.ChromeExtension>();
+
+    /// <remarks>
+    /// The administrator-declared extension policy, one row per (device,
+    /// extension). The decision, not the observation: unlike the inventory sets
+    /// above, these rows are never replaced by an upload -- they change only when
+    /// an administrator sets or lifts a rule, and every change re-sends the
+    /// device's whole rule set as one <c>ApplyChromeExtensionPolicy</c> task.
+    /// </remarks>
+    public DbSet<Domain.Chrome.ChromeExtensionRule> ChromeExtensionRules => Set<Domain.Chrome.ChromeExtensionRule>();
 
     public DbSet<DeviceBitLockerStatus> DeviceBitLockerStatus => Set<DeviceBitLockerStatus>();
 
@@ -154,6 +170,10 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
 
     public DbSet<Domain.RemoteSupport.RemoteSupportEnrollment> RemoteSupportEnrollments =>
         Set<Domain.RemoteSupport.RemoteSupportEnrollment>();
+
+    public DbSet<Domain.Chat.ChatSession> ChatSessions => Set<Domain.Chat.ChatSession>();
+
+    public DbSet<Domain.Chat.ChatMessage> ChatMessages => Set<Domain.Chat.ChatMessage>();
 
     public DbSet<EnrollmentToken> EnrollmentTokens => Set<EnrollmentToken>();
 

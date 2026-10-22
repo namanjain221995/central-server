@@ -202,12 +202,18 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Restarts.RestartCancellationService>();
         services.AddScoped<Restarts.RestartScheduleService>();
         services.AddScoped<Announcements.AnnouncementService>();
+        // Shared by both APIs: the Admin API drives chats, the Agent API serves the
+        // device's own session, so it lives here rather than in one host's Program.
+        services.AddScoped<Chat.ChatService>();
         services.AddScoped<ScreenLocks.ScreenLockService>();
         services.AddScoped<ScreenLocks.ScreenUnlockCodeService>();
         services.AddScoped<Devices.SoftwareReadService>();
         services.AddScoped<Devices.SecurityReadService>();
         services.AddScoped<Devices.UpdateReadService>();
+        services.AddScoped<Devices.DriverUpdateReadService>();
+        services.AddScoped<Devices.DriverUpdateService>();
         services.AddScoped<Chrome.ChromeReadService>();
+        services.AddScoped<Chrome.ChromeExtensionRuleService>();
         services.AddScoped<Devices.DeviceLifecycleService>();
         services.AddScoped<Reporting.ReportReadService>();
         services.AddScoped<Devices.LocalAccountManagementService>();

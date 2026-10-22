@@ -367,3 +367,65 @@ process-creation scan is unchanged and now covers the overlay's sources too
 Phase 9 kind, not the launch vector); `CreateProcessAsUserW` stays pinned to the one
 host; the two reviewed image names are both asserted; `EndpointAgent.Core`
 references no process API; and PowerShell stays banned in every agent assembly.
+
+## Amendment: the live chat window
+
+Live IT-support chat (agent 1.22.0) opens a small window on the signed-in
+employee's desktop so an administrator and the person can exchange plain text. It
+crosses the service/session boundary the same way the screen lock does, so how it
+does that is recorded here.
+
+- **A third service-launched image, deliberately.** The window,
+  `EndpointAgent.LiveChat.exe`, is started in each interactive session by the
+  service, the same way and down the same reviewed code path as the notifier and the
+  lock overlay (`WTSEnumerateSessions` → `WTSQueryUserToken` → `CreateProcessAsUserW`
+  in `WindowsSessionProcessHost`, as the session's user and never elevated). It is a
+  *third* image rather than a mode of either because it is a real interactive window
+  (a header, a scrolling transcript, a text box) and WinForms is less code to review
+  than hand-drawing it. `CreateProcessAsUserW` is still pinned to that one host, still
+  passes the image as `lpApplicationName` with a command line of the quoted image and
+  nothing else, and there is still no parameter through which an argument could be
+  supplied: the window reads **nothing from its command line** about what to show.
+  `AgentSafetyTests` now pins **all three** reviewed image names explicitly
+  (`EndpointAgent.SessionNotice.exe`, `EndpointAgent.LockScreen.exe` and
+  `EndpointAgent.LiveChat.exe`); a fourth would be a deliberate change to that
+  assertion.
+- **The window asks the service; it is never told on the command line.** A dedicated
+  duplex pipe, `EndpointPlatformAgent.LiveChat`, carries three bounded operations,
+  one line of strictly parsed JSON each way (protocol in `LiveChatPipeProtocol`):
+  `poll` (read-only: the admin's display name, whether the chat is still open, and the
+  messages after a cursor), `send` (one line the person typed, at most 2000 plain-text
+  characters) and `closed` (the window is closing). A line that is too long, is not
+  exactly the properties its operation expects, names an unknown version or operation,
+  or carries a body that is not plain text is refused unread. There is no path,
+  package, command or id the window could send that the service acts on: a `send` is
+  relayed verbatim to the server over the device credential and nothing else, and the
+  admin's words the window draws are plain text with mnemonics off, never parsed.
+- **The messages never ride a task payload.** `StartLiveChat` and `EndLiveChat` carry
+  only a session id (and the admin's display name, for the window's header) -- no
+  message text and no secret. The conversation itself travels over the device-scoped
+  chat endpoints (`GET`/`POST /agent/v1/chat/{sessionId}/messages`), which the server
+  answers only for the authenticated device's own session, so a credential reaches no
+  other machine's chat. The service short-polls the server for new messages and
+  relays the person's replies up; it decides nothing and stores nothing.
+- **Bounded, and rate-limited the Company Portal way.** The service answers one
+  request per connection, reads at most a bounded line, waits at most five seconds,
+  and admits at most 60 `send` lines and 180 `poll` requests a minute per session
+  before answering `TooManyRequests` without touching the server. The pipe's protected
+  DACL gives the service account full control and interactive users read and write and
+  nothing else; the name is claimed with `FirstPipeInstance`; and the window trusts
+  only a server in session 0, for the reasons the notifier amendment gives.
+- **No orphan window, and nothing to resume.** The window closes itself when the
+  service says the chat has ended, and when the service it reads from goes away (a run
+  of unreachable polls) -- the notifier's "exit when the service disappears" rule. The
+  chat is live, not durable: nothing is persisted, so a service restart mid-chat shows
+  no window and resumes no poll (resume is a later phase). The person may close the
+  window; the service is told and ends the chat on the device, and the administrator
+  still ends it from the console.
+
+`AgentSafetyTests` is unchanged in substance and was tightened, not loosened: the
+process-creation scan now covers the chat window's sources too (its launcher uses only
+the image-guarded `Kill`/`GetProcessById` process *control*, never a launch);
+`CreateProcessAsUserW` stays pinned to the one host; all three reviewed image names are
+asserted; `EndpointAgent.Core` references no process API; and PowerShell stays banned
+in every agent assembly.

@@ -129,4 +129,62 @@ public sealed class TaskPayloadWireFormatTests
         doc.RootElement.GetProperty("graceSeconds").GetInt32().ShouldBe(30);
         doc.RootElement.GetProperty("message").GetString().ShouldBe("maintenance");
     }
+
+    /// <summary>
+    /// The Chrome extension policy as the agent's executor reads it: camelCase
+    /// field names, and each rule's mode as one of the four exact strings.
+    /// </summary>
+    /// <remarks>
+    /// The server builds the mode string from
+    /// <c>Domain.Chrome.ChromeExtensionRuleMode.ToString()</c>, so this test also
+    /// pins those member names: renaming one would change the wire value under
+    /// every deployed agent, exactly the ServiceAction failure this suite exists
+    /// to prevent.
+    /// </remarks>
+    [Theory]
+    [InlineData(EndpointPlatform.Domain.Chrome.ChromeExtensionRuleMode.ForceInstalled, "ForceInstalled")]
+    [InlineData(EndpointPlatform.Domain.Chrome.ChromeExtensionRuleMode.Blocked, "Blocked")]
+    [InlineData(EndpointPlatform.Domain.Chrome.ChromeExtensionRuleMode.Allowed, "Allowed")]
+    [InlineData(EndpointPlatform.Domain.Chrome.ChromeExtensionRuleMode.Removed, "Removed")]
+    public void Chrome_extension_policy_mode_travels_as_the_string_the_agent_matches_on(
+        EndpointPlatform.Domain.Chrome.ChromeExtensionRuleMode mode, string expected)
+    {
+        const string extensionId = "abcdefghijklmnopabcdefghijklmnop";
+        var issued = new DateTimeOffset(2026, 10, 22, 12, 0, 0, TimeSpan.Zero);
+
+        var json = Serialize(new TaskPayloads.ApplyChromeExtensionPolicy(
+            [new TaskPayloads.ChromeExtensionRulePayload(extensionId, mode.ToString())],
+            issued));
+
+        using var doc = JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("issuedAt").GetDateTimeOffset().ShouldBe(issued);
+
+        var rule = doc.RootElement.GetProperty("rules")[0];
+        rule.GetProperty("extensionId").GetString().ShouldBe(extensionId);
+
+        // GetString() throws on a JSON number — this call IS the agent's parse.
+        rule.GetProperty("mode").GetString().ShouldBe(expected);
+    }
+
+    /// <summary>
+    /// Lifting the last rule must serialise as an empty array, not as null.
+    /// </summary>
+    /// <remarks>
+    /// The empty policy is the instruction that clears the device -- it is what
+    /// removing the final rule produces. The executor requires <c>rules</c> to be
+    /// an array and rejects the payload otherwise, and a rejected payload leaves
+    /// the previous policy in force, so a null here would mean a lift that never
+    /// took effect.
+    /// </remarks>
+    [Fact]
+    public void Clearing_the_chrome_extension_policy_serialises_as_an_empty_array()
+    {
+        var json = Serialize(new TaskPayloads.ApplyChromeExtensionPolicy([], DateTimeOffset.UnixEpoch));
+
+        using var doc = JsonDocument.Parse(json);
+        var rules = doc.RootElement.GetProperty("rules");
+
+        rules.ValueKind.ShouldBe(JsonValueKind.Array);
+        rules.GetArrayLength().ShouldBe(0);
+    }
 }

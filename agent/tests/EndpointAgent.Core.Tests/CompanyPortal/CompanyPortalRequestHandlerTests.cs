@@ -373,5 +373,7 @@ public sealed class CompanyPortalRequestHandlerTests
         public Task<AgentApiResult<Unit>> DownloadAgentUpdateAsync(Guid releaseId, Stream destination, DeviceCredential c, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<AgentApiResult<BitLockerEscrowStatusResponse>> GetBitLockerEscrowStatusAsync(DeviceCredential c, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<AgentApiResult<EscrowRecoveryKeyResponse>> EscrowRecoveryKeyAsync(EscrowRecoveryKeyRequest r, DeviceCredential c, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<AgentApiResult<ChatPollResponse>> PollChatMessagesAsync(Guid sessionId, int afterSeq, DeviceCredential c, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<AgentApiResult<Unit>> SendChatMessageAsync(Guid sessionId, string body, DeviceCredential c, CancellationToken ct = default) => throw new NotSupportedException();
     }
 }

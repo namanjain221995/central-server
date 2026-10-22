@@ -1403,10 +1403,14 @@ export function cancelRestartSchedule(scheduleId: string, deviceIds?: string[]):
 }
 
 // ---------------------------------------------------------------------------
-// Chrome Management. Read-only in this phase: every function here reads what
-// the fleet reported. Group membership is the Groups page's -- the server
-// resolves a group's devices with the same rule, so "All Devices" is the
-// built-in group's devices (the ones in no custom group), never the whole fleet.
+// Chrome Management. The reads report what the fleet said; the one control is
+// per-device extension rules (force-install, block, allow, remove), each of
+// which queues a task the device applies as machine-wide Chrome policy -- the
+// console follows the returned taskId via useTaskTracker rather than calling a
+// rule "applied" because the server stored it. Group membership is the Groups
+// page's -- the server resolves a group's devices with the same rule, so "All
+// Devices" is the built-in group's devices (the ones in no custom group),
+// never the whole fleet.
 
 /** What the agent said about Chrome the last time it reported the section. */
 export type ChromeReportStatus = 'Available' | 'NotInstalled' | 'Error'
@@ -1531,6 +1535,57 @@ export function getDeviceChrome(deviceId: string): Promise<ChromeDeviceDetail> {
 
 export function getChromeProfileExtensions(deviceId: string, profileId: string): Promise<ChromeExtensionRow[]> {
   return request<ChromeExtensionRow[]>(chromeDevicePath(deviceId, `/profiles/${encodeURIComponent(profileId)}/extensions`))
+}
+
+/**
+ * What a rule asks the device to enforce for one extension, machine-wide:
+ * - ForceInstalled: installed from the Chrome Web Store and kept installed.
+ * - Blocked: disabled; Chrome will not let it run or be re-enabled.
+ * - Allowed: explicitly permitted.
+ * - Removed: uninstalled and kept out while the rule stands.
+ */
+export type ChromeExtensionRuleMode = 'ForceInstalled' | 'Blocked' | 'Allowed' | 'Removed'
+
+/**
+ * One extension rule on a device. Rules are the source of truth for policy
+ * state: the inventoried extension rows only change when the device uploads its
+ * next snapshot, so a fresh rule shows here before it shows there.
+ */
+export interface ChromeExtensionRule {
+  extensionId: string
+  mode: ChromeExtensionRuleMode
+  /** The name the console knows it by; null when none was ever supplied. */
+  displayName: string | null
+  updatedAt: string
+}
+
+/** Every rule on the device, force-installed ones not yet in inventory included. */
+export function getChromeExtensionRules(deviceId: string): Promise<ChromeExtensionRule[]> {
+  return request<ChromeExtensionRule[]>(chromeDevicePath(deviceId, '/extension-rules'))
+}
+
+/**
+ * Sets (or replaces) the rule for one extension and queues the task that
+ * enforces it. 409 (problem+json) when the agent is too old for extension
+ * control, whose `detail` the caller surfaces rather than guessing.
+ */
+export function setChromeExtensionRule(
+  deviceId: string,
+  extensionId: string,
+  mode: ChromeExtensionRuleMode,
+  displayName?: string,
+): Promise<QueuedTask> {
+  return request<QueuedTask>(chromeDevicePath(deviceId, `/extension-rules/${encodeURIComponent(extensionId)}`), {
+    method: 'PUT',
+    body: JSON.stringify({ mode, displayName }),
+  })
+}
+
+/** Clears the rule for one extension; the queued task stops enforcing it. */
+export function deleteChromeExtensionRule(deviceId: string, extensionId: string): Promise<QueuedTask> {
+  return request<QueuedTask>(chromeDevicePath(deviceId, `/extension-rules/${encodeURIComponent(extensionId)}`), {
+    method: 'DELETE',
+  })
 }
 
 export function getDevice(deviceId: string): Promise<DeviceDetail> {
@@ -1993,6 +2048,107 @@ export interface UpdateOverview {
 }
 export function getUpdateOverview(): Promise<UpdateOverview> {
   return request<UpdateOverview>('/admin/v1/updates/overview')
+}
+
+// ---------------------------------------------------------------------------
+// Windows Driver Updates. Unlike the read-only Windows Update visibility above,
+// this feature acts: it scans a device for driver updates Windows Update is
+// offering, and installs the ones an administrator chose. Every mutation is a
+// typed task the device pulls on its next check-in, so the console follows the
+// returned taskId to what actually happened on Windows via getDeviceTasks and
+// useTaskTracker -- it never claims an install is done merely because the
+// server accepted the request.
+
+export interface DriverUpdateOverviewSummary {
+  /** Active devices whose last scan found at least one pending driver update. */
+  devicesWithPending: number
+  /** Total pending driver updates across those devices. */
+  totalPending: number
+  /** Devices whose last driver install left a reboot pending. */
+  devicesRebootPending: number
+}
+
+/** One device's line in the driver-updates overview, as the server computes it. */
+export interface DriverUpdateDeviceRow {
+  deviceId: string
+  hostname: string
+  displayName: string | null
+  isOnline: boolean
+  lastSeenAt: string | null
+  /** Pending driver updates the last scan found. */
+  pendingCount: number
+  /** Of those, how many are preview/optional, so the UI can offer "non-preview only". */
+  previewCount: number
+  lastScanAt: string | null
+  rebootPending: boolean
+}
+
+export interface DriverUpdateOverview {
+  summary: DriverUpdateOverviewSummary
+  devices: DriverUpdateDeviceRow[]
+}
+
+/** One pending driver update Windows Update is offering a device. */
+export interface DriverUpdateItem {
+  updateId: string
+  revision: number
+  title: string
+  driverClass: string | null
+  driverProvider: string | null
+  driverVerDate: string | null
+  /** A preview/optional driver; "auto-select non-preview" leaves these unchecked. */
+  isPreview: boolean
+  sizeBytes: number | null
+}
+
+export interface DeviceDriverUpdates {
+  lastScanAt: string | null
+  rebootPending: boolean
+  updates: DriverUpdateItem[]
+}
+
+/** What the server accepted when a driver scan or install was queued. */
+export interface DriverUpdateTaskQueued {
+  taskId: string
+  status: string
+}
+
+export function getDriverUpdateOverview(): Promise<DriverUpdateOverview> {
+  return request<DriverUpdateOverview>('/admin/v1/driver-updates/overview')
+}
+
+export function getDeviceDriverUpdates(deviceId: string): Promise<DeviceDriverUpdates> {
+  return request<DeviceDriverUpdates>(`/admin/v1/devices/${encodeURIComponent(deviceId)}/driver-updates`)
+}
+
+/** Re-scans one device for driver updates. 202 with the scan task's id. */
+export function scanDriverUpdates(deviceId: string): Promise<DriverUpdateTaskQueued> {
+  return request<DriverUpdateTaskQueued>(
+    `/admin/v1/devices/${encodeURIComponent(deviceId)}/driver-updates/scan`,
+    { method: 'POST' },
+  )
+}
+
+/**
+ * Installs the chosen driver updates on one device. 202 with the install task's
+ * id; 409 (problem+json) when none are eligible or the agent is too old, whose
+ * `detail` the caller surfaces rather than guessing.
+ */
+export function installDriverUpdates(deviceId: string, updateIds: string[]): Promise<DriverUpdateTaskQueued> {
+  return request<DriverUpdateTaskQueued>(
+    `/admin/v1/devices/${encodeURIComponent(deviceId)}/driver-updates/install`,
+    { method: 'POST', body: JSON.stringify({ updateIds }) },
+  )
+}
+
+/** Queues a scan on every device with pending driver updates. Returns how many were queued. */
+export function scanAllDriverUpdates(): Promise<{ queued: number }> {
+  return request<{ queued: number }>('/admin/v1/driver-updates/scan-all', { method: 'POST' })
+}
+
+/** Queues a non-preview install on every device that has pending driver updates. */
+export function installAllDriverUpdates(): Promise<{ queued: number }> {
+  return request<{ queued: number }>('/admin/v1/driver-updates/install-all', { method: 'POST' })
 }
 
 export interface PackageRow {
@@ -3209,4 +3365,109 @@ export async function startRemoteSupportSession(
   }
 
   return (await response.json()) as RemoteSupportSession
+}
+
+// ---------------------------------------------------------------------------
+// IT Support: Live Chat (Phase 1).
+//
+// An authorized help-desk operator opens a chat with a managed device; the
+// signed-in employee answers in the agent's chat window. Messages are short-
+// polled while a conversation is open, with the highest seq seen so far as the
+// cursor, so each poll returns only what is new.
+//
+// Every message carries who sent it: an 'Admin' (this console), the 'Employee'
+// on the device, or a 'System' note (started, ended). The whole feature is
+// gated on chat.view; starting and sending need chat.start — the gates hide
+// controls, the server enforces each one independently.
+// ---------------------------------------------------------------------------
+
+/** Who sent a chat message. */
+export type ChatSender = 'Admin' | 'Employee' | 'System'
+
+/** A device as Live Chat lists it. `activeSessionId` is null when none is open. */
+export interface ChatDeviceRow {
+  deviceId: string
+  hostname: string
+  displayName: string | null
+  isOnline: boolean
+  lastSeenAt: string | null
+  /** The interactive user the agent last reported, or null when none is signed in. */
+  loggedOnUser: string | null
+  /** The open session for this device, if any — what "Open chat" reopens. */
+  activeSessionId: string | null
+}
+
+/** One line of a conversation. `seq` is the monotonic cursor the poll advances on. */
+export interface ChatMessage {
+  seq: number
+  sender: ChatSender
+  senderDisplay: string
+  body: string
+  sentAt: string
+}
+
+/** A page of a conversation. `ended` tells the client to stop polling. */
+export interface ChatTranscript {
+  sessionId: string
+  status: string
+  ended: boolean
+  messages: ChatMessage[]
+}
+
+/** What the server accepted when a chat was started. */
+export interface ChatStarted {
+  sessionId: string
+  status: string
+}
+
+/** The acknowledgement a sent message gets; the body is read back by the next poll. */
+export interface ChatMessageAck {
+  seq: number
+  sentAt: string
+}
+
+/** The fleet as Live Chat sees it. Mirrors getRemoteSupportDevices: one authorized read. */
+export function getChatDevices(): Promise<ChatDeviceRow[]> {
+  return request<ChatDeviceRow[]>('/admin/v1/chat/devices')
+}
+
+/**
+ * Opens a chat session with a device. POST with no body, like the other device
+ * actions. 409 (problem+json) when the agent is too old or a session is already
+ * active, whose `detail` the caller surfaces rather than guessing.
+ */
+export function startChat(deviceId: string): Promise<ChatStarted> {
+  return request<ChatStarted>(`/admin/v1/devices/${encodeURIComponent(deviceId)}/chat`, {
+    method: 'POST',
+  })
+}
+
+/**
+ * Reads the conversation after a cursor. `after` is the highest seq already
+ * shown, so an idle poll comes back empty and a busy one returns only the new
+ * lines.
+ */
+export function getChatMessages(sessionId: string, after: number): Promise<ChatTranscript> {
+  return request<ChatTranscript>(
+    `/admin/v1/chat/${encodeURIComponent(sessionId)}/messages?after=${after}`,
+  )
+}
+
+/**
+ * Sends one message from the operator. The body goes as a JSON `{body}` payload;
+ * the shared helper labels it application/json, without which the API answers
+ * 415 before the endpoint runs. The message itself is read back by the next poll.
+ */
+export function sendChatMessage(sessionId: string, body: string): Promise<ChatMessageAck> {
+  return request<ChatMessageAck>(`/admin/v1/chat/${encodeURIComponent(sessionId)}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  })
+}
+
+/** Ends a chat session. After this the transcript reads `ended` and polling stops. */
+export function endChat(sessionId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(`/admin/v1/chat/${encodeURIComponent(sessionId)}/end`, {
+    method: 'POST',
+  })
 }

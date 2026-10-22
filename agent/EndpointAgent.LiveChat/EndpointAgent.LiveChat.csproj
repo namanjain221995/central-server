@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- WinExe: a small chat window the SERVICE starts in a user session; no console window. -->
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>EndpointAgent.LiveChat</RootNamespace>
+    <AssemblyName>EndpointAgent.LiveChat</AssemblyName>
+    <VersionPrefix>1.23.2</VersionPrefix>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+
+    <!--
+      WinForms, like the Company Portal and the lock overlay and unlike the session
+      notifier. This is a real interactive window: a header, a scrolling transcript
+      of distinct message bubbles, a text box and a Send button. Hand-drawing that
+      through P/Invoke would be more code to review than the framework it avoids.
+      The cost (the desktop runtime in the publish folder) is already paid by the
+      portal and the overlay; build-msi.ps1 publishes this into the same folder with
+      the same self-contained runtime, so the four share one copy. The ADR-0005
+      live-chat amendment records this, and why a THIRD service-launched image exists.
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationDefaultFont>Segoe UI, 10pt</ApplicationDefaultFont>
+
+    <RuntimeIdentifier Condition="'$(PublishAgent)' == 'true'">win-x64</RuntimeIdentifier>
+    <SelfContained Condition="'$(PublishAgent)' == 'true'">true</SelfContained>
+    <PublishTrimmed Condition="'$(PublishAgent)' == 'true'">false</PublishTrimmed>
+    <PublishSingleFile Condition="'$(PublishAgent)' == 'true'">false</PublishSingleFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!--
+      Runs in a signed-in user's session, as that user, started by the LocalSystem
+      service while a live chat is open. It takes NO arguments and reads none for
+      what to show: it asks the service over a named pipe for the admin's name and
+      the messages, draws them as plain text, and sends back only what the person
+      types. It launches nothing and executes nothing it receives.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The Techsara logo, embedded so the window carries it without a loose file. -->
+    <EmbeddedResource Include="Assets\techsara-logo.png" LogicalName="EndpointAgent.LiveChat.techsara-logo.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EndpointAgent.Windows\EndpointAgent.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

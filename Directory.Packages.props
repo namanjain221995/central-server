@@ -80,6 +80,16 @@
     <PackageVersion Include="System.Management" Version="10.0.11" />
     <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.11" />
     <PackageVersion Include="System.Security.Cryptography.ProtectedData" Version="10.0.11" />
+    <!--
+      XSalsa20-Poly1305 (NaCl "secretbox") to read RustDesk's enc_id. That field
+      is a reversible, machine-local OBFUSCATION of the PUBLIC device ID (the dial
+      number shown in RustDesk's own UI; keyed by the world-readable MachineGuid -
+      see CVE-2026-30785), not a secret. .NET ships ChaCha20Poly1305 and AesGcm but
+      not XSalsa20, and secretbox is far more than the "forty lines with RFC
+      vectors" that justified hand-writing the TOTP above, so it is taken as a
+      standard pure-managed package rather than reimplemented.
+    -->
+    <PackageVersion Include="BouncyCastle.Cryptography" Version="2.4.0" />
     <PackageVersion Include="System.DirectoryServices.AccountManagement" Version="10.0.11" />
     <PackageVersion Include="System.ServiceProcess.ServiceController" Version="10.0.11" />
   </ItemGroup>

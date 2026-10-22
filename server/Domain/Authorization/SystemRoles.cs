@@ -101,6 +101,10 @@ public static class SystemRoles
         Permissions.RemoteSupport.View,
         Permissions.RemoteSupport.Configure,
         Permissions.RemoteSupport.Connect,
+        // Live chat IS a first-line support activity, so unlike remote support it is
+        // held by Helpdesk too -- the administrator roles get it as well.
+        Permissions.Chat.View,
+        Permissions.Chat.Start,
         Permissions.Policy.View,
         Permissions.Policy.Create,
         Permissions.Policy.Assign,
@@ -141,6 +145,11 @@ public static class SystemRoles
         // permission grants nothing but reading. Changing what Chrome runs is
         // chrome.manage, which Helpdesk does not hold.
         Permissions.Chrome.View,
+        // First-line support talks to the person at the machine: Helpdesk may start a
+        // live chat and send messages, the one Support capability it shares with the
+        // administrator roles (remote support, by contrast, stays administrator-only).
+        Permissions.Chat.View,
+        Permissions.Chat.Start,
         Permissions.Policy.View,
         Permissions.Task.View,
     ];
