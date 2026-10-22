@@ -6,7 +6,7 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>EndpointAgent.CompanyPortal</RootNamespace>
     <AssemblyName>EndpointAgent.CompanyPortal</AssemblyName>
-    <VersionPrefix>1.21.0</VersionPrefix>
+    <VersionPrefix>1.21.1</VersionPrefix>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>

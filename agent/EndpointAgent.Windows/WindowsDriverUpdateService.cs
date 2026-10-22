@@ -199,6 +199,9 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
             dynamic downloadColl = NewUpdateColl();
             var selected = new List<dynamic>();
             var selectedMeta = new List<(string Id, string Title)>();
+            var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var skippedPreview = 0;
+            var skippedEula = 0;
 
             for (var i = 0; i < count; i++)
             {
@@ -206,24 +209,32 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
 
                 dynamic update = found.Item(i);
                 var rawId = (string?)update.Identity.UpdateID;
-                if (string.IsNullOrWhiteSpace(rawId) || !wanted.Contains(NormalizeId(rawId)))
+                if (string.IsNullOrWhiteSpace(rawId))
                 {
                     continue;
                 }
+
+                var normId = NormalizeId(rawId);
+                if (!wanted.Contains(normId))
+                {
+                    continue;
+                }
+
+                matched.Add(normId);
 
                 var title = TryString(() => (string?)update.Title) ?? "(untitled driver update)";
                 if (DriverUpdatePreview.IsPreview(title, TryBool(() => (bool)update.IsBeta)))
                 {
                     // The platform excludes previews from installation as well as scanning.
+                    skippedPreview++;
                     continue;
                 }
 
-                if (TryBool(() => (bool)update.InstallationBehavior.CanRequestUserInput))
-                {
-                    // Would block on a prompt nobody can answer under LocalSystem.
-                    continue;
-                }
-
+                // Deliberately NOT skipped when InstallationBehavior.CanRequestUserInput
+                // is set: the installer below runs with ForceQuiet, so WUA installs these
+                // unattended without ever showing a prompt. Skipping them is exactly what
+                // made an install of OEM driver/firmware updates -- which commonly set
+                // that flag -- report "Installed 0" while leaving the updates pending.
                 if (!TryBool(() => (bool)update.EulaAccepted))
                 {
                     try
@@ -233,21 +244,43 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                     catch (Exception ex) when (ex is RuntimeBinderException or COMException)
                     {
                         _logger.LogDebug(ex, "Could not accept the EULA for a driver update; skipping it.");
+                        skippedEula++;
                         continue;
                     }
                 }
 
                 downloadColl.Add(update);
                 selected.Add(update);
-                selectedMeta.Add((NormalizeId(rawId), Truncate(title)));
+                selectedMeta.Add((normId, Truncate(title)));
             }
 
             if (selected.Count == 0)
             {
-                // None of the requested updates are present and installable now
-                // (already installed, withdrawn, preview, or needing user input).
-                // Nothing installed, nothing failed -- not an error.
-                return new DriverUpdateInstallResult(false, [], [], null);
+                // The operator asked for updates and none could be staged, so this is a
+                // reported failure with the reason -- never the silent "Installed 0"
+                // success that left updates pending forever. The breakdown is what tells
+                // the operator (and the task result) why nothing happened.
+                var notOffered = wanted.Count - matched.Count;
+                var reasons = new List<string>();
+                if (notOffered > 0)
+                {
+                    reasons.Add($"{notOffered} no longer offered by Windows Update");
+                }
+
+                if (skippedPreview > 0)
+                {
+                    reasons.Add($"{skippedPreview} preview");
+                }
+
+                if (skippedEula > 0)
+                {
+                    reasons.Add($"{skippedEula} with a licence that could not be accepted");
+                }
+
+                var detail = reasons.Count > 0
+                    ? string.Join("; ", reasons)
+                    : "none were applicable on this device";
+                return DriverUpdateInstallResult.ForError($"No driver updates were installed: {detail}.");
             }
 
             dynamic downloader = s.CreateUpdateDownloader();
@@ -274,6 +307,20 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
             dynamic installer = s.CreateUpdateInstaller();
             installer.ClientApplicationID = ClientApplicationId;
             installer.AllowSourcePrompts = false;
+
+            // Suppress any installer UI so updates that MAY request user input install
+            // unattended under LocalSystem instead of being skipped. ForceQuiet lives on
+            // IUpdateInstaller2 (Windows 7+); set it defensively through the late-bound
+            // object in case a host ever narrows the type.
+            try
+            {
+                installer.ForceQuiet = true;
+            }
+            catch (Exception ex) when (ex is RuntimeBinderException or COMException)
+            {
+                _logger.LogDebug(ex, "Could not set ForceQuiet on the update installer; continuing.");
+            }
+
             installer.Updates = installColl;
 
             if (TryBool(() => (bool)installer.IsBusy))
