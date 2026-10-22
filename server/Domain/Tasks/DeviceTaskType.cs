@@ -283,4 +283,29 @@ public enum DeviceTaskType
     /// </para>
     /// </remarks>
     InstallDriverUpdate = 56,
+
+    /// <summary>
+    /// Open a live IT-support chat window on the device so the person at it can
+    /// talk to an administrator (agent 1.22.0+).
+    /// </summary>
+    /// <remarks>
+    /// Names the chat session it belongs to in its payload, together with the
+    /// administrator's display name to show in the window. Carries no secret -- the
+    /// messages themselves travel over the device-credentialed chat endpoints, not
+    /// in the task payload. Gated on the agent that has the chat executor; an older
+    /// one would fail the task as an unknown type, which reads exactly like the chat
+    /// failing to open.
+    /// </remarks>
+    StartLiveChat = 57,
+
+    /// <summary>
+    /// Close the live IT-support chat window that <see cref="StartLiveChat"/>
+    /// opened (agent 1.22.0+). The undo half of the start/end pair.
+    /// </summary>
+    /// <remarks>
+    /// Names the session it closes, the way <see cref="ReleaseScreenLock"/> names
+    /// the lock it lifts, so the agent closes exactly the window an administrator
+    /// ended and both logs name the same session.
+    /// </remarks>
+    EndLiveChat = 58,
 }

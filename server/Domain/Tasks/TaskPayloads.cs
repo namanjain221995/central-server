@@ -439,4 +439,30 @@ public static class TaskPayloads
     /// long afterwards.
     /// </param>
     public sealed record InstallDriverUpdate(IReadOnlyList<string> UpdateIds, DateTimeOffset IssuedAt);
+
+    // ---- Live chat support ----
+    //
+    // Carry no secret: the chat messages themselves travel over the device-
+    // credentialed chat endpoints, not in a task payload. These two tasks only tell
+    // the endpoint to open and close the chat window for a named session.
+
+    /// <summary>
+    /// Open the live IT-support chat window on the device for a session.
+    /// </summary>
+    /// <param name="SessionId">
+    /// The chat session this window belongs to. It keys the window, so the matching
+    /// <see cref="EndLiveChat"/> closes exactly this one and the agent fetches
+    /// messages for the right session.
+    /// </param>
+    /// <param name="AdminDisplay">
+    /// The administrator's display name, shown in the window so the person knows who
+    /// they are talking to. Not a secret and not an authenticator.
+    /// </param>
+    public sealed record StartLiveChat(Guid SessionId, string AdminDisplay);
+
+    /// <summary>
+    /// Close the live chat window that <see cref="StartLiveChat"/> opened. Names the
+    /// session by id so the agent closes exactly the one an administrator ended.
+    /// </summary>
+    public sealed record EndLiveChat(Guid SessionId);
 }

@@ -169,6 +169,20 @@ public static class DeviceTaskCatalog
             // thing to do. Same agent gate as the scan that produced the update ids.
             new(DeviceTaskType.InstallDriverUpdate, Permissions.Driver.Manage, HighRisk: true, 3600,
                 MinimumAgentVersion: "1.21.0"),
+
+            // Open and close the live-chat window. Not high-risk: it shows a chat
+            // window and takes nothing over -- the most it does is interrupt the
+            // person at the machine with an offer to talk. A ten-minute lifetime,
+            // interactive: a chat the operator opened is only worth surfacing while
+            // they are still waiting at the console, not hours later when a laptop
+            // reappears. Both carry chat.start -- opening a chat and ending it are
+            // the same authority. Gated on the agent that has the chat executor; an
+            // older one would fail the task as unknown, which reads exactly like the
+            // chat failing to open.
+            new(DeviceTaskType.StartLiveChat, Permissions.Chat.Start, HighRisk: false, 600,
+                MinimumAgentVersion: "1.22.0"),
+            new(DeviceTaskType.EndLiveChat, Permissions.Chat.Start, HighRisk: false, 600,
+                MinimumAgentVersion: "1.22.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>
