@@ -76,14 +76,15 @@ internal sealed class ChatWindow : Form
         MaximizeBox = false;
         ShowInTaskbar = true;
 
-        // Always on top. Windows refuses foreground focus to a window the person
-        // did not start themselves (focus-stealing prevention), so without this the
-        // chat appears only as a taskbar button behind whatever they are working
-        // in -- and IT's opening message goes unseen. A narrow right-docked strip
-        // that stays visible is the whole point of the window; the person can
-        // still minimise or close it (a close is a dismissal, and a new message
-        // from IT brings it back).
-        TopMost = true;
+        // NOT the WinForms TopMost property, deliberately: that property applies
+        // HWND_TOPMOST through an ACTIVATING SetWindowPos at show time, and a
+        // service-started process has no foreground rights -- Windows answers the
+        // activation request by parking the window as a flashing taskbar button,
+        // which is exactly the bug this window shipped with twice. Topmost is
+        // instead baked into the window style at creation (CreateParams below) and
+        // re-asserted with an explicitly non-activating SetWindowPos in OnShown --
+        // the same recipe the announcement notice uses, which demonstrably appears
+        // in front on these machines.
         StartPosition = FormStartPosition.Manual;
         MinimumSize = new Size(WindowWidth, 300);
         ClientSize = new Size(WindowWidth, 600);
@@ -222,11 +223,22 @@ internal sealed class ChatWindow : Form
     /// (SW_SHOWNOACTIVATE). A service-started process has no foreground rights, so
     /// asking for activation makes Windows park the window as a flashing taskbar
     /// button instead of showing it -- exactly the "it only appears in the taskbar"
-    /// failure. Not asking at all, combined with TopMost, puts the window visibly
-    /// in front of whatever the person is working in; their first click into the
-    /// input box activates it normally.
+    /// failure. Not asking at all, combined with the topmost style, puts the window
+    /// visibly in front of whatever the person is working in; their first click
+    /// into the input box activates it normally.
     /// </summary>
     protected override bool ShowWithoutActivation => true;
+
+    /// <summary>Topmost as a CREATION style, so no activating SetWindowPos is ever needed to get there.</summary>
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |= WS_EX_TOPMOST;
+            return cp;
+        }
+    }
 
     protected override void OnShown(EventArgs e)
     {
@@ -238,6 +250,12 @@ internal sealed class ChatWindow : Form
         {
             WindowState = FormWindowState.Normal;
         }
+
+        // The announcement notice's exact show call: assert topmost and visible
+        // while EXPLICITLY not asking for activation, so Windows has no request
+        // to deny and no reason to divert the window to the taskbar.
+        _ = SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
         _poll.Start();
         PollTick();
@@ -617,4 +635,14 @@ internal sealed class ChatWindow : Form
 
         base.Dispose(disposing);
     }
+
+    // --- the announcement notice's non-activating topmost show, verbatim ----------
+
+    private const int WS_EX_TOPMOST = 0x00000008;
+    private const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002, SWP_NOACTIVATE = 0x0010, SWP_SHOWWINDOW = 0x0040;
+    private static readonly IntPtr HWND_TOPMOST = new(-1);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(
+        IntPtr hWnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
 }
