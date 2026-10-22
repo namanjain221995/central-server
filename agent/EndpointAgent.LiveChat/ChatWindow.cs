@@ -217,18 +217,30 @@ internal sealed class ChatWindow : Form
         DockRight();
     }
 
+    /// <summary>
+    /// Shown WITHOUT requesting activation, the way the announcement notice is
+    /// (SW_SHOWNOACTIVATE). A service-started process has no foreground rights, so
+    /// asking for activation makes Windows park the window as a flashing taskbar
+    /// button instead of showing it -- exactly the "it only appears in the taskbar"
+    /// failure. Not asking at all, combined with TopMost, puts the window visibly
+    /// in front of whatever the person is working in; their first click into the
+    /// input box activates it normally.
+    /// </summary>
+    protected override bool ShowWithoutActivation => true;
+
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
 
-        // Best-effort focus so the person can type straight away. Windows may
-        // refuse it (we were not started by them); TopMost above already
-        // guarantees the window is at least visibly in front.
-        Activate();
+        // Belt-and-braces: whatever show-state the launch handed us, the chat is
+        // only useful restored and visible.
+        if (WindowState != FormWindowState.Normal)
+        {
+            WindowState = FormWindowState.Normal;
+        }
 
         _poll.Start();
         PollTick();
-        _input.Focus();
     }
 
     private void DockRight()
