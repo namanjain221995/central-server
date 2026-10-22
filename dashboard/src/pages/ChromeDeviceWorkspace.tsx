@@ -1,15 +1,38 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
+  ApiError,
+  deleteChromeExtensionRule,
+  getChromeExtensionRules,
   getChromeProfileExtensions,
   getDeviceChrome,
   requestInventoryRefresh,
+  setChromeExtensionRule,
   type ChromeDeviceDetail,
+  type ChromeExtensionRule,
+  type ChromeExtensionRuleMode,
   type ChromeExtensionRow,
   type ChromeProfileRow,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
+import { ConfirmDialog } from '../components/ConfirmDialog'
 import { Icon } from '../components/Icon'
+import { RowActionsMenu } from '../components/RowActionsMenu'
+import { TaskProgress } from '../components/TaskProgress'
+import { useTaskTracker } from '../components/useTaskTracker'
+import {
+  clearRuleLabel,
+  compareRules,
+  extensionIdError,
+  extensionRuleMenuItems,
+  normalizeExtensionId,
+  ruleActionLabel,
+  ruleForExtension,
+  ruleModeForAction,
+  ruleModeLabel,
+  ruleModeTone,
+  type ChromeExtensionRuleAction,
+} from './chromeExtensionRulesView'
 import {
   chromeStatusLabel,
   chromeStatusTone,
@@ -40,21 +63,27 @@ const TABS: { key: Tab; label: string }[] = [
 
 /**
  * One device's Chrome, below the group table: the installation, its profiles,
- * each profile's extensions, and what is known about updates.
+ * each profile's extensions, what is known about updates — and, for an operator
+ * with `chrome.manage`, control over the device's extensions. Per extension:
+ * Block, Allow, Remove, or clear the rule; plus force-install by Chrome Web
+ * Store ID. Each mutation queues a task the agent enforces as machine-wide
+ * Chrome policy, and the workspace follows that task to what the device
+ * actually did (useTaskTracker) rather than calling a stored row "applied".
  *
- * Read-only in this phase. There is no control here that installs, removes or
- * updates anything: a button that only changed a database row would be worse
- * than its absence. The one action is Refresh inventory, which asks the agent
- * for a new snapshot through the same flag the device page uses.
+ * The rules list is the source of truth for policy state: the inventoried
+ * extension rows only change when the device uploads its next snapshot, so a
+ * fresh rule shows in Managed extensions before the inventory catches up.
  *
- * Profiles are shown for inspection. Whatever enforcement arrives later will be
- * machine-wide (Chrome's enterprise policy applies to every profile on the PC),
- * so the profile list answers "what does each profile have", not "which profile
- * to change".
+ * Profiles are shown for inspection. Enforcement is machine-wide (Chrome's
+ * enterprise policy applies to every profile on the PC), so the profile list
+ * answers "what does each profile have", not "which profile to change".
  */
 export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string; onClose: () => void }) {
   const { hasPermission } = useAuth()
   const canRefresh = hasPermission('device.refresh_inventory')
+  // Viewing rules rides the page's chrome view permission; every mutating
+  // control below is gated on this and hidden without it. The server re-checks.
+  const canManage = hasPermission('chrome.manage')
 
   const [detail, setDetail] = useState<ChromeDeviceDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -65,6 +94,10 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
   const [extensions, setExtensions] = useState<Record<string, ChromeExtensionRow[]>>({})
   const [extensionsError, setExtensionsError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [rules, setRules] = useState<ChromeExtensionRule[] | null>(null)
+  const [rulesError, setRulesError] = useState<string | null>(null)
+  const [ruleBusy, setRuleBusy] = useState(false)
+  const [confirmRemove, setConfirmRemove] = useState<{ extensionId: string; name: string | null } | null>(null)
 
   const load = useCallback(async () => {
     setError(null)
@@ -78,7 +111,30 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
     }
   }, [deviceId])
 
-  // A new device is a new workspace: nothing from the previous one carries over.
+  const loadRules = useCallback(async () => {
+    try {
+      setRules([...(await getChromeExtensionRules(deviceId))].sort(compareRules))
+      setRulesError(null)
+    } catch {
+      setRulesError('The extension rules for this device could not be loaded.')
+    }
+  }, [deviceId])
+
+  // Rule mutations settle through their queued task; once the device has
+  // answered, re-read the rules (and the detail, whose refresh flag may have
+  // moved). The inventory itself only changes on the device's next snapshot,
+  // which is why the rules — not the extension table — are read back here.
+  const onTaskSettled = useCallback(async () => {
+    await Promise.all([load(), loadRules()])
+  }, [load, loadRules])
+
+  const { tracked, track, dismiss } = useTaskTracker(deviceId, !(detail?.isOnline ?? false), onTaskSettled)
+  const trackedRef = useRef(tracked)
+  trackedRef.current = tracked
+
+  // A new device is a new workspace: nothing from the previous one carries
+  // over, task banners included — a task from the old device would otherwise
+  // sit "Queued" forever, polled against a device that never had it.
   useEffect(() => {
     setLoading(true)
     setDetail(null)
@@ -86,8 +142,70 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
     setExtensions({})
     setExtensionsError(null)
     setNotice(null)
+    setRules(null)
+    setRulesError(null)
+    setConfirmRemove(null)
+    trackedRef.current.forEach((t) => dismiss(t.taskId))
     void load()
-  }, [deviceId, load])
+    void loadRules()
+  }, [deviceId, load, loadRules, dismiss])
+
+  /**
+   * Sets one extension's rule and follows the queued task. Returns whether the
+   * server accepted it, so the force-install form keeps its input on a refusal
+   * instead of making the operator retype a 32-character ID.
+   */
+  const applyRule = useCallback(
+    async (extensionId: string, mode: ChromeExtensionRuleMode, name: string | null): Promise<boolean> => {
+      setRuleBusy(true)
+      setError(null)
+      try {
+        const { taskId } = await setChromeExtensionRule(deviceId, extensionId, mode, name?.trim() || undefined)
+        track(taskId, ruleActionLabel(mode, name, extensionId))
+        await loadRules()
+        return true
+      } catch (e) {
+        // 409 problem+json when the agent is too old for extension control;
+        // its detail says which version is needed better than a guess here.
+        setError(e instanceof ApiError && e.detail ? e.detail : 'The extension rule could not be queued.')
+        return false
+      } finally {
+        setRuleBusy(false)
+      }
+    },
+    [deviceId, track, loadRules],
+  )
+
+  const clearRule = useCallback(
+    async (extensionId: string, name: string | null) => {
+      setRuleBusy(true)
+      setError(null)
+      try {
+        const { taskId } = await deleteChromeExtensionRule(deviceId, extensionId)
+        track(taskId, clearRuleLabel(name, extensionId))
+        await loadRules()
+      } catch (e) {
+        setError(e instanceof ApiError && e.detail ? e.detail : 'The extension rule could not be cleared.')
+      } finally {
+        setRuleBusy(false)
+      }
+    },
+    [deviceId, track, loadRules],
+  )
+
+  /** One entry point for every per-extension menu; Remove confirms first. */
+  const onRuleAction = useCallback(
+    (action: ChromeExtensionRuleAction, target: { extensionId: string; name: string | null }) => {
+      if (action === 'remove') {
+        setConfirmRemove(target)
+      } else if (action === 'clear') {
+        void clearRule(target.extensionId, target.name)
+      } else {
+        void applyRule(target.extensionId, ruleModeForAction(action), target.name)
+      }
+    },
+    [applyRule, clearRule],
+  )
 
   // While a refresh is pending the agent uploads within a heartbeat or two, so
   // the workspace re-reads every 10 seconds until the new snapshot lands and
@@ -194,6 +312,8 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
         </div>
       )}
 
+      <TaskProgress tasks={tracked} onDismiss={dismiss} />
+
       {loading && <p className="muted">Loading Chrome details…</p>}
 
       {detail && (
@@ -222,6 +342,10 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
               onSelect={setSelectedProfileId}
               extensions={selectedProfileId ? (extensions[selectedProfileId] ?? null) : null}
               extensionsError={extensionsError}
+              rules={rules}
+              canManage={canManage}
+              ruleBusy={ruleBusy}
+              onRuleAction={onRuleAction}
             />
           )}
 
@@ -232,11 +356,35 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
               onSelect={setSelectedProfileId}
               extensions={selectedProfileId ? (extensions[selectedProfileId] ?? null) : null}
               extensionsError={extensionsError}
+              rules={rules}
+              rulesError={rulesError}
+              canManage={canManage}
+              ruleBusy={ruleBusy}
+              onRuleAction={onRuleAction}
+              onForceInstall={(extensionId, name) => applyRule(extensionId, 'ForceInstalled', name)}
+              onRetryRules={() => void loadRules()}
             />
           )}
 
           {tab === 'updates' && <UpdatesTab detail={detail} />}
         </>
+      )}
+
+      {confirmRemove && (
+        <ConfirmDialog
+          title={`Remove ${confirmRemove.name ?? 'this extension'} from this device?`}
+          confirmLabel="Remove extension"
+          onCancel={() => setConfirmRemove(null)}
+          onConfirm={() => {
+            const target = confirmRemove
+            setConfirmRemove(null)
+            void applyRule(target.extensionId, 'Removed', target.name)
+          }}
+        >
+          Chrome uninstalls it from every profile on this device and keeps it out while the rule stands — the device
+          applies the policy on its next check-in, without asking the person using it. Clear the rule later to let it be
+          installed again.
+        </ConfirmDialog>
       )}
     </div>
   )
@@ -340,12 +488,20 @@ function ProfilesTab({
   onSelect,
   extensions,
   extensionsError,
+  rules,
+  canManage,
+  ruleBusy,
+  onRuleAction,
 }: {
   detail: ChromeDeviceDetail
   selectedProfile: ChromeProfileRow | null
   onSelect: (profileId: string) => void
   extensions: ChromeExtensionRow[] | null
   extensionsError: string | null
+  rules: ChromeExtensionRule[] | null
+  canManage: boolean
+  ruleBusy: boolean
+  onRuleAction: (action: ChromeExtensionRuleAction, target: { extensionId: string; name: string | null }) => void
 }) {
   if (!detail.installation) return <NotReported />
   if (detail.profiles.length === 0) {
@@ -373,7 +529,14 @@ function ProfilesTab({
                 </div>
               </div>
             </div>
-            <ExtensionsTable extensions={extensions} error={extensionsError} />
+            <ExtensionsTable
+              extensions={extensions}
+              error={extensionsError}
+              rules={rules}
+              canManage={canManage}
+              ruleBusy={ruleBusy}
+              onRuleAction={onRuleAction}
+            />
           </>
         )}
       </div>
@@ -387,25 +550,39 @@ function ExtensionsTab({
   onSelect,
   extensions,
   extensionsError,
+  rules,
+  rulesError,
+  canManage,
+  ruleBusy,
+  onRuleAction,
+  onForceInstall,
+  onRetryRules,
 }: {
   detail: ChromeDeviceDetail
   selectedProfile: ChromeProfileRow | null
   onSelect: (profileId: string) => void
   extensions: ChromeExtensionRow[] | null
   extensionsError: string | null
+  rules: ChromeExtensionRule[] | null
+  rulesError: string | null
+  canManage: boolean
+  ruleBusy: boolean
+  onRuleAction: (action: ChromeExtensionRuleAction, target: { extensionId: string; name: string | null }) => void
+  onForceInstall: (extensionId: string, name: string | null) => Promise<boolean>
+  onRetryRules: () => void
 }) {
-  if (!detail.installation) return <NotReported />
-  if (detail.profiles.length === 0) {
-    return (
-      <div className="empty-state">
-        <Icon name="software" size={36} strokeWidth={1.25} className="icon" />
-        <div className="title">No extensions</div>
-        <div>Extensions belong to profiles, and this device has reported none.</div>
-      </div>
-    )
-  }
-
-  return (
+  // The inventory needs Chrome reported and a profile; the managed card below
+  // does not. Rules are device-level — a force-install can be queued before the
+  // device has ever reported the Chrome section — so the card always renders.
+  const inventory = !detail.installation ? (
+    <NotReported />
+  ) : detail.profiles.length === 0 ? (
+    <div className="empty-state">
+      <Icon name="software" size={36} strokeWidth={1.25} className="icon" />
+      <div className="title">No extensions</div>
+      <div>Extensions belong to profiles, and this device has reported none.</div>
+    </div>
+  ) : (
     <>
       <div className="toolbar" style={{ marginTop: 12 }}>
         <label className="muted" htmlFor="chrome-profile-select">
@@ -424,12 +601,48 @@ function ExtensionsTab({
           ))}
         </select>
       </div>
-      <ExtensionsTable extensions={extensions} error={extensionsError} />
+      <ExtensionsTable
+        extensions={extensions}
+        error={extensionsError}
+        rules={rules}
+        canManage={canManage}
+        ruleBusy={ruleBusy}
+        onRuleAction={onRuleAction}
+      />
+    </>
+  )
+
+  return (
+    <>
+      {inventory}
+      <ManagedExtensionsCard
+        rules={rules}
+        rulesError={rulesError}
+        canManage={canManage}
+        busy={ruleBusy}
+        onAction={onRuleAction}
+        onForceInstall={onForceInstall}
+        onRetry={onRetryRules}
+      />
     </>
   )
 }
 
-function ExtensionsTable({ extensions, error }: { extensions: ChromeExtensionRow[] | null; error: string | null }) {
+function ExtensionsTable({
+  extensions,
+  error,
+  rules,
+  canManage,
+  ruleBusy,
+  onRuleAction,
+}: {
+  extensions: ChromeExtensionRow[] | null
+  error: string | null
+  rules: ChromeExtensionRule[] | null
+  canManage: boolean
+  ruleBusy: boolean
+  onRuleAction: (action: ChromeExtensionRuleAction, target: { extensionId: string; name: string | null }) => void
+}) {
   // Starts on what Chrome's own extensions menu shows, so the list agrees with
   // the count beside the profile; the rest is one click away, labelled.
   const [showAll, setShowAll] = useState(false)
@@ -477,10 +690,14 @@ function ExtensionsTable({ extensions, error }: { extensions: ChromeExtensionRow
             <th>Status</th>
             <th>Managed</th>
             <th>Source</th>
+            <th>Policy</th>
+            {canManage && <th style={{ textAlign: 'right' }}>Actions</th>}
           </tr>
         </thead>
         <tbody>
-          {rows.map((e) => (
+          {rows.map((e) => {
+            const rule = ruleForExtension(rules, e.extensionId)
+            return (
             <tr key={e.extensionRowId} className={e.isActive ? undefined : 'muted'}>
               <td>
                 <div>{e.name ?? <span className="muted">(unnamed)</span>}</div>
@@ -494,13 +711,224 @@ function ExtensionsTable({ extensions, error }: { extensions: ChromeExtensionRow
                 <span className={`badge ${e.isManaged ? 'ok' : 'neutral'}`}>{e.isManaged ? 'Yes' : 'No'}</span>
               </td>
               <td className={e.isActive ? undefined : 'muted'}>{extensionSourceLabel(e)}</td>
+              <td>
+                {rule ? (
+                  <span className={`badge ${ruleModeTone(rule.mode)}`}>{ruleModeLabel(rule.mode)}</span>
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </td>
+              {canManage && (
+                <td style={{ textAlign: 'right' }}>
+                  <RowActionsMenu
+                    label={`Policy actions for ${e.name ?? e.extensionId}`}
+                    items={extensionRuleMenuItems(rule?.mode ?? null, e.isComponent)}
+                    disabled={ruleBusy}
+                    onSelect={(action) => onRuleAction(action, { extensionId: e.extensionId, name: e.name })}
+                  />
+                </td>
+              )}
             </tr>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>
       )}
     </>
+  )
+}
+
+/**
+ * Every rule on the device — force-installed extensions not yet in any
+ * profile's inventory included — with the same actions as the table above.
+ * This list, not the inventory, is the source of truth for policy state: the
+ * inventory only changes when the device uploads its next snapshot.
+ */
+function ManagedExtensionsCard({
+  rules,
+  rulesError,
+  canManage,
+  busy,
+  onAction,
+  onForceInstall,
+  onRetry,
+}: {
+  rules: ChromeExtensionRule[] | null
+  rulesError: string | null
+  canManage: boolean
+  busy: boolean
+  onAction: (action: ChromeExtensionRuleAction, target: { extensionId: string; name: string | null }) => void
+  onForceInstall: (extensionId: string, name: string | null) => Promise<boolean>
+  onRetry: () => void
+}) {
+  return (
+    <div className="card" style={{ margin: '16px 0 0' }}>
+      <div className="card-header">
+        <div>
+          <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+            Managed extensions
+            {rules && <span className="badge plain neutral">{rules.length}</span>}
+          </h2>
+          <div className="muted">
+            Machine-wide extension policy for this device. A rule takes effect on the device’s next check-in; the
+            extension tables above only change when the device uploads its next inventory, so a fresh rule shows here
+            first.
+          </div>
+        </div>
+      </div>
+
+      {rulesError && (
+        <div className="warn-banner">
+          {rulesError}{' '}
+          <button type="button" className="btn-sm" onClick={onRetry}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {!rules && !rulesError && <p className="muted">Loading extension rules…</p>}
+
+      {rules && rules.length === 0 && (
+        <div className="empty-state">
+          <Icon name="policies" size={36} strokeWidth={1.25} className="icon" />
+          <div className="title">No managed extensions</div>
+          <div>
+            No extension on this device is forced, blocked, allowed or removed by policy.
+            {canManage && ' Set a rule from an extension’s Actions menu, or force-install one below.'}
+          </div>
+        </div>
+      )}
+
+      {rules && rules.length > 0 && (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Extension</th>
+                <th>Policy</th>
+                <th>Updated</th>
+                {canManage && <th style={{ textAlign: 'right' }}>Actions</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map((r) => (
+                <tr key={r.extensionId}>
+                  <td>
+                    <div>{r.displayName ?? <span className="muted">(unnamed)</span>}</div>
+                    <div className="muted" style={{ fontSize: 11.5, fontFamily: 'monospace' }}>{r.extensionId}</div>
+                  </td>
+                  <td>
+                    <span className={`badge ${ruleModeTone(r.mode)}`}>{ruleModeLabel(r.mode)}</span>
+                  </td>
+                  <td className="muted">{formatDateTime(r.updatedAt)}</td>
+                  {canManage && (
+                    <td style={{ textAlign: 'right' }}>
+                      <RowActionsMenu
+                        label={`Policy actions for ${r.displayName ?? r.extensionId}`}
+                        items={extensionRuleMenuItems(r.mode, false)}
+                        disabled={busy}
+                        onSelect={(action) => onAction(action, { extensionId: r.extensionId, name: r.displayName })}
+                      />
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {canManage && <ForceInstallForm busy={busy} onSubmit={onForceInstall} />}
+    </div>
+  )
+}
+
+/**
+ * Force-install by Chrome Web Store ID. The ID is validated here — 32 letters,
+ * a through p — because nothing else can name a Web Store extension, and a typo
+ * caught before the request beats a policy the device can never satisfy. The
+ * fields are cleared only when the server accepted the rule, so a refusal (an
+ * agent too old, say) does not make the operator retype a 32-character ID.
+ */
+function ForceInstallForm({
+  busy,
+  onSubmit,
+}: {
+  busy: boolean
+  onSubmit: (extensionId: string, name: string | null) => Promise<boolean>
+}) {
+  const idFieldId = useId()
+  const nameFieldId = useId()
+  const errorId = useId()
+  const [extensionId, setExtensionId] = useState('')
+  const [name, setName] = useState('')
+  const [fieldError, setFieldError] = useState<string | null>(null)
+
+  async function submit() {
+    const problem = extensionIdError(extensionId)
+    setFieldError(problem)
+    if (problem) return
+    const accepted = await onSubmit(normalizeExtensionId(extensionId), name.trim() ? name.trim() : null)
+    if (accepted) {
+      setExtensionId('')
+      setName('')
+    }
+  }
+
+  return (
+    <div className="action-group">
+      <h3>Force-install an extension</h3>
+      <div className="group-note">
+        Installs it from the Chrome Web Store for every profile on this device and keeps it installed. The ID is the
+        32-character ending of the extension’s Web Store URL.
+      </div>
+      <div className="form-grid">
+        <div className="field">
+          <label className="field-label" htmlFor={idFieldId}>
+            Extension ID
+          </label>
+          <input
+            id={idFieldId}
+            value={extensionId}
+            placeholder="e.g. cjpalhdlnbpafiamejdnhcphjbkeiagm"
+            spellCheck={false}
+            disabled={busy}
+            aria-invalid={fieldError ? true : undefined}
+            aria-describedby={fieldError ? errorId : undefined}
+            onChange={(e) => {
+              setExtensionId(e.target.value)
+              // A message that has appeared clears the moment the input stops
+              // deserving it; it never appears mid-typing.
+              if (fieldError) setFieldError(extensionIdError(e.target.value))
+            }}
+          />
+          {fieldError && (
+            <div className="field-message" id={errorId}>
+              {fieldError}
+            </div>
+          )}
+        </div>
+        <div className="field">
+          <label className="field-label" htmlFor={nameFieldId}>
+            Name <span className="muted">(optional)</span>
+          </label>
+          <input
+            id={nameFieldId}
+            value={name}
+            placeholder="Shown in the list until the device reports it"
+            disabled={busy}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
+      </div>
+      <div className="btn-row">
+        <button type="button" className="btn-primary btn-sm" disabled={busy} onClick={() => void submit()}>
+          <Icon name="download" size={14} />
+          Force-install
+        </button>
+      </div>
+    </div>
   )
 }
 

@@ -782,6 +782,52 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("chrome_extensions", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeExtensionRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<string>("DisplayName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("display_name");
+
+                    b.Property<string>("ExtensionId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("extension_id");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("mode");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_chrome_extension_rules");
+
+                    b.HasIndex("DeviceId", "ExtensionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chrome_extension_rules_device_extension");
+
+                    b.ToTable("chrome_extension_rules", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeInstallation", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4481,6 +4527,16 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_chrome_extensions_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeExtensionRule", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_chrome_extension_rules_devices_device_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Chrome.ChromeInstallation", b =>

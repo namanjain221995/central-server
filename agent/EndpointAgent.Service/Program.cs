@@ -358,6 +358,19 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ScanDriverUpdatesExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.InstallDriverUpdateExecutor>();
 
+            // Chrome extension control. ApplyChromeExtensionPolicy carries the
+            // device's whole managed-extension policy; the writer puts it into the
+            // machine-wide Chrome policy key (HKLM\SOFTWARE\Policies\Google\Chrome,
+            // value ExtensionSettings) and Chrome itself force-installs, blocks,
+            // allows or removes the extensions. Pure registry data through typed
+            // Microsoft.Win32 API -- the agent launches nothing (ADR-0005) -- and
+            // clearing removes only the one value the writer owns, never the key,
+            // where other Chrome policies may live. Registered separately from the
+            // read-only IChromeCollector above, so inventory stays incapable of
+            // enforcement and enforcement incapable of inventory.
+            builder.Services.AddSingleton<IChromeExtensionPolicyWriter, WindowsChromeExtensionPolicyWriter>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ApplyChromeExtensionPolicyExecutor>();
+
             builder.Services.AddHttpClient<IAgentApiClient, AgentApiClient>((serviceProvider, client) =>
                 {
                     var options = serviceProvider.GetRequiredService<IOptions<AgentOptions>>().Value;

@@ -88,6 +88,15 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
 
     public DbSet<Domain.Chrome.ChromeExtension> ChromeExtensions => Set<Domain.Chrome.ChromeExtension>();
 
+    /// <remarks>
+    /// The administrator-declared extension policy, one row per (device,
+    /// extension). The decision, not the observation: unlike the inventory sets
+    /// above, these rows are never replaced by an upload -- they change only when
+    /// an administrator sets or lifts a rule, and every change re-sends the
+    /// device's whole rule set as one <c>ApplyChromeExtensionPolicy</c> task.
+    /// </remarks>
+    public DbSet<Domain.Chrome.ChromeExtensionRule> ChromeExtensionRules => Set<Domain.Chrome.ChromeExtensionRule>();
+
     public DbSet<DeviceBitLockerStatus> DeviceBitLockerStatus => Set<DeviceBitLockerStatus>();
 
     public DbSet<DeviceBitLockerVolume> DeviceBitLockerVolumes => Set<DeviceBitLockerVolume>();

@@ -468,4 +468,49 @@ public static class TaskPayloads
     /// session by id so the agent closes exactly the one an administrator ended.
     /// </summary>
     public sealed record EndLiveChat(Guid SessionId);
+
+    // ---- Chrome extension control ----
+    //
+    // One whole-state task, like ApplyUsbPolicy: every rule the device has travels
+    // in every task, and an extension absent from the payload has no rule. Nothing
+    // here is a secret -- an extension id and a mode name -- so the payload is safe
+    // in the task audit record that DeviceTaskService writes for every queued task.
+
+    /// <summary>
+    /// One rule: what Chrome must do about one extension on this device.
+    /// </summary>
+    /// <param name="ExtensionId">
+    /// Chrome's 32-character identifier (letters a-p). The enforcement key the
+    /// agent writes the policy under; names are never used to match.
+    /// </param>
+    /// <param name="Mode">
+    /// Exactly one of the strings <c>ForceInstalled</c>, <c>Blocked</c>,
+    /// <c>Allowed</c> or <c>Removed</c> -- the names of
+    /// <c>Domain.Chrome.ChromeExtensionRuleMode</c>, written by the server from
+    /// that enum and matched exactly by the agent. A string on the wire for the
+    /// reason <see cref="ServiceAction"/> documents: an ordinal is one reordering
+    /// away from silently meaning something else, and the agent drops any rule
+    /// whose mode is not one of these exact strings.
+    /// </param>
+    public sealed record ChromeExtensionRulePayload(string ExtensionId, string Mode);
+
+    /// <summary>
+    /// The complete Chrome extension policy for one endpoint.
+    /// </summary>
+    /// <remarks>
+    /// Whole-state, not a delta: the agent writes exactly <paramref name="Rules"/>
+    /// into Chrome's <c>ExtensionSettings</c> policy and removes every entry it had
+    /// written that is no longer named. An empty list is therefore a valid and
+    /// meaningful payload -- it clears the platform's extension policy from the
+    /// device -- and it is what lifting the last rule produces.
+    /// </remarks>
+    /// <param name="Rules">Every rule the device has. Absent extension ids have no rule.</param>
+    /// <param name="IssuedAt">
+    /// When the server built this policy. The agent keeps the newest and ignores an
+    /// older one arriving late, so a delayed task cannot resurrect a rule that has
+    /// since been lifted.
+    /// </param>
+    public sealed record ApplyChromeExtensionPolicy(
+        IReadOnlyList<ChromeExtensionRulePayload> Rules,
+        DateTimeOffset IssuedAt);
 }

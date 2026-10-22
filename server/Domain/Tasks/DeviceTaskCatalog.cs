@@ -183,6 +183,18 @@ public static class DeviceTaskCatalog
                 MinimumAgentVersion: "1.22.0"),
             new(DeviceTaskType.EndLiveChat, Permissions.Chat.Start, HighRisk: false, 600,
                 MinimumAgentVersion: "1.22.0"),
+
+            // High-risk because it decides what software runs inside every signed-in
+            // browser session on the machine -- a forced extension reads what every
+            // user of that Chrome reads. An hour of lifetime, longer than the USB
+            // policy's: these rules are not time-boxed, so the policy a laptop picks
+            // up on reconnect is still the right one, while anything older is
+            // re-issued whole by the next rule change anyway (whole-state). Gated on
+            // the agent that has the ExtensionSettings executor: an older one would
+            // fail the task as unknown, which reads exactly like the policy failing
+            // to apply.
+            new(DeviceTaskType.ApplyChromeExtensionPolicy, Permissions.Chrome.Manage, HighRisk: true, 3600,
+                MinimumAgentVersion: "1.23.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

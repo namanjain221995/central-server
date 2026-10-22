@@ -308,4 +308,21 @@ public enum DeviceTaskType
     /// ended and both logs name the same session.
     /// </remarks>
     EndLiveChat = 58,
+
+    /// <summary>
+    /// Apply the complete Chrome extension policy for this device (agent 1.23.0+):
+    /// which extensions are force-installed, blocked, allowed or removed, enforced
+    /// through Chrome's own enterprise <c>ExtensionSettings</c> policy in HKLM.
+    /// </summary>
+    /// <remarks>
+    /// Whole-state, like <see cref="ApplyUsbPolicy"/> and
+    /// <see cref="ApplyLocalAdminElevation"/>: every rule the device has travels in
+    /// every task, and an extension absent from the payload has NO rule -- the agent
+    /// writes exactly the named rules and clears whatever else it had written. That
+    /// makes the task idempotent, makes lifting a rule the absence of an entry
+    /// rather than a second message that could be lost, and lets a re-send repair
+    /// drift. An empty rule list is therefore valid and meaningful: it clears the
+    /// platform's extension policy from the device.
+    /// </remarks>
+    ApplyChromeExtensionPolicy = 59,
 }
