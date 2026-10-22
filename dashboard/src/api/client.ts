@@ -3311,3 +3311,108 @@ export async function startRemoteSupportSession(
 
   return (await response.json()) as RemoteSupportSession
 }
+
+// ---------------------------------------------------------------------------
+// IT Support: Live Chat (Phase 1).
+//
+// An authorized help-desk operator opens a chat with a managed device; the
+// signed-in employee answers in the agent's chat window. Messages are short-
+// polled while a conversation is open, with the highest seq seen so far as the
+// cursor, so each poll returns only what is new.
+//
+// Every message carries who sent it: an 'Admin' (this console), the 'Employee'
+// on the device, or a 'System' note (started, ended). The whole feature is
+// gated on chat.view; starting and sending need chat.start — the gates hide
+// controls, the server enforces each one independently.
+// ---------------------------------------------------------------------------
+
+/** Who sent a chat message. */
+export type ChatSender = 'Admin' | 'Employee' | 'System'
+
+/** A device as Live Chat lists it. `activeSessionId` is null when none is open. */
+export interface ChatDeviceRow {
+  deviceId: string
+  hostname: string
+  displayName: string | null
+  isOnline: boolean
+  lastSeenAt: string | null
+  /** The interactive user the agent last reported, or null when none is signed in. */
+  loggedOnUser: string | null
+  /** The open session for this device, if any — what "Open chat" reopens. */
+  activeSessionId: string | null
+}
+
+/** One line of a conversation. `seq` is the monotonic cursor the poll advances on. */
+export interface ChatMessage {
+  seq: number
+  sender: ChatSender
+  senderDisplay: string
+  body: string
+  sentAt: string
+}
+
+/** A page of a conversation. `ended` tells the client to stop polling. */
+export interface ChatTranscript {
+  sessionId: string
+  status: string
+  ended: boolean
+  messages: ChatMessage[]
+}
+
+/** What the server accepted when a chat was started. */
+export interface ChatStarted {
+  sessionId: string
+  status: string
+}
+
+/** The acknowledgement a sent message gets; the body is read back by the next poll. */
+export interface ChatMessageAck {
+  seq: number
+  sentAt: string
+}
+
+/** The fleet as Live Chat sees it. Mirrors getRemoteSupportDevices: one authorized read. */
+export function getChatDevices(): Promise<ChatDeviceRow[]> {
+  return request<ChatDeviceRow[]>('/admin/v1/chat/devices')
+}
+
+/**
+ * Opens a chat session with a device. POST with no body, like the other device
+ * actions. 409 (problem+json) when the agent is too old or a session is already
+ * active, whose `detail` the caller surfaces rather than guessing.
+ */
+export function startChat(deviceId: string): Promise<ChatStarted> {
+  return request<ChatStarted>(`/admin/v1/devices/${encodeURIComponent(deviceId)}/chat`, {
+    method: 'POST',
+  })
+}
+
+/**
+ * Reads the conversation after a cursor. `after` is the highest seq already
+ * shown, so an idle poll comes back empty and a busy one returns only the new
+ * lines.
+ */
+export function getChatMessages(sessionId: string, after: number): Promise<ChatTranscript> {
+  return request<ChatTranscript>(
+    `/admin/v1/chat/${encodeURIComponent(sessionId)}/messages?after=${after}`,
+  )
+}
+
+/**
+ * Sends one message from the operator. The body goes as a JSON `{body}` payload;
+ * the shared helper labels it application/json, without which the API answers
+ * 415 before the endpoint runs. The message itself is read back by the next poll.
+ */
+export function sendChatMessage(sessionId: string, body: string): Promise<ChatMessageAck> {
+  return request<ChatMessageAck>(`/admin/v1/chat/${encodeURIComponent(sessionId)}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  })
+}
+
+/** Ends a chat session. After this the transcript reads `ended` and polling stops. */
+export function endChat(sessionId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(`/admin/v1/chat/${encodeURIComponent(sessionId)}/end`, {
+    method: 'POST',
+  })
+}

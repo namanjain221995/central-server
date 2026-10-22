@@ -135,5 +135,16 @@ public static class AgentProtocol
         public const string CatalogIconSuffix = "/icon";
 
         public const string CatalogInstallSuffix = "/install";
+
+        /// <summary>
+        /// Live IT-support chat for this device: the agent reads its own session's
+        /// messages from <c>/chat/{sessionId}/messages</c> (GET) and posts an
+        /// employee message there (POST). Both are scoped to the authenticated
+        /// device, so a credential reaches only its own session.
+        /// </summary>
+        public const string Chat = "/chat";
+
+        /// <summary>Suffix for a chat session's message collection, under <see cref="Chat"/>/{sessionId}.</summary>
+        public const string ChatMessagesSuffix = "/messages";
     }
 }

@@ -103,6 +103,10 @@ const NAV_SECTIONS: NavSection[] = [
       // Its own group: it is neither estate, access nor configuration — it is a
       // live, audited action taken on one machine at a time.
       { to: '/remote-support', label: 'IT Remote Support', icon: 'remote' },
+      // Beside IT Remote Support: a live, audited conversation with the signed-in
+      // employee on one device. No chat/message glyph exists, so it reuses the
+      // inbox icon rather than inventing one.
+      { to: '/live-chat', label: 'Live Chat', icon: 'inbox' },
     ],
   },
   {

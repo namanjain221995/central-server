@@ -15,6 +15,7 @@ import { RestartManagementPage } from './pages/RestartManagementPage'
 import { ScreenLocksPage } from './pages/ScreenLocksPage'
 import { AnnouncementsPage } from './pages/AnnouncementsPage'
 import { RemoteSupportPage } from './pages/RemoteSupportPage'
+import { LiveChatPage } from './pages/LiveChatPage'
 import { SoftwarePage } from './pages/SoftwarePage'
 import { CompanyAppsPage } from './pages/CompanyAppsPage'
 import { UpdatesPage } from './pages/UpdatesPage'
@@ -107,6 +108,7 @@ function AuthGate() {
           <Route path="screen-locks" element={<ScreenLocksPage />} />
           <Route path="announcements" element={<AnnouncementsPage />} />
           <Route path="remote-support" element={<RemoteSupportPage />} />
+          <Route path="live-chat" element={<LiveChatPage />} />
           <Route path="updates" element={<UpdatesPage />} />
           <Route path="driver-updates" element={<WindowsDriverUpdatesPage />} />
           <Route path="agent-releases" element={<AgentReleasesPage />} />

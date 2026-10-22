@@ -101,12 +101,20 @@ public sealed record HeartbeatRequest(
 /// or none has ever been received). The agent responds by POSTing to the
 /// inventory endpoint; the server never connects to the agent.
 /// </param>
+/// <param name="ChatActive">
+/// True when this device has an open live-chat session, so an agent that supports
+/// chat should surface its window and poll the chat endpoints. The server also
+/// shortens <see cref="HeartbeatIntervalSeconds"/> while a chat is open, so the
+/// conversation feels close to live without a long-poll. Defaulted to false and
+/// last, so an older agent ignores it and an older server simply never sets it.
+/// </param>
 public sealed record HeartbeatResponse(
     DateTimeOffset ServerTime,
     int HeartbeatIntervalSeconds,
     bool InventoryRequested = false,
     bool TasksPending = false,
-    bool PoliciesPending = false);
+    bool PoliciesPending = false,
+    bool ChatActive = false);
 
 /// <summary>
 /// An unenrolled machine asking to be managed.

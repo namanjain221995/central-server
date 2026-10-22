@@ -162,6 +162,10 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     public DbSet<Domain.RemoteSupport.RemoteSupportEnrollment> RemoteSupportEnrollments =>
         Set<Domain.RemoteSupport.RemoteSupportEnrollment>();
 
+    public DbSet<Domain.Chat.ChatSession> ChatSessions => Set<Domain.Chat.ChatSession>();
+
+    public DbSet<Domain.Chat.ChatMessage> ChatMessages => Set<Domain.Chat.ChatMessage>();
+
     public DbSet<EnrollmentToken> EnrollmentTokens => Set<EnrollmentToken>();
 
     public DbSet<AgentCredential> AgentCredentials => Set<AgentCredential>();

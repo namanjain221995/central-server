@@ -276,6 +276,49 @@ public sealed class SystemRoleTests
     }
 
     /// <summary>
+    /// Live chat is first-line support, so unlike remote support it reaches Helpdesk:
+    /// Super Administrator, IT Administrator AND Helpdesk may start a chat and send
+    /// messages, while Auditor -- which mutates nothing -- does not. Both chat
+    /// permissions are low-risk (a chat window takes nothing over).
+    /// </summary>
+    /// <remarks>
+    /// The whole-catalogue assertion is the one that matters over time: it fails the
+    /// moment somebody adds a chat permission without deciding, here, which roles hold
+    /// it, rather than letting it inherit a default.
+    /// </remarks>
+    [Fact]
+    public void Live_chat_is_a_support_capability_held_by_the_support_roles()
+    {
+        var catalogue = Permissions.All.ToDictionary(p => p.Key, StringComparer.Ordinal);
+
+        catalogue[Permissions.Chat.View].HighRisk.ShouldBeFalse();
+        catalogue[Permissions.Chat.Start].HighRisk.ShouldBeFalse();
+
+        foreach (var permission in new[] { Permissions.Chat.View, Permissions.Chat.Start })
+        {
+            var holders = SystemRoles.All
+                .Where(r => r.Value.PermissionKeys.Contains(permission, StringComparer.Ordinal))
+                .Select(r => r.Key)
+                .ToArray();
+
+            holders.ShouldBe(
+                [SystemRoles.SuperAdministrator, SystemRoles.ItAdministrator, SystemRoles.Helpdesk],
+                ignoreOrder: true,
+                customMessage: $"'{permission}' is a support capability for the support roles, never Auditor");
+        }
+
+        SystemRoles.All[SystemRoles.Auditor].PermissionKeys.ShouldNotContain(Permissions.Chat.View);
+        SystemRoles.All[SystemRoles.Auditor].PermissionKeys.ShouldNotContain(Permissions.Chat.Start);
+
+        Permissions.AllKeys
+            .Where(k => k.StartsWith("chat.", StringComparison.Ordinal))
+            .ShouldBe(
+                [Permissions.Chat.View, Permissions.Chat.Start],
+                ignoreOrder: true,
+                customMessage: "a chat permission was added without deciding which roles hold it");
+    }
+
+    /// <summary>
     /// Only IT Administrator and Super Administrator may open USB storage access.
     /// </summary>
     /// <remarks>

@@ -281,6 +281,7 @@ public sealed class Program
             app.MapAnnouncementEndpoints();
             app.MapScreenLockEndpoints();
             app.MapRemoteSupportEndpoints();
+            app.MapChatEndpoints();
             app.MapTaskEndpoints();
             app.MapAgentReleaseEndpoints();
             app.MapUsbEndpoints();
