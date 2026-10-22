@@ -358,6 +358,19 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ScanDriverUpdatesExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.InstallDriverUpdateExecutor>();
 
+            // Windows Update SECURITY/QUALITY updates: the same WUA pipeline as the
+            // driver updates above with the search criteria flipped to
+            // Type='Software'. One service drives the WUA COM API in-process (an
+            // online scan, then a download+install of the selected updates) and WUA
+            // does the work -- the agent launches nothing (ADR-0005). The scan
+            // executor reports what is offered (KB ids and MSRC severity included);
+            // the install executor applies the selected updates and carries the
+            // reboot-required flag back as success (the InstallDriverUpdate
+            // convention).
+            builder.Services.AddSingleton<ISecurityUpdateService, WindowsSecurityUpdateService>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ScanSecurityUpdatesExecutor>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.InstallSecurityUpdateExecutor>();
+
             // Chrome extension control. ApplyChromeExtensionPolicy carries the
             // device's whole managed-extension policy; the writer puts it into the
             // machine-wide Chrome policy key (HKLM\SOFTWARE\Policies\Google\Chrome,

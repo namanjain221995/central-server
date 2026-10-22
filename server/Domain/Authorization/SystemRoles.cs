@@ -61,6 +61,12 @@ public static class SystemRoles
         // code on a machine, which is a change-control decision rather than a support
         // action -- and Helpdesk can already see the fault and escalate it.
         Permissions.Driver.Manage,
+        Permissions.Update.View,
+        // Deliberately not granted to Helpdesk, mirroring the driver split. Patching
+        // the operating system -- and the reboot that usually follows -- is a
+        // change-control decision rather than a support action, and Helpdesk can
+        // already see what is missing and escalate it.
+        Permissions.Update.Manage,
         Permissions.BitLocker.View,
         // Deliberately not granted to Helpdesk. A recovery password unlocks a
         // machine's disk outright; filing one and reading one back are both
@@ -131,6 +137,10 @@ public static class SystemRoles
         // permission grants nothing but reading. Changing a driver will be a
         // separate permission that Helpdesk does not get.
         Permissions.Driver.View,
+        // Which security updates a machine is missing is first-line diagnosis, and
+        // the permission grants nothing but reading and asking for a re-scan.
+        // Installing them is update.manage, which Helpdesk does not hold.
+        Permissions.Update.View,
         // Knowing whether a laptop is encrypted is a support question as often as a
         // security one. Reading it grants nothing: encrypting, suspending and
         // decrypting are separate permissions Helpdesk does not hold.
@@ -162,6 +172,10 @@ public static class SystemRoles
         // a data path, and Auditor mutates nothing.
         Permissions.Usb.View,
         Permissions.Driver.View,
+        // Read-only, like everything else Auditor holds: which machines are missing
+        // which security updates is exactly the kind of fact an audit asks for.
+        // update.manage is deliberately absent, as every mutating permission is.
+        Permissions.Update.View,
         Permissions.BitLocker.View,
         Permissions.LocalUser.View,
         Permissions.Group.View,

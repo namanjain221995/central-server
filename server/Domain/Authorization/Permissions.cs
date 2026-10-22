@@ -83,6 +83,30 @@ public static class Permissions
     }
 
     /// <summary>
+    /// Windows Update security and quality updates on managed endpoints. Split from
+    /// <see cref="Driver"/> because patching the operating system and changing its
+    /// kernel drivers are different decisions, even though both ride the Windows
+    /// Update Agent -- and from <see cref="Software"/> because an OS update is not a
+    /// package this platform hosts.
+    /// </summary>
+    public static class Update
+    {
+        /// <summary>See each device's pending security updates and trigger scans.</summary>
+        public const string View = "update.view";
+
+        /// <summary>
+        /// Install pending security/quality updates on endpoints.
+        /// </summary>
+        /// <remarks>
+        /// High risk, and separate from <see cref="View"/>, because it rewrites the
+        /// operating system itself and usually ends in a reboot. Reading what a
+        /// machine is missing is a support activity; deciding when it gets patched
+        /// is not.
+        /// </remarks>
+        public const string Manage = "update.manage";
+    }
+
+    /// <summary>
     /// BitLocker volume encryption. Only the read half exists so far: encrypting,
     /// suspending and above all decrypting a volume are separate decisions that will
     /// arrive as their own permissions rather than being folded into this one.
@@ -282,6 +306,9 @@ public static class Permissions
 
         new(Driver.View, "Drivers", "View device drivers and driver health", HighRisk: false),
         new(Driver.Manage, "Drivers", "Approve driver packages and install them on devices", HighRisk: true),
+
+        new(Update.View, "Updates", "View pending Windows security updates and trigger scans", HighRisk: false),
+        new(Update.Manage, "Updates", "Install Windows security updates on devices", HighRisk: true),
 
         new(BitLocker.View, "BitLocker", "View volume encryption state and readiness", HighRisk: false),
         new(BitLocker.RecoveryKeyManage, "BitLocker",

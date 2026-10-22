@@ -331,6 +331,11 @@ public sealed class DeviceTaskService(
             await ApplyDriverUpdateScanAsync(deviceId, resultJson, now, cancellationToken);
         }
 
+        if (task.Type == DeviceTaskType.ScanSecurityUpdates && succeeded)
+        {
+            await ApplySecurityUpdateScanAsync(deviceId, resultJson, now, cancellationToken);
+        }
+
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
@@ -491,6 +496,104 @@ public sealed class DeviceTaskService(
 
         _logger.LogInformation(
             "Driver-update scan for device {DeviceId}: {Count} update(s) pending.", deviceId, reported.Count);
+    }
+
+    /// <summary>Most pending security updates one scan may report, to bound a hostile result.</summary>
+    private const int MaxSecurityUpdatesPerScan = 500;
+
+    /// <summary>
+    /// A security-update scan succeeded, so the device's pending-update list is now
+    /// whatever the scan reported. Replaced wholesale, like a driver or software
+    /// inventory section: a scan that found nothing clears the rows rather than
+    /// leaving a stale list that reads as "still pending".
+    /// </summary>
+    /// <remarks>
+    /// The result is agent-supplied, so nothing in it is trusted: an item with no
+    /// update id or title is dropped, string lengths are bounded to what the store
+    /// accepts, the first of any duplicate update id wins, and the list is capped. A
+    /// result that will not parse leaves the previous list untouched and is logged,
+    /// not thrown -- a malformed scan should not fail the task completion that
+    /// carried it.
+    /// </remarks>
+    private async Task ApplySecurityUpdateScanAsync(
+        Guid deviceId, string? resultJson, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        SecurityUpdateScanReport? report;
+        try
+        {
+            report = string.IsNullOrWhiteSpace(resultJson)
+                ? null
+                : JsonSerializer.Deserialize<SecurityUpdateScanReport>(resultJson, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            _logger.LogWarning(
+                "Security-update scan for device {DeviceId} returned an unreadable result; pending list left unchanged.",
+                deviceId);
+            return;
+        }
+
+        if (report is null)
+        {
+            _logger.LogWarning(
+                "Security-update scan for device {DeviceId} returned no result body; pending list left unchanged.",
+                deviceId);
+            return;
+        }
+
+        var existing = await _dbContext.DeviceSecurityUpdates
+            .Where(u => u.DeviceId == deviceId)
+            .ToListAsync(cancellationToken);
+        _dbContext.DeviceSecurityUpdates.RemoveRange(existing);
+
+        var collectedAt = report.ScannedAt ?? now;
+        var reported = new List<DeviceSecurityUpdate>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in report.Updates ?? [])
+        {
+            if (reported.Count >= MaxSecurityUpdatesPerScan)
+            {
+                _logger.LogWarning(
+                    "Security-update scan for device {DeviceId} reported more than {Max} updates; the rest were dropped.",
+                    deviceId, MaxSecurityUpdatesPerScan);
+                break;
+            }
+
+            // The update id is Windows Update's identity for the update and is a
+            // GUID, so an absent one or one too long to be a GUID is a malformed
+            // item, not an update. A missing title likewise -- there is nothing to
+            // show the operator.
+            if (string.IsNullOrWhiteSpace(item.UpdateId) || item.UpdateId.Length > 64
+                || string.IsNullOrWhiteSpace(item.Title))
+            {
+                continue;
+            }
+
+            // A repeat of an update id is a malformed result rather than two
+            // updates; keep the first and drop the rest, as the inventory ingestion
+            // does with a repeated device instance id.
+            if (!seen.Add(item.UpdateId))
+            {
+                continue;
+            }
+
+            reported.Add(new DeviceSecurityUpdate(
+                deviceId,
+                item.UpdateId,
+                item.Revision,
+                Truncate(item.Title, 512)!,
+                Truncate(item.KbIds, 128),
+                Truncate(item.Severity, 32),
+                item.IsPreview,
+                item.SizeBytes,
+                collectedAt));
+        }
+
+        _dbContext.DeviceSecurityUpdates.AddRange(reported);
+
+        _logger.LogInformation(
+            "Security-update scan for device {DeviceId}: {Count} update(s) pending.", deviceId, reported.Count);
     }
 
     /// <summary>Caps a string to <paramref name="max"/> characters, preserving null.</summary>

@@ -20,6 +20,7 @@ import { SoftwarePage } from './pages/SoftwarePage'
 import { CompanyAppsPage } from './pages/CompanyAppsPage'
 import { UpdatesPage } from './pages/UpdatesPage'
 import { WindowsDriverUpdatesPage } from './pages/WindowsDriverUpdatesPage'
+import { SecurityUpdatesPage } from './pages/SecurityUpdatesPage'
 import { LoginPage } from './pages/LoginPage'
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage'
 import { MfaEnrolmentPage } from './pages/MfaEnrolmentPage'
@@ -111,6 +112,7 @@ function AuthGate() {
           <Route path="live-chat" element={<LiveChatPage />} />
           <Route path="updates" element={<UpdatesPage />} />
           <Route path="driver-updates" element={<WindowsDriverUpdatesPage />} />
+          <Route path="security-updates" element={<SecurityUpdatesPage />} />
           <Route path="agent-releases" element={<AgentReleasesPage />} />
           <Route path="security" element={<SecurityPage />} />
           <Route path="usb-access" element={<UsbAccessPage />} />

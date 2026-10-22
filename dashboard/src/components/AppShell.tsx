@@ -90,6 +90,10 @@ const NAV_SECTIONS: NavSection[] = [
       // one acts — scanning for and installing the driver updates Windows
       // Update offers, with a reboot handoff when one is needed.
       { to: '/driver-updates', label: 'Driver Updates', icon: 'settings' },
+      // Beside Driver Updates: the same scan-and-install workflow for the
+      // security (and quality) updates Windows Update offers, with KB and
+      // severity shown per update and the same reboot handoff.
+      { to: '/security-updates', label: 'Security Updates', icon: 'security' },
       // /agent-releases, not /agent: nginx proxies the /agent/ prefix to the
       // Agent API for enrolled endpoints, so an /agent SPA route breaks on
       // refresh and trailing slashes by landing in the API's namespace.
