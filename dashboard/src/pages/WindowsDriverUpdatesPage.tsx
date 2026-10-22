@@ -20,7 +20,12 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { Icon } from '../components/Icon'
 import { TaskProgress } from '../components/TaskProgress'
 import { useTaskTracker } from '../components/useTaskTracker'
-import { formatUpdateSize, installRebootRequired, nonPreviewUpdateIds } from './driverUpdatesView'
+import {
+  formatUpdateSize,
+  installRebootRequired,
+  nonPreviewUpdateIds,
+  shouldAutoRescanAfterInstall,
+} from './driverUpdatesView'
 
 /**
  * Windows Driver Updates.
@@ -356,6 +361,14 @@ function DeviceDriverUpdatesPanel({
   // durable source; this is the immediate one, before the detail catches up.
   const [installReboot, setInstallReboot] = useState(false)
   const lastInstallTaskId = useRef<string | null>(null)
+  // The install task we have already queued an automatic re-scan for, so an
+  // install success triggers exactly one scan and that scan — which settles
+  // through onRefreshed like any other task — can never cascade into another.
+  const autoRescannedInstallTaskId = useRef<string | null>(null)
+  // track() comes from the hook below, which in turn takes onRefreshed, so the
+  // callback reaches it through a ref to avoid the declaration cycle (the same
+  // shape useTaskTracker itself uses for onRefreshed).
+  const trackRef = useRef<((taskId: string, label: string) => void) | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -380,13 +393,26 @@ function DeviceDriverUpdatesPanel({
     try {
       const tasks = await getDeviceTasks(device.deviceId)
       const t = tasks.find((x) => x.id === lastInstallTaskId.current)
-      if (t && t.status === 'Succeeded') setInstallReboot(installRebootRequired(t.resultJson ?? null))
+      if (t && t.status === 'Succeeded') {
+        setInstallReboot(installRebootRequired(t.resultJson ?? null))
+        // The pending list is rebuilt only by a scan, so a successful install
+        // would otherwise keep showing the just-installed updates as pending
+        // until someone clicks "Scan now". Re-scan once (guarded to fire once
+        // per install) so they drop off on their own; a scan never triggers an
+        // install, so this cannot loop.
+        if (shouldAutoRescanAfterInstall(t, autoRescannedInstallTaskId.current)) {
+          autoRescannedInstallTaskId.current = t.id
+          const { taskId } = await scanDriverUpdates(device.deviceId)
+          trackRef.current?.(taskId, 'Re-scan after install')
+        }
+      }
     } catch {
       // The detail's rebootPending still covers this; a failed read is not fatal.
     }
   }, [load, onChanged, device.deviceId])
 
   const { tracked, track, dismiss } = useTaskTracker(device.deviceId, !device.isOnline, onRefreshed)
+  trackRef.current = track
 
   useEffect(() => {
     void load()
