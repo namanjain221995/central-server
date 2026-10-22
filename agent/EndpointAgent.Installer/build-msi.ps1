@@ -31,7 +31,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ServerBaseUrl,
 
-    [string]$Version = '1.21.1',
+    [string]$Version = '1.22.0',
 
     [switch]$SkipPublish
 )
@@ -98,6 +98,15 @@ if (-not $SkipPublish) {
     & dotnet publish (Join-Path $repoRoot 'agent\EndpointAgent.LockScreen\EndpointAgent.LockScreen.csproj') `
         -c Release -p:PublishAgent=true -p:Version=$Version -o $publishDir --nologo
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish (lock overlay) failed with exit code $LASTEXITCODE." }
+
+    # The live-chat window joins the same folder, same runtime identifier and
+    # self-contained runtime, so it reuses the runtime the service published and the
+    # desktop runtime the portal/overlay added rather than shipping a fourth set.
+    # AgentBinaries.wxs globs the folder, so it is packaged without being listed.
+    Write-Host "Publishing live-chat window into the same folder..." -ForegroundColor Cyan
+    & dotnet publish (Join-Path $repoRoot 'agent\EndpointAgent.LiveChat\EndpointAgent.LiveChat.csproj') `
+        -c Release -p:PublishAgent=true -p:Version=$Version -o $publishDir --nologo
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish (live-chat window) failed with exit code $LASTEXITCODE." }
 }
 
 $exe = Join-Path $publishDir 'EndpointAgent.Service.exe'
@@ -111,6 +120,9 @@ if (-not (Test-Path $portal)) { throw "Publish output is missing $portal." }
 
 $overlay = Join-Path $publishDir 'EndpointAgent.LockScreen.exe'
 if (-not (Test-Path $overlay)) { throw "Publish output is missing $overlay." }
+
+$chat = Join-Path $publishDir 'EndpointAgent.LiveChat.exe'
+if (-not (Test-Path $chat)) { throw "Publish output is missing $chat." }
 Write-Host ("  published {0} files, {1:N0} MB" -f `
     (Get-ChildItem $publishDir -Recurse -File).Count, `
     ((Get-ChildItem $publishDir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB))
