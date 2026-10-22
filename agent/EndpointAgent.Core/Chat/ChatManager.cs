@@ -58,7 +58,12 @@ public interface ILiveChatPipeHandler
     /// </summary>
     Task<bool> RelayEmployeeMessageAsync(string body, CancellationToken cancellationToken = default);
 
-    /// <summary>The window reported it is closing; the chat is ended on this device.</summary>
+    /// <summary>
+    /// The window reported the person closed it. The chat stays OPEN on this
+    /// device -- a dismissal, not an end -- and the window is shown again when the
+    /// administrator's next message arrives. Only the administrator or the server
+    /// ends a chat.
+    /// </summary>
     void ReportClosed();
 }
 
@@ -90,6 +95,9 @@ public sealed class ChatManager : BackgroundService, ILiveChatPipeHandler
     /// <summary>How often the open chat asks the server for new messages. Near-live without a long-poll.</summary>
     internal static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(1500);
 
+    /// <summary>The server contract's sender name for an administrator's line.</summary>
+    private const string AdminSender = "Admin";
+
     private readonly ILiveChatWindowLauncher _launcher;
     private readonly IAgentApiClient _apiClient;
     private readonly IDeviceCredentialStore _credentialStore;
@@ -100,6 +108,14 @@ public sealed class ChatManager : BackgroundService, ILiveChatPipeHandler
     // All written and read under _gate. The window and the poll loop both touch them.
     private ChatSessionState? _current;
     private bool _active;
+
+    /// <summary>
+    /// The person closed the window while the chat stayed open. A dismissal is
+    /// respected -- the window is not pushed straight back -- until the
+    /// administrator sends another message, which brings it back.
+    /// </summary>
+    private bool _dismissed;
+
     private int _serverCursor;
     private readonly List<ChatMessageDto> _messages = [];
 
@@ -141,12 +157,16 @@ public sealed class ChatManager : BackgroundService, ILiveChatPipeHandler
         {
             if (_active && _current is { } existing && existing.SessionId == sessionId)
             {
-                // The same chat delivered twice. Keep the transcript already gathered.
+                // The same chat delivered twice. Keep the transcript already gathered,
+                // but honour the instruction: if the person had closed the window, a
+                // re-delivered start shows it again.
+                _dismissed = false;
             }
             else
             {
                 _current = new ChatSessionState(sessionId, adminDisplay);
                 _active = true;
+                _dismissed = false;
                 _serverCursor = 0;
                 _messages.Clear();
             }
@@ -235,11 +255,22 @@ public sealed class ChatManager : BackgroundService, ILiveChatPipeHandler
     /// <inheritdoc />
     public void ReportClosed()
     {
-        var outcome = EndInternal();
-        if (outcome.WasOpen)
+        Guid sessionId;
+        lock (_gate)
         {
-            _logger.LogInformation("Live chat {SessionId} closed on the device: the window reported it was closed.", outcome.EndedSessionId);
+            if (!_active || _current is not { } session)
+            {
+                return;
+            }
+
+            sessionId = session.SessionId;
+            _dismissed = true;
         }
+
+        _logger.LogInformation(
+            "Live chat {SessionId}: the person closed the window. The chat stays open on this device; "
+            + "the window returns when the administrator sends another message.",
+            sessionId);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -265,8 +296,15 @@ public sealed class ChatManager : BackgroundService, ILiveChatPipeHandler
         while (await timer.WaitForNextTickAsync(stoppingToken));
     }
 
-    /// <summary>One poll pass: fetch new messages for the open chat, buffer them, and close on a server-side end.</summary>
-    private async Task PollServerOnceAsync(CancellationToken stoppingToken)
+    /// <summary>
+    /// One poll pass: fetch new messages for the open chat, buffer them, close on a
+    /// server-side end -- and keep the window where it belongs. While the chat is
+    /// open and not dismissed, every pass re-ensures the window exists (idempotent),
+    /// so a window that died for any reason comes back within a pass. A dismissed
+    /// window is respected until a new ADMIN message arrives, which re-shows it.
+    /// Internal so tests can drive a pass directly.
+    /// </summary>
+    internal async Task PollServerOnceAsync(CancellationToken stoppingToken)
     {
         Guid sessionId;
         int cursor;
@@ -307,6 +345,9 @@ public sealed class ChatManager : BackgroundService, ILiveChatPipeHandler
             return;
         }
 
+        var newAdminMessage = false;
+        var showWindow = false;
+        var reshown = false;
         lock (_gate)
         {
             if (!_active || _current is not { } session || session.SessionId != sessionId)
@@ -320,7 +361,40 @@ public sealed class ChatManager : BackgroundService, ILiveChatPipeHandler
                 {
                     _messages.Add(message);
                     _serverCursor = message.Seq;
+                    if (string.Equals(message.Sender, AdminSender, StringComparison.Ordinal))
+                    {
+                        newAdminMessage = true;
+                    }
                 }
+            }
+
+            if (_dismissed)
+            {
+                // The person closed the window; leave them be until the
+                // administrator says something new, which brings it back.
+                if (newAdminMessage)
+                {
+                    _dismissed = false;
+                    showWindow = true;
+                    reshown = true;
+                }
+            }
+            else
+            {
+                // Self-heal: the window should be on screen for the whole open
+                // chat. Ensure is idempotent, so this is a cheap liveness check.
+                showWindow = true;
+            }
+        }
+
+        if (showWindow)
+        {
+            var sessions = _launcher.EnsureWindowInAllSessions();
+            if (reshown)
+            {
+                _logger.LogInformation(
+                    "Live chat {SessionId}: the administrator sent a new message; window re-shown in {Count} session(s).",
+                    sessionId, sessions.Count);
             }
         }
     }
@@ -345,6 +419,7 @@ public sealed class ChatManager : BackgroundService, ILiveChatPipeHandler
             endedSessionId = session.SessionId;
             _current = null;
             _active = false;
+            _dismissed = false;
             _serverCursor = 0;
             _messages.Clear();
         }

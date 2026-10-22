@@ -530,14 +530,25 @@ internal sealed class ChatWindow : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _poll.Stop();
-        ReportClosedBestEffort();
+
+        // Only a close the PERSON chose is reported. When the service drove this
+        // close (the chat ended, or the service went away), it already knows -- and
+        // a late "closed" report could race a brand-new chat on the service and
+        // dismiss it before its window ever appeared.
+        if (!_ending)
+        {
+            ReportClosedBestEffort();
+        }
+
         _closing.Cancel();
         base.OnFormClosing(e);
     }
 
     /// <summary>
-    /// Tells the service the window is closing so it ends the chat on this device.
-    /// Bounded and best-effort: a slow or missing service never holds the close.
+    /// Tells the service the person closed the window. The chat stays open on the
+    /// device -- the service re-shows the window when the administrator's next
+    /// message arrives. Bounded and best-effort: a slow or missing service never
+    /// holds the close.
     /// </summary>
     private void ReportClosedBestEffort()
     {
