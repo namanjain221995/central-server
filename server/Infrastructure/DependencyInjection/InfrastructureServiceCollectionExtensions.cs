@@ -212,6 +212,8 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Devices.UpdateReadService>();
         services.AddScoped<Devices.DriverUpdateReadService>();
         services.AddScoped<Devices.DriverUpdateService>();
+        services.AddScoped<Devices.SecurityUpdateReadService>();
+        services.AddScoped<Devices.SecurityUpdateService>();
         services.AddScoped<Chrome.ChromeReadService>();
         services.AddScoped<Chrome.ChromeExtensionRuleService>();
         services.AddScoped<Devices.DeviceLifecycleService>();

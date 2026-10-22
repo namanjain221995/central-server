@@ -497,6 +497,60 @@ public sealed class SystemRoleTests
         helpdesk.ShouldNotContain(Permissions.Driver.Manage);
     }
 
+    /// <summary>
+    /// Reading which security updates a machine is missing is diagnosis, so every
+    /// operational role holds it; the permission grants nothing but reading and
+    /// asking for a re-scan.
+    /// </summary>
+    [Fact]
+    public void Security_update_visibility_is_read_only_and_held_by_every_operational_role()
+    {
+        Permissions.All.ToDictionary(p => p.Key, StringComparer.Ordinal)[Permissions.Update.View]
+            .HighRisk.ShouldBeFalse();
+
+        foreach (var role in new[]
+                 {
+                     SystemRoles.SuperAdministrator, SystemRoles.ItAdministrator,
+                     SystemRoles.Helpdesk, SystemRoles.Auditor,
+                 })
+        {
+            SystemRoles.All[role].PermissionKeys.ShouldContain(
+                Permissions.Update.View, $"Role '{role}' should be able to see pending security updates.");
+        }
+    }
+
+    /// <summary>
+    /// Installing a security update rewrites the operating system and usually ends
+    /// in a reboot, so it stays with the roles trusted to change the estate rather
+    /// than the ones trusted to support it -- the same split the driver family draws.
+    /// </summary>
+    [Fact]
+    public void Only_administrators_can_install_security_updates()
+    {
+        Permissions.All.ToDictionary(p => p.Key, StringComparer.Ordinal)[Permissions.Update.Manage]
+            .HighRisk.ShouldBeTrue();
+
+        var holders = SystemRoles.All
+            .Where(r => r.Value.PermissionKeys.Contains(Permissions.Update.Manage, StringComparer.Ordinal))
+            .Select(r => r.Key)
+            .ToArray();
+
+        holders.ShouldBe([SystemRoles.SuperAdministrator, SystemRoles.ItAdministrator], ignoreOrder: true);
+    }
+
+    /// <summary>
+    /// Seeing a missing update and being able to install it are separate grants, and
+    /// the split must survive future edits to either role.
+    /// </summary>
+    [Fact]
+    public void Helpdesk_can_see_pending_security_updates_but_not_install_them()
+    {
+        var helpdesk = SystemRoles.All[SystemRoles.Helpdesk].PermissionKeys;
+
+        helpdesk.ShouldContain(Permissions.Update.View);
+        helpdesk.ShouldNotContain(Permissions.Update.Manage);
+    }
+
     [Fact]
     public void No_role_definition_contains_duplicate_permissions()
     {

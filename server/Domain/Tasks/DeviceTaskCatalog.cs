@@ -195,6 +195,25 @@ public static class DeviceTaskCatalog
             // to apply.
             new(DeviceTaskType.ApplyChromeExtensionPolicy, Permissions.Chrome.Manage, HighRisk: true, 3600,
                 MinimumAgentVersion: "1.23.0"),
+
+            // Querying Windows Update for security updates changes nothing on the
+            // endpoint, so it rides on update.view -- the same permission that reads
+            // the pending list -- and is not high-risk. A half-hour lifetime: a scan
+            // an offline machine finally picks up is still worth running, but a query
+            // is cheap to re-issue, so it is not armed for days. Gated on the agent
+            // that has the Windows Update software executor; an older one would fail
+            // it as an unknown type, which reads exactly like the scan failing.
+            new(DeviceTaskType.ScanSecurityUpdates, Permissions.Update.View, HighRisk: false, 1800,
+                MinimumAgentVersion: "1.24.0"),
+
+            // Installing a Windows Update security update rewrites the operating
+            // system itself, so it carries update.manage and is high-risk. A long
+            // maintenance lifetime, double the driver install's: a cumulative update
+            // (LCU) is a large download followed by a long install, and one that
+            // fires when a laptop reappears is still the right thing to do. Same
+            // agent gate as the scan that produced the update ids.
+            new(DeviceTaskType.InstallSecurityUpdate, Permissions.Update.Manage, HighRisk: true, 7200,
+                MinimumAgentVersion: "1.24.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

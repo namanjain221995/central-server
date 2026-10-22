@@ -273,6 +273,7 @@ public sealed class Program
             app.MapCatalogEndpoints();
             app.MapSecurityEndpoints();
             app.MapUpdateEndpoints();
+            app.MapSecurityUpdateEndpoints();
             app.MapChromeEndpoints();
             app.MapChromeExtensionRuleEndpoints();
             app.MapReportEndpoints();

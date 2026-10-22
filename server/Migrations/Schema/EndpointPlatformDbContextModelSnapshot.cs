@@ -1805,6 +1805,76 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("device_security_posture", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceSecurityUpdate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CollectedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("collected_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<bool>("IsPreview")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_preview");
+
+                    b.Property<string>("KbIds")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("kb_ids");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("Severity")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("severity");
+
+                    b.Property<long?>("SizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("size_bytes");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("UpdateId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("update_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_device_security_updates");
+
+                    b.HasIndex("DeviceId")
+                        .HasDatabaseName("ix_device_security_updates_device_id");
+
+                    b.HasIndex("DeviceId", "UpdateId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_device_security_updates_device_update");
+
+                    b.ToTable("device_security_updates", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceServiceEntry", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4688,6 +4758,16 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_device_security_posture_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceSecurityUpdate", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_device_security_updates_devices_device_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceServiceEntry", b =>

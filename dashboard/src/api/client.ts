@@ -2151,6 +2151,108 @@ export function installAllDriverUpdates(): Promise<{ queued: number }> {
   return request<{ queued: number }>('/admin/v1/driver-updates/install-all', { method: 'POST' })
 }
 
+// ---------------------------------------------------------------------------
+// Windows Security Updates. The security-and-quality counterpart of the driver
+// feature above, with the same contract: scans a device for the security
+// updates Windows Update is offering, and installs the ones an administrator
+// chose. Every mutation is a typed task the device pulls on its next check-in,
+// so the console follows the returned taskId to what actually happened on
+// Windows via getDeviceTasks and useTaskTracker -- it never claims an install
+// is done merely because the server accepted the request.
+
+export interface SecurityUpdateOverviewSummary {
+  /** Active devices whose last scan found at least one pending security update. */
+  devicesWithPending: number
+  /** Total pending security updates across those devices. */
+  totalPending: number
+  /** Devices whose last security update install left a reboot pending. */
+  devicesRebootPending: number
+}
+
+/** One device's line in the security-updates overview, as the server computes it. */
+export interface SecurityUpdateDeviceRow {
+  deviceId: string
+  hostname: string
+  displayName: string | null
+  isOnline: boolean
+  lastSeenAt: string | null
+  /** Pending security updates the last scan found. */
+  pendingCount: number
+  /** Of those, how many are preview/optional, so the UI can offer "non-preview only". */
+  previewCount: number
+  lastScanAt: string | null
+  rebootPending: boolean
+}
+
+export interface SecurityUpdateOverview {
+  summary: SecurityUpdateOverviewSummary
+  devices: SecurityUpdateDeviceRow[]
+}
+
+/** One pending security update Windows Update is offering a device. */
+export interface SecurityUpdateItem {
+  updateId: string
+  revision: number
+  title: string
+  /** The update's KB article id(s), e.g. "KB5031354", when Windows reports any. */
+  kbIds: string | null
+  /** MSRC severity ("Critical", "Important", ...) when Windows reports one. */
+  severity: string | null
+  /** A preview/optional update; "auto-select non-preview" leaves these unchecked. */
+  isPreview: boolean
+  sizeBytes: number | null
+}
+
+export interface DeviceSecurityUpdates {
+  lastScanAt: string | null
+  rebootPending: boolean
+  updates: SecurityUpdateItem[]
+}
+
+/** What the server accepted when a security update scan or install was queued. */
+export interface SecurityUpdateTaskQueued {
+  taskId: string
+  status: string
+}
+
+export function getSecurityUpdateOverview(): Promise<SecurityUpdateOverview> {
+  return request<SecurityUpdateOverview>('/admin/v1/security-updates/overview')
+}
+
+export function getDeviceSecurityUpdates(deviceId: string): Promise<DeviceSecurityUpdates> {
+  return request<DeviceSecurityUpdates>(`/admin/v1/devices/${encodeURIComponent(deviceId)}/security-updates`)
+}
+
+/** Re-scans one device for security updates. 202 with the scan task's id. */
+export function scanSecurityUpdates(deviceId: string): Promise<SecurityUpdateTaskQueued> {
+  return request<SecurityUpdateTaskQueued>(
+    `/admin/v1/devices/${encodeURIComponent(deviceId)}/security-updates/scan`,
+    { method: 'POST' },
+  )
+}
+
+/**
+ * Installs the chosen security updates on one device. 202 with the install
+ * task's id; 409 (problem+json) when none are eligible or the agent is too old,
+ * whose `detail` the caller surfaces rather than guessing.
+ */
+export function installSecurityUpdates(deviceId: string, updateIds: string[]): Promise<SecurityUpdateTaskQueued> {
+  return request<SecurityUpdateTaskQueued>(
+    `/admin/v1/devices/${encodeURIComponent(deviceId)}/security-updates/install`,
+    { method: 'POST', body: JSON.stringify({ updateIds }) },
+  )
+}
+
+/** Queues a scan on every device with pending security updates. Returns how many were queued. */
+export function scanAllSecurityUpdates(): Promise<{ queued: number }> {
+  return request<{ queued: number }>('/admin/v1/security-updates/scan-all', { method: 'POST' })
+}
+
+/** Queues a non-preview install on every device that has pending security updates. */
+export function installAllSecurityUpdates(): Promise<{ queued: number }> {
+  return request<{ queued: number }>('/admin/v1/security-updates/install-all', { method: 'POST' })
+}
+
 export interface PackageRow {
   id: string
   name: string
