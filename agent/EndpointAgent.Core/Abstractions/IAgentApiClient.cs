@@ -204,6 +204,36 @@ public interface IAgentApiClient
         CatalogInstallCommand command,
         DeviceCredential credential,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads this device's own live-chat session: whether it is still open, and the
+    /// messages after <paramref name="afterSeq"/>.
+    /// </summary>
+    /// <remarks>
+    /// Device-scoped: the server answers only for the session that belongs to the
+    /// authenticated device, so a credential can never read another machine's chat.
+    /// A simple immediate return of what exists now -- the agent short-polls it on
+    /// its own cadence while the window is open; there is no long-poll to tune.
+    /// </remarks>
+    Task<AgentApiResult<ChatPollResponse>> PollChatMessagesAsync(
+        Guid sessionId,
+        int afterSeq,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Appends one message the person at the device typed to this device's own chat
+    /// session. Plain text; the server bounds and validates it.
+    /// </summary>
+    /// <remarks>
+    /// Names the session by id; the server scopes it to the authenticated device and
+    /// refuses a session that is not this device's own or has already ended.
+    /// </remarks>
+    Task<AgentApiResult<Unit>> SendChatMessageAsync(
+        Guid sessionId,
+        string body,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>Placeholder for a response body-less call (204 No Content).</summary>

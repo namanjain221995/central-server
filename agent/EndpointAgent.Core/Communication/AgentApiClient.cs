@@ -450,6 +450,49 @@ public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient
         return await SendAsync<CatalogInstallResponse>(message, "catalog install", cancellationToken);
     }
 
+    public async Task<AgentApiResult<ChatPollResponse>> PollChatMessagesAsync(
+        Guid sessionId,
+        int afterSeq,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+
+        var after = afterSeq < 0 ? 0 : afterSeq;
+        using var message = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{AgentProtocol.RoutePrefix}{AgentProtocol.Routes.Chat}/{sessionId}{AgentProtocol.Routes.ChatMessagesSuffix}?after={after}");
+
+        AddProtocolHeaders(message, Core.AgentVersion.Current);
+        message.Headers.Add(AgentProtocol.Headers.Credential, credential.ToHeaderValue());
+        message.Headers.Add(AgentProtocol.Headers.DeviceId, credential.DeviceId.ToString());
+
+        return await SendAsync<ChatPollResponse>(message, "chat poll", cancellationToken);
+    }
+
+    public async Task<AgentApiResult<Unit>> SendChatMessageAsync(
+        Guid sessionId,
+        string body,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(credential);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{AgentProtocol.RoutePrefix}{AgentProtocol.Routes.Chat}/{sessionId}{AgentProtocol.Routes.ChatMessagesSuffix}")
+        {
+            Content = JsonContent.Create(new ChatSendRequest(body)),
+        };
+
+        AddProtocolHeaders(message, Core.AgentVersion.Current);
+        message.Headers.Add(AgentProtocol.Headers.Credential, credential.ToHeaderValue());
+        message.Headers.Add(AgentProtocol.Headers.DeviceId, credential.DeviceId.ToString());
+
+        return await SendNoContentAsync(message, "chat send", cancellationToken);
+    }
+
     /// <summary>
     /// A memory stream with a ceiling. A write that would pass it fails with an
     /// <see cref="IOException"/>, which the download envelope treats as a failed

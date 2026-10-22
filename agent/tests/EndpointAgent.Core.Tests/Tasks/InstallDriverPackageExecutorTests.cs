@@ -589,6 +589,14 @@ public sealed class InstallDriverPackageExecutorTests : IDisposable
             Guid appId, DeviceCredential credential, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
 
+        public Task<AgentApiResult<EndpointPlatform.Contracts.Agent.ChatPollResponse>> PollChatMessagesAsync(
+            Guid sessionId, int afterSeq, DeviceCredential credential, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<AgentApiResult<Unit>> SendChatMessageAsync(
+            Guid sessionId, string body, DeviceCredential credential, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
         public Task<AgentApiResult<EndpointPlatform.Contracts.Agent.CatalogInstallResponse>> RequestCatalogInstallAsync(
             Guid appId, EndpointPlatform.Contracts.Agent.CatalogInstallCommand command, DeviceCredential credential,
             CancellationToken cancellationToken = default) =>

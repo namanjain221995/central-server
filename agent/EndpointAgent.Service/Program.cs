@@ -257,6 +257,26 @@ public static class Program
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.EngageScreenLockExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ReleaseScreenLockExecutor>();
 
+            // Live IT-support chat. A StartLiveChat task opens a small window on the
+            // signed-in employee's desktop; admin and employee exchange plain text;
+            // an EndLiveChat task (or the server ending the session, or the person
+            // closing the window) closes it. The manager is both the hosted
+            // short-poll loop and the pipe's handler, and it owns the launcher (one
+            // fixed window image into each session, no arguments). The window is
+            // launched ONLY through the one sanctioned session-launch host
+            // (WindowsSessionProcessHost), exactly like the lock overlay and the
+            // notifier (ADR-0005, live-chat amendment). Chat MESSAGES ride the
+            // device-credentialled chat endpoints, never a task payload.
+            builder.Services.AddSingleton<EndpointAgent.Core.Chat.ILiveChatWindowLauncher, EndpointAgent.Windows.LiveChat.LiveChatWindowLauncher>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Chat.ChatManager>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Chat.ILiveChatPipeHandler>(sp =>
+                sp.GetRequiredService<EndpointAgent.Core.Chat.ChatManager>());
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<EndpointAgent.Core.Chat.ChatManager>());
+            builder.Services.AddSingleton<EndpointAgent.Windows.LiveChat.LiveChatPipeServer>();
+            builder.Services.AddHostedService(sp => sp.GetRequiredService<EndpointAgent.Windows.LiveChat.LiveChatPipeServer>());
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.StartLiveChatExecutor>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.EndLiveChatExecutor>();
+
             builder.Services.AddSingleton<IPackageInstaller, WindowsMsiPackageInstaller>();
             builder.Services.AddSingleton<ILocalAccountsControl, WindowsLocalAccountControl>();
             builder.Services.AddSingleton<ISecretRedeemer, EndpointAgent.Core.Communication.ServerSecretRedeemer>();
