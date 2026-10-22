@@ -207,8 +207,11 @@ public sealed class ChatEndpointTests(AdminApiPostgresFixture fixture)
         task.PayloadJson.ShouldNotBeNull().ShouldContain(sessionId.ToString());
 
         // The device now shows up on the active-chat list.
+        // The picker lists every active device; the one we just started a chat with
+        // must carry that session's id, while chat-less devices carry null.
         var listed = await (await client.GetAsync(Devices)).Content.ReadFromJsonAsync<JsonElement>();
         listed.EnumerateArray()
+            .Where(d => d.GetProperty("activeSessionId").ValueKind != JsonValueKind.Null)
             .Select(d => d.GetProperty("activeSessionId").GetGuid())
             .ShouldContain(sessionId);
     }

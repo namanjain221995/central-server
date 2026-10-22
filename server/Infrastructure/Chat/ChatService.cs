@@ -57,10 +57,13 @@ public sealed record ChatMessagesResult(string Status, bool Ended, IReadOnlyList
 /// <summary>A device's read of its own session: whether it is still open and the messages after a cursor.</summary>
 public sealed record ChatAgentMessagesResult(bool Active, IReadOnlyList<ChatMessageView> Messages);
 
-/// <summary>One device with an open chat, as the console's active-chat list shows it.</summary>
+/// <summary>
+/// One device as the console's chat picker shows it: every active device, carrying
+/// the id of its open chat session when it has one, null when it does not.
+/// </summary>
 public sealed record ChatDeviceRow(
     Guid DeviceId, string Hostname, string? DisplayName, bool IsOnline,
-    DateTimeOffset? LastSeenAt, string? LoggedOnUser, Guid ActiveSessionId);
+    DateTimeOffset? LastSeenAt, string? LoggedOnUser, Guid? ActiveSessionId);
 
 /// <summary>
 /// Opens, drives and closes live IT-support chats, and is the single audited choke
@@ -254,26 +257,36 @@ public sealed class ChatService(
     }
 
     /// <summary>
-    /// Every device in the caller's scope with an open chat right now, each with its
-    /// active session id. No message bodies.
+    /// Every active device in the caller's scope -- the console's chat device
+    /// picker -- each carrying the id of its open chat session when it has one,
+    /// null when it does not. No message bodies.
     /// </summary>
+    /// <remarks>
+    /// Deliberately every device, not only those already in a chat: this list is
+    /// what an administrator picks a device FROM to start a conversation, so a list
+    /// restricted to in-flight chats would make the feature unreachable -- with no
+    /// chat open there would be nothing to click to open one.
+    /// </remarks>
     public async Task<IReadOnlyList<ChatDeviceRow>> ListActiveDevicesAsync(
         Guid organizationId, IReadOnlyCollection<Guid>? scopedDeviceIds,
         CancellationToken cancellationToken = default)
     {
         var rows = await (
-            from s in _dbContext.ChatSessions.AsNoTracking()
-            join d in _dbContext.Devices.AsNoTracking() on s.DeviceId equals d.Id
-            where s.OrganizationId == organizationId && s.Status == ChatSessionStatus.Active
+            from d in _dbContext.Devices.AsNoTracking()
+            join s in _dbContext.ChatSessions.AsNoTracking()
+                    .Where(s => s.Status == ChatSessionStatus.Active)
+                on d.Id equals s.DeviceId into sessions
+            from s in sessions.DefaultIfEmpty()
+            where d.OrganizationId == organizationId && d.Status == DeviceStatus.Active
             orderby d.Hostname
             select new
             {
-                s.Id,
                 DeviceId = d.Id,
                 d.Hostname,
                 d.DisplayName,
                 d.LastSeenAt,
                 d.LoggedOnUser,
+                ActiveSessionId = (Guid?)s!.Id,
             })
             .ToListAsync(cancellationToken);
 
@@ -288,7 +301,7 @@ public sealed class ChatService(
         {
             var online = r.LastSeenAt is { } lastSeen && now - lastSeen <= _staleAfter;
             return new ChatDeviceRow(
-                r.DeviceId, r.Hostname, r.DisplayName, online, r.LastSeenAt, r.LoggedOnUser, r.Id);
+                r.DeviceId, r.Hostname, r.DisplayName, online, r.LastSeenAt, r.LoggedOnUser, r.ActiveSessionId);
         }).ToList();
     }
 
