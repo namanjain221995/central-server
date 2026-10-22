@@ -42,6 +42,15 @@ public static class BulkLocalAccountEndpoints
 
     public static IEndpointRouteBuilder MapBulkLocalAccountEndpoints(this IEndpointRouteBuilder endpoints)
     {
+        // Read-only: which account exists on which devices, fleet-wide. It rides
+        // user.view — the same permission that lists one device's local users —
+        // because it is the same inventory rows, merely grouped across devices the
+        // caller may already see one by one; a separate permission over identical
+        // data would fragment an existing grant without narrowing anything.
+        endpoints.MapGet("/admin/v1/local-users/fleet-summary", FleetSummaryAsync)
+            .WithName("GetLocalUserFleetSummary")
+            .RequirePermission(Permissions.LocalUser.View);
+
         var group = endpoints.MapGroup("/admin/v1/local-users/bulk");
 
         group.MapPost("/", CreateAsync)
@@ -68,6 +77,25 @@ public static class BulkLocalAccountEndpoints
             .RequirePermission(Permissions.LocalUser.Delete);
 
         return endpoints;
+    }
+
+    // ------------------------------------------------------------------- reads
+
+    /// <summary>
+    /// The fleet-wide account summary: every local account reported by an active,
+    /// in-scope device, with the devices it exists on. The scope filter is the same
+    /// one the bulk mutations resolve targets with, so the operator sees exactly the
+    /// devices a subsequent bulk action could touch.
+    /// </summary>
+    private static async Task<IResult> FleetSummaryAsync(
+        FleetAccountReadService readService,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var actor = AdminActor.Required(httpContext.User);
+        var scoped = await scope.ScopedDeviceIdsOrNullAsync(actor.UserId, actor.OrganizationId, cancellationToken);
+        return Results.Ok(await readService.GetSummaryAsync(actor.OrganizationId, scoped, cancellationToken));
     }
 
     public sealed record BulkCreateLocalUserRequest(

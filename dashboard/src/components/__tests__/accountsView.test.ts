@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import type { BulkAccountLifecycleResult, BulkLocalAccountResult } from '../../api/client'
+import type { BulkAccountLifecycleResult, BulkLocalAccountResult, FleetAccountRow } from '../../api/client'
 import {
   actionLabel,
   actionVerb,
+  fleetAccountSmell,
+  offersUse,
   provisionSummary,
   resultBadges,
   validateCreateForm,
   validateLifecycleForm,
   validateResetForm,
   validateTarget,
+  visibleFleetAccounts,
   type AccountsAction,
   type CreateFormState,
   type ResetFormState,
@@ -124,6 +127,67 @@ describe('provisionSummary', () => {
     // Mixed skips fall back to the generic sentence rather than guessing a split.
     expect(provisionSummary(lifecycle({ targeted: 4, skippedOther: 2, skippedNoAccount: 2 }), 'enabled'))
       .toBe('Nothing was enabled — all 4 targeted devices were skipped.')
+  })
+})
+
+function fleetRow(overrides: Partial<FleetAccountRow> = {}): FleetAccountRow {
+  return { name: 'itadmin', isBuiltIn: false, onDevices: 0, adminOn: 0, enabledOn: 0, devices: [], ...overrides }
+}
+
+describe('visibleFleetAccounts', () => {
+  const rows = [
+    fleetRow({ name: 'Administrator', isBuiltIn: true, onDevices: 8 }),
+    fleetRow({ name: 'zeta', onDevices: 2 }),
+    fleetRow({ name: 'alpha', onDevices: 2 }),
+    fleetRow({ name: 'itadmin', onDevices: 5 }),
+  ]
+
+  it('drops built-ins when hidden and orders the rest most-widespread first', () => {
+    expect(visibleFleetAccounts(rows, true).map((r) => r.name)).toEqual(['itadmin', 'alpha', 'zeta'])
+  })
+
+  it('keeps built-ins when shown, in the same ordering', () => {
+    expect(visibleFleetAccounts(rows, false).map((r) => r.name))
+      .toEqual(['Administrator', 'itadmin', 'alpha', 'zeta'])
+  })
+
+  it('breaks device-count ties by name, ignoring case', () => {
+    const tied = [fleetRow({ name: 'Zeta', onDevices: 1 }), fleetRow({ name: 'alpha', onDevices: 1 })]
+    expect(visibleFleetAccounts(tied, true).map((r) => r.name)).toEqual(['alpha', 'Zeta'])
+  })
+
+  it('never reorders the server list it was given', () => {
+    const names = rows.map((r) => r.name)
+    visibleFleetAccounts(rows, false)
+    expect(rows.map((r) => r.name)).toEqual(names)
+  })
+})
+
+describe('offersUse', () => {
+  it('offers Use for ordinary accounts only — the server refuses built-ins anyway', () => {
+    expect(offersUse(fleetRow())).toBe(true)
+    expect(offersUse(fleetRow({ isBuiltIn: true }))).toBe(false)
+  })
+})
+
+describe('fleetAccountSmell', () => {
+  it('flags the built-in Administrator enabled anywhere, whatever the casing', () => {
+    expect(fleetAccountSmell(fleetRow({ name: 'Administrator', isBuiltIn: true, enabledOn: 3 })))
+      .toBe('The built-in Administrator account is enabled on 3 devices — it should be disabled.')
+    expect(fleetAccountSmell(fleetRow({ name: 'administrator', isBuiltIn: true, enabledOn: 1 })))
+      .toBe('The built-in Administrator account is enabled on 1 device — it should be disabled.')
+  })
+
+  it('flags Guest enabled anywhere', () => {
+    expect(fleetAccountSmell(fleetRow({ name: 'Guest', isBuiltIn: true, enabledOn: 2 })))
+      .toBe('The Guest account is enabled on 2 devices — it should be disabled.')
+  })
+
+  it('stays quiet when disabled everywhere, on other built-ins, and on name-alikes', () => {
+    expect(fleetAccountSmell(fleetRow({ name: 'Administrator', isBuiltIn: true, enabledOn: 0 }))).toBeNull()
+    expect(fleetAccountSmell(fleetRow({ name: 'DefaultAccount', isBuiltIn: true, enabledOn: 4 }))).toBeNull()
+    // A non-built-in that merely shares the name is an ordinary account.
+    expect(fleetAccountSmell(fleetRow({ name: 'Administrator', isBuiltIn: false, enabledOn: 4 }))).toBeNull()
   })
 })
 

@@ -3,7 +3,7 @@
 // every branch is unit-tested without rendering. Mirrors announcementsView /
 // screenLocksView.
 
-import type { BulkAccountLifecycleResult, BulkLocalAccountResult } from '../api/client'
+import type { BulkAccountLifecycleResult, BulkLocalAccountResult, FleetAccountRow } from '../api/client'
 
 /**
  * Any bulk outcome this page can show. Create/reset report one `skipped` count;
@@ -194,4 +194,48 @@ export function resultBadges(result: BulkOutcome): ResultBadge[] {
   ]
 
   return badges.filter((badge) => badge.value > 0)
+}
+
+// --------------------------------------------------------------- fleet view
+
+/**
+ * The rows the "Fleet accounts" table shows: built-ins dropped when hidden,
+ * then the most widespread account first, names breaking ties regardless of
+ * case. Never mutates the server's array.
+ */
+export function visibleFleetAccounts(accounts: FleetAccountRow[], hideBuiltIn: boolean): FleetAccountRow[] {
+  return accounts
+    .filter((account) => !hideBuiltIn || !account.isBuiltIn)
+    .sort((a, b) =>
+      b.onDevices - a.onDevices || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+}
+
+/**
+ * Whether a row offers the "Use" prefill into the bulk form above it. Built-ins
+ * do not: the server refuses them for disable/delete, so the shortcut would
+ * only manufacture a refusal.
+ */
+export function offersUse(account: Pick<FleetAccountRow, 'isBuiltIn'>): boolean {
+  return !account.isBuiltIn
+}
+
+/**
+ * The security smell on a built-in account, as the warn badge's hint — or null
+ * when there is nothing to flag. Only the two accounts every attacker tries
+ * first are flagged: the built-in Administrator and Guest, each of which should
+ * be disabled everywhere. A non-built-in that merely shares the name is an
+ * ordinary account and stays quiet.
+ */
+export function fleetAccountSmell(
+  account: Pick<FleetAccountRow, 'name' | 'isBuiltIn' | 'enabledOn'>,
+): string | null {
+  if (!account.isBuiltIn || account.enabledOn <= 0) return null
+
+  const name = account.name.trim().toLowerCase()
+  if (name !== 'administrator' && name !== 'guest') return null
+
+  const where = `${account.enabledOn} device${account.enabledOn === 1 ? '' : 's'}`
+  return name === 'administrator'
+    ? `The built-in Administrator account is enabled on ${where} — it should be disabled.`
+    : `The Guest account is enabled on ${where} — it should be disabled.`
 }

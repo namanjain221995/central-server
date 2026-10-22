@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import {
   ApiError,
@@ -9,20 +9,26 @@ import {
   bulkResetLocalPassword,
   deviceName,
   getDevices,
+  getFleetAccountSummary,
   getGroups,
   type DeviceGroupSummary,
   type DeviceListItem,
+  type FleetAccountRow,
+  type FleetAccountSummary,
 } from '../api/client'
 import { Icon } from '../components/Icon'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import {
   actionLabel,
   actionVerb,
+  fleetAccountSmell,
+  offersUse,
   provisionSummary,
   resultBadges,
   validateCreateForm,
   validateLifecycleForm,
   validateResetForm,
+  visibleFleetAccounts,
   type AccountsAction,
   type AccountsTargetMode,
   type BulkOutcome,
@@ -58,6 +64,7 @@ export function AccountsPage() {
 
   // Account fields.
   const [username, setUsername] = useState('')
+  const usernameInput = useRef<HTMLInputElement>(null)
   const [fullName, setFullName] = useState('')
   const [description, setDescription] = useState('')
   const [password, setPassword] = useState('')
@@ -108,6 +115,16 @@ export function AccountsPage() {
 
   function toggleDevice(id: string) {
     setDeviceIds((current) => (current.includes(id) ? current.filter((x) => x !== id) : [...current, id]))
+  }
+
+  /**
+   * A fleet-accounts row's "Use": prefill the form's Username and put the
+   * cursor there, so the operator picks the action and runs it immediately.
+   */
+  function useFleetAccount(name: string) {
+    setUsername(name)
+    setOutcome(null)
+    usernameInput.current?.focus()
   }
 
   function buildTarget(): { allDevices?: boolean; groupId?: string; deviceIds?: string[] } | null {
@@ -229,7 +246,7 @@ export function AccountsPage() {
         <div className="form-grid">
           <div className="field">
             <label className="field-label" htmlFor="acct-username">Username</label>
-            <input id="acct-username" value={username} autoComplete="off"
+            <input id="acct-username" ref={usernameInput} value={username} autoComplete="off"
               onChange={(e) => setUsername(e.target.value)} placeholder="e.g. itadmin" />
             {action === 'reset' && (
               <span className="field-hint">The account must already exist on the devices.</span>
@@ -410,6 +427,8 @@ export function AccountsPage() {
         </div>
       </div>
 
+      <FleetAccountsCard onUse={useFleetAccount} />
+
       {confirmingDelete && (
         <ConfirmDialog
           title={`Delete '${username.trim()}' from the targeted devices?`}
@@ -422,6 +441,195 @@ export function AccountsPage() {
           on each device, but the account and its sign-in are gone. Devices where the account does
           not exist are skipped.
         </ConfirmDialog>
+      )}
+    </>
+  )
+}
+
+// ------------------------------------------------------------- fleet accounts
+
+/**
+ * Read-only roll-up of every local account the fleet has reported, below the
+ * action form: how widespread each account is, where it is an administrator,
+ * and where it is enabled — with "Use" as the one-click route into the form.
+ * Built-ins are hidden by default; shown, the built-in Administrator and Guest
+ * carry a warning wherever they are still enabled. The whole card disappears
+ * silently when the server answers 403, so the form keeps working for a role
+ * that can act but not read the inventory.
+ */
+function FleetAccountsCard({ onUse }: { onUse: (username: string) => void }) {
+  const [summary, setSummary] = useState<FleetAccountSummary | null>(null)
+  const [forbidden, setForbidden] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [hideBuiltIn, setHideBuiltIn] = useState(true)
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      setSummary(await getFleetAccountSummary())
+      setError(null)
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 403) {
+        setForbidden(true)
+      } else {
+        setError('Could not load fleet accounts.')
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // Loaded once on mount; after that, only the Refresh button re-reads.
+  useEffect(() => { void load() }, [load])
+
+  if (forbidden) return null
+
+  const rows = summary === null ? [] : visibleFleetAccounts(summary.accounts, hideBuiltIn)
+  const onlyBuiltIns = summary !== null && rows.length === 0 && summary.accounts.length > 0
+
+  return (
+    <div className="card">
+      <div className="section-head">
+        <h2>Fleet accounts</h2>
+      </div>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Every local account your active devices have reported, and where it stands. Click an
+        account (or Use) to put its name in the form above.
+      </p>
+
+      <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+        <label className="check-row">
+          <input type="checkbox" checked={hideBuiltIn}
+            onChange={(e) => { setHideBuiltIn(e.target.checked); setExpanded(null) }} />
+          {' '}Hide built-in accounts
+        </label>
+        <span className="spacer" />
+        <button type="button" className={`btn-ghost btn-sm${loading ? ' btn-loading' : ''}`}
+          disabled={loading} onClick={() => void load()}>
+          <Icon name="refresh" size={14} /> Refresh
+        </button>
+      </div>
+
+      {error && (
+        <div className="error-banner" role="alert"><Icon name="alert" size={15} /><span>{error}</span></div>
+      )}
+
+      {summary !== null && summary.truncated && (
+        <p className="muted">
+          The list was shortened because the fleet reports very many accounts; the counts still
+          cover every device.
+        </p>
+      )}
+
+      {summary === null && error === null && <div className="loading">Loading fleet accounts…</div>}
+
+      {summary !== null && rows.length === 0 && (
+        <div className="empty-state">
+          <Icon name="users" size={36} strokeWidth={1.25} className="icon" />
+          <div className="title">{onlyBuiltIns ? 'Only built-in accounts' : 'No accounts reported'}</div>
+          <div>
+            {onlyBuiltIns
+              ? 'Every reported account is a Windows built-in. Untick "Hide built-in accounts" to see them.'
+              : 'Accounts appear here as devices report their local users.'}
+          </div>
+        </div>
+      )}
+
+      {summary !== null && rows.length > 0 && (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ width: 32 }} aria-label="Expand" />
+                <th>Account</th>
+                <th>Devices</th>
+                <th>Admin on</th>
+                <th>Enabled on</th>
+                <th style={{ width: 60 }} aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((account) => (
+                <FleetAccountRows key={account.name} account={account}
+                  activeDevices={summary.activeDevices}
+                  open={expanded === account.name}
+                  onToggle={() => setExpanded((cur) => (cur === account.name ? null : account.name))}
+                  onUse={onUse} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** One account's summary row, plus a full-width device list when expanded. */
+function FleetAccountRows({ account, activeDevices, open, onToggle, onUse }: {
+  account: FleetAccountRow
+  activeDevices: number
+  open: boolean
+  onToggle: () => void
+  onUse: (username: string) => void
+}) {
+  const smell = fleetAccountSmell(account)
+  const devices = [...account.devices].sort((a, b) => a.hostname.localeCompare(b.hostname))
+
+  return (
+    <>
+      <tr>
+        <td>
+          <button type="button" className="btn-ghost btn-sm"
+            aria-label={open ? `Collapse ${account.name}` : `Expand ${account.name}`}
+            aria-expanded={open} onClick={onToggle}>
+            <Icon name={open ? 'chevron-down' : 'chevron-right'} size={14} />
+          </button>
+        </td>
+        <td>
+          {offersUse(account) ? (
+            <button type="button" className="link-button"
+              title="Use this account in the form above" onClick={() => onUse(account.name)}>
+              {account.name}
+            </button>
+          ) : (
+            account.name
+          )}
+          {account.isBuiltIn && <span className="badge neutral" style={{ marginLeft: 8 }}>Built-in</span>}
+          {smell !== null && (
+            <span className="badge warn" style={{ marginLeft: 8 }} title={smell}>Should be disabled</span>
+          )}
+        </td>
+        <td>{account.onDevices} / {activeDevices}</td>
+        <td><span className={`badge plain ${account.adminOn > 0 ? 'warn' : 'neutral'}`}>{account.adminOn}</span></td>
+        <td><span className="badge plain neutral">{account.enabledOn}</span></td>
+        <td>
+          {offersUse(account) && (
+            <button type="button" className="btn-ghost btn-sm" onClick={() => onUse(account.name)}>Use</button>
+          )}
+        </td>
+      </tr>
+      {open && (
+        <tr>
+          <td colSpan={6} style={{ background: 'transparent' }}>
+            {devices.length === 0 ? (
+              <p className="muted" style={{ margin: '4px 0' }}>No device reports this account.</p>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 20px', padding: '4px 2px' }}>
+                {devices.map((d) => (
+                  <span key={d.deviceId} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    {d.hostname}
+                    {d.isAdmin && <span className="badge warn plain">admin</span>}
+                    {d.enabled
+                      ? <span className="badge ok plain">enabled</span>
+                      : <span className="badge neutral plain">disabled</span>}
+                  </span>
+                ))}
+              </div>
+            )}
+          </td>
+        </tr>
       )}
     </>
   )
