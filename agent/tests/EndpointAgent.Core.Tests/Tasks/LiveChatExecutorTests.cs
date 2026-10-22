@@ -27,8 +27,14 @@ public sealed class LiveChatExecutorTests
     {
         public IReadOnlyList<uint> Sessions { get; set; } = [1];
         public int StopCalls { get; private set; }
+        public int EnsureCalls { get; private set; }
 
-        public IReadOnlyList<uint> EnsureWindowInAllSessions() => Sessions;
+        public IReadOnlyList<uint> EnsureWindowInAllSessions()
+        {
+            EnsureCalls++;
+            return Sessions;
+        }
+
         public void StopAllWindows() => StopCalls++;
     }
 
@@ -208,7 +214,7 @@ public sealed class LiveChatExecutorTests
     }
 
     [Fact]
-    public async Task The_window_reporting_closed_ends_the_chat_and_stops_the_window()
+    public async Task The_person_closing_the_window_leaves_the_chat_open()
     {
         var launcher = new FakeLauncher();
         var manager = NewManager(launcher);
@@ -216,8 +222,59 @@ public sealed class LiveChatExecutorTests
 
         manager.ReportClosed();
 
-        manager.CurrentSessionId.ShouldBeNull();
-        launcher.StopCalls.ShouldBeGreaterThan(0);
+        manager.CurrentSessionId.ShouldBe(SessionId, "a closed window is a dismissal, not an end");
+        launcher.StopCalls.ShouldBe(0);
+        manager.Poll(0).Active.ShouldBe(true, "a window that asks again finds the chat still open");
+    }
+
+    [Fact]
+    public async Task A_new_admin_message_reshows_a_dismissed_window()
+    {
+        var launcher = new FakeLauncher();
+        var api = new FakeApi();
+        var manager = NewManager(launcher, api);
+        await manager.StartAsync(SessionId, "Asha (IT)");
+        manager.ReportClosed();
+        var before = launcher.EnsureCalls;
+
+        api.Poll = AgentApiResult<ChatPollResponse>.Success(new ChatPollResponse(true,
+            [new ChatMessageDto(1, "Admin", "IT Support", "are you there?", Now)]));
+        await manager.PollServerOnceAsync(CancellationToken.None);
+
+        launcher.EnsureCalls.ShouldBeGreaterThan(before, "the administrator's message brings the window back");
+        manager.CurrentSessionId.ShouldBe(SessionId);
+    }
+
+    [Fact]
+    public async Task An_employee_or_empty_poll_does_not_reshow_a_dismissed_window()
+    {
+        var launcher = new FakeLauncher();
+        var api = new FakeApi();
+        var manager = NewManager(launcher, api);
+        await manager.StartAsync(SessionId, "Asha (IT)");
+        manager.ReportClosed();
+        var before = launcher.EnsureCalls;
+
+        await manager.PollServerOnceAsync(CancellationToken.None);
+
+        api.Poll = AgentApiResult<ChatPollResponse>.Success(new ChatPollResponse(true,
+            [new ChatMessageDto(1, "Employee", "PARAS-THIND\\TECHSARA", "typing to myself", Now)]));
+        await manager.PollServerOnceAsync(CancellationToken.None);
+
+        launcher.EnsureCalls.ShouldBe(before, "a dismissal is respected until the administrator speaks");
+    }
+
+    [Fact]
+    public async Task While_open_and_not_dismissed_each_poll_pass_keeps_the_window_present()
+    {
+        var launcher = new FakeLauncher();
+        var manager = NewManager(launcher, new FakeApi());
+        await manager.StartAsync(SessionId, "Asha (IT)");
+        var before = launcher.EnsureCalls;
+
+        await manager.PollServerOnceAsync(CancellationToken.None);
+
+        launcher.EnsureCalls.ShouldBeGreaterThan(before, "a window that died for any reason comes back on the next pass");
     }
 
     // --------------------------------------------------------------- fake api
