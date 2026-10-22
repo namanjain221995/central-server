@@ -3,7 +3,8 @@ import type { DriverUpdateItem } from '../api/client'
 /**
  * The Windows Driver Updates page's rules, kept pure so each one is testable
  * without React: which updates "auto-select non-preview" ticks, whether an
- * install's result asks for a reboot, and how a driver's download size reads.
+ * install's result asks for a reboot, whether a settled install should trigger
+ * one automatic re-scan, and how a driver's download size reads.
  */
 
 /**
@@ -33,6 +34,24 @@ export function installRebootRequired(resultJson: string | null | undefined): bo
   } catch {
     return false
   }
+}
+
+/**
+ * Whether a settled install task should trigger one automatic re-scan.
+ *
+ * The per-device pending list is rebuilt only by a scan, so after an install
+ * succeeds the just-installed updates would otherwise linger as "pending" until
+ * someone clicks "Scan now". This returns true exactly once per install: when
+ * the install task has settled as Succeeded and no re-scan has yet been queued
+ * for that task id. A scan task's id is never the install's, so the re-scan it
+ * triggers can never satisfy this and cascade into another one.
+ */
+export function shouldAutoRescanAfterInstall(
+  installTask: { id: string; status: string } | null | undefined,
+  rescannedForTaskId: string | null,
+): boolean {
+  if (!installTask || installTask.status !== 'Succeeded') return false
+  return rescannedForTaskId !== installTask.id
 }
 
 /**

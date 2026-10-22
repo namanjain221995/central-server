@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { formatUpdateSize, installRebootRequired, nonPreviewUpdateIds } from '../../pages/driverUpdatesView'
+import {
+  formatUpdateSize,
+  installRebootRequired,
+  nonPreviewUpdateIds,
+  shouldAutoRescanAfterInstall,
+} from '../../pages/driverUpdatesView'
 import type { DriverUpdateItem } from '../../api/client'
 
 /**
  * The Windows Driver Updates page's pure rules. The server decides what is
  * eligible and whether a reboot is owed; what is guarded here is that the
  * "auto-select non-preview" button never ticks a preview driver, that the
- * reboot handoff reads the task result without ever throwing, and that an
- * unknown size is shown as "—" rather than a fabricated number.
+ * reboot handoff reads the task result without ever throwing, that a successful
+ * install triggers exactly one automatic re-scan (and a scan never cascades into
+ * another), and that an unknown size is shown as "—" rather than a fabricated
+ * number.
  */
 
 function update(partial: Partial<DriverUpdateItem> & { updateId: string }): DriverUpdateItem {
@@ -64,6 +71,30 @@ describe('installRebootRequired', () => {
     // trust to mean a reboot is owed.
     expect(installRebootRequired('{"rebootRequired":"true"}')).toBe(false)
     expect(installRebootRequired('{"rebootRequired":1}')).toBe(false)
+  })
+})
+
+describe('shouldAutoRescanAfterInstall', () => {
+  it('re-scans once when the install settled as Succeeded and none has been queued yet', () => {
+    expect(shouldAutoRescanAfterInstall({ id: 'install-1', status: 'Succeeded' }, null)).toBe(true)
+  })
+
+  it('does not re-scan again for an install already re-scanned (no loop on the scan it queued)', () => {
+    // After the first success sets the guard to this install's id, every later
+    // settle — the re-scan's own among them — sees the same id and stands down.
+    expect(shouldAutoRescanAfterInstall({ id: 'install-1', status: 'Succeeded' }, 'install-1')).toBe(false)
+  })
+
+  it('re-scans for a new install even after an earlier one was handled', () => {
+    expect(shouldAutoRescanAfterInstall({ id: 'install-2', status: 'Succeeded' }, 'install-1')).toBe(true)
+  })
+
+  it('never re-scans on a non-success or a missing install task', () => {
+    expect(shouldAutoRescanAfterInstall({ id: 'install-1', status: 'Failed' }, null)).toBe(false)
+    expect(shouldAutoRescanAfterInstall({ id: 'install-1', status: 'Expired' }, null)).toBe(false)
+    expect(shouldAutoRescanAfterInstall({ id: 'install-1', status: 'Delivered' }, null)).toBe(false)
+    expect(shouldAutoRescanAfterInstall(undefined, null)).toBe(false)
+    expect(shouldAutoRescanAfterInstall(null, null)).toBe(false)
   })
 })
 
