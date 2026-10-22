@@ -1,0 +1,74 @@
+name: Deploy to production
+
+# Auto-deploy after a pull request is approved and merged to main. Because the
+# trigger is push-to-main (and manual dispatch), and never pull_request, a fork PR
+# can NOT start this workflow -- only an approved merge or a maintainer can. The
+# `production` environment adds a required-reviewer gate so a human still confirms
+# each deploy, keeping the spirit of the deliberately-manual deploy policy while
+# removing the typing. See docs/runbooks/auto-deploy.md for the one-time setup and
+# the security settings that MUST be in place (this repo is public).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# One deploy at a time; let a running one finish rather than cancel it mid-swap
+# (the API symlink swap must not be interrupted).
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # The self-hosted runner installed on the EC2 production host, labelled
+    # `production`. It runs the existing deploy scripts against the live source at
+    # /opt/endpoint-platform/src -- it does not check the repo out into its own
+    # workspace, so there is nothing new to trust on the box.
+    runs-on: [self-hosted, production]
+    environment: production
+    timeout-minutes: 30
+
+    steps:
+      - name: Backup, build and deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO=/opt/endpoint-platform/src
+          cd "$REPO"
+
+          echo "::group::Backup (verified bundle before any change)"
+          ( cd deploy/docker && sudo ./backup.sh )
+          echo "::endgroup::"
+
+          echo "::group::Sync to the merged main commit"
+          sudo git fetch origin main
+          sudo git reset --hard origin/main
+          SHA="$(git rev-parse --short HEAD)"
+          echo "Deploying ${SHA}"
+          echo "::endgroup::"
+
+          echo "::group::Build images (plain docker build; EC2 buildx is too old for compose build)"
+          for target in migrations admin-api agent-api; do
+            sudo env DOCKER_BUILDKIT=1 docker build \
+              -f deploy/docker/Dockerfile.server --target "${target}" \
+              -t "endpoint-platform/${target}:local" \
+              --build-arg VERSION=0.1.0 --build-arg SOURCE_REVISION="${SHA}" .
+          done
+          sudo env DOCKER_BUILDKIT=1 docker build \
+            -f deploy/docker/Dockerfile.dashboard -t endpoint-platform/web:local .
+          echo "::endgroup::"
+
+          echo "::group::Deploy (migration runs first; reuses the stored PUBLIC_ORIGIN)"
+          # deploy.sh proves success itself: non-zero exit (and automatic rollback)
+          # unless the dashboard and both APIs answer on the real URL.
+          ( cd deploy/docker && sudo ./deploy.sh '' --no-build )
+          echo "::endgroup::"
+
+          echo "::group::Verify"
+          curl -fsS https://it.techsarasolutions.com/api/health/ready
+          echo
+          echo "::endgroup::"
