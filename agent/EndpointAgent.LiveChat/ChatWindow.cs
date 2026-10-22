@@ -75,6 +75,15 @@ internal sealed class ChatWindow : Form
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         ShowInTaskbar = true;
+
+        // Always on top. Windows refuses foreground focus to a window the person
+        // did not start themselves (focus-stealing prevention), so without this the
+        // chat appears only as a taskbar button behind whatever they are working
+        // in -- and IT's opening message goes unseen. A narrow right-docked strip
+        // that stays visible is the whole point of the window; the person can
+        // still minimise or close it (a close is a dismissal, and a new message
+        // from IT brings it back).
+        TopMost = true;
         StartPosition = FormStartPosition.Manual;
         MinimumSize = new Size(WindowWidth, 300);
         ClientSize = new Size(WindowWidth, 600);
@@ -211,6 +220,12 @@ internal sealed class ChatWindow : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+
+        // Best-effort focus so the person can type straight away. Windows may
+        // refuse it (we were not started by them); TopMost above already
+        // guarantees the window is at least visibly in front.
+        Activate();
+
         _poll.Start();
         PollTick();
         _input.Focus();
@@ -305,6 +320,13 @@ internal sealed class ChatWindow : Form
 
     private void AppendMessages(IReadOnlyList<ChatMessageDto> messages)
     {
+        // A new line while the window is minimised would otherwise sit unread in
+        // the taskbar; restore it so the conversation is actually seen.
+        if (WindowState == FormWindowState.Minimized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+
         var atBottom = IsScrolledToBottom();
 
         _log.SuspendLayout();

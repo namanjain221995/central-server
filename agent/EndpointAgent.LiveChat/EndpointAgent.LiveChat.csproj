@@ -6,7 +6,7 @@
     <OutputType>WinExe</OutputType>
     <RootNamespace>EndpointAgent.LiveChat</RootNamespace>
     <AssemblyName>EndpointAgent.LiveChat</AssemblyName>
-    <VersionPrefix>1.22.1</VersionPrefix>
+    <VersionPrefix>1.23.0</VersionPrefix>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>

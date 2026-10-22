@@ -1403,10 +1403,14 @@ export function cancelRestartSchedule(scheduleId: string, deviceIds?: string[]):
 }
 
 // ---------------------------------------------------------------------------
-// Chrome Management. Read-only in this phase: every function here reads what
-// the fleet reported. Group membership is the Groups page's -- the server
-// resolves a group's devices with the same rule, so "All Devices" is the
-// built-in group's devices (the ones in no custom group), never the whole fleet.
+// Chrome Management. The reads report what the fleet said; the one control is
+// per-device extension rules (force-install, block, allow, remove), each of
+// which queues a task the device applies as machine-wide Chrome policy -- the
+// console follows the returned taskId via useTaskTracker rather than calling a
+// rule "applied" because the server stored it. Group membership is the Groups
+// page's -- the server resolves a group's devices with the same rule, so "All
+// Devices" is the built-in group's devices (the ones in no custom group),
+// never the whole fleet.
 
 /** What the agent said about Chrome the last time it reported the section. */
 export type ChromeReportStatus = 'Available' | 'NotInstalled' | 'Error'
@@ -1531,6 +1535,57 @@ export function getDeviceChrome(deviceId: string): Promise<ChromeDeviceDetail> {
 
 export function getChromeProfileExtensions(deviceId: string, profileId: string): Promise<ChromeExtensionRow[]> {
   return request<ChromeExtensionRow[]>(chromeDevicePath(deviceId, `/profiles/${encodeURIComponent(profileId)}/extensions`))
+}
+
+/**
+ * What a rule asks the device to enforce for one extension, machine-wide:
+ * - ForceInstalled: installed from the Chrome Web Store and kept installed.
+ * - Blocked: disabled; Chrome will not let it run or be re-enabled.
+ * - Allowed: explicitly permitted.
+ * - Removed: uninstalled and kept out while the rule stands.
+ */
+export type ChromeExtensionRuleMode = 'ForceInstalled' | 'Blocked' | 'Allowed' | 'Removed'
+
+/**
+ * One extension rule on a device. Rules are the source of truth for policy
+ * state: the inventoried extension rows only change when the device uploads its
+ * next snapshot, so a fresh rule shows here before it shows there.
+ */
+export interface ChromeExtensionRule {
+  extensionId: string
+  mode: ChromeExtensionRuleMode
+  /** The name the console knows it by; null when none was ever supplied. */
+  displayName: string | null
+  updatedAt: string
+}
+
+/** Every rule on the device, force-installed ones not yet in inventory included. */
+export function getChromeExtensionRules(deviceId: string): Promise<ChromeExtensionRule[]> {
+  return request<ChromeExtensionRule[]>(chromeDevicePath(deviceId, '/extension-rules'))
+}
+
+/**
+ * Sets (or replaces) the rule for one extension and queues the task that
+ * enforces it. 409 (problem+json) when the agent is too old for extension
+ * control, whose `detail` the caller surfaces rather than guessing.
+ */
+export function setChromeExtensionRule(
+  deviceId: string,
+  extensionId: string,
+  mode: ChromeExtensionRuleMode,
+  displayName?: string,
+): Promise<QueuedTask> {
+  return request<QueuedTask>(chromeDevicePath(deviceId, `/extension-rules/${encodeURIComponent(extensionId)}`), {
+    method: 'PUT',
+    body: JSON.stringify({ mode, displayName }),
+  })
+}
+
+/** Clears the rule for one extension; the queued task stops enforcing it. */
+export function deleteChromeExtensionRule(deviceId: string, extensionId: string): Promise<QueuedTask> {
+  return request<QueuedTask>(chromeDevicePath(deviceId, `/extension-rules/${encodeURIComponent(extensionId)}`), {
+    method: 'DELETE',
+  })
 }
 
 export function getDevice(deviceId: string): Promise<DeviceDetail> {

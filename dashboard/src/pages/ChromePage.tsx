@@ -31,9 +31,10 @@ import {
  * counts; it shows what the server decided and re-reads it on the same cadence
  * as the Groups page.
  *
- * Read-only in this phase. There is no install, remove or update control here
- * because none exists on the server yet, and a control that only looked like
- * one would be worse than none.
+ * This page itself only reads. The controls live in the device workspace below
+ * the table (ChromeDeviceWorkspace): per-extension rules — force-install,
+ * block, allow, remove — each a queued task the device enforces as machine-wide
+ * Chrome policy.
  */
 export function ChromePage() {
   const { hasPermission } = useAuth()
