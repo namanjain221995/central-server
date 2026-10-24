@@ -1,4 +1,5 @@
-﻿using System.Net.Http.Json;
+﻿using System.Net;
+using System.Net.Http.Json;
 using EndpointPlatform.Domain.Authorization;
 using EndpointPlatform.Domain.Identity;
 using EndpointPlatform.Infrastructure.Agents;
@@ -8,6 +9,7 @@ using EndpointPlatform.Infrastructure.Persistence.Seeding;
 using EndpointPlatform.Infrastructure.Security;
 using EndpointPlatform.Infrastructure.Tests;
 using EndpointPlatform.Infrastructure.Tests.Agents;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -292,6 +294,14 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
     }
 
     /// <summary>
+    /// Header a test may send to give its request a client address. The in-process
+    /// test server presents no <c>RemoteIpAddress</c> at all, and the network
+    /// access policy, the login limiter and the audit trail all key off that
+    /// address. Requests without the header are untouched.
+    /// </summary>
+    public const string ClientIpHeader = "X-Test-Client-IP";
+
+    /// <summary>
     /// The subject the fixture authority signs with. Retained for tests that build
     /// signed artifacts; under the Internal trust mode this host runs in, no test
     /// needs a signature to publish and the signer is never read.
@@ -335,7 +345,33 @@ public sealed class AdminApiPostgresFixture : IAsyncLifetime
             // per-address login limiter must be generous here. The limiter itself
             // has a dedicated test that lowers this again.
             builder.UseSetting("AdminAuth:LoginAttemptsPerMinutePerAddress", "1000");
+
+            // Lets a test present a client address (see ClientIpHeader). A startup
+            // filter wraps the ENTIRE production pipeline, so the address is in
+            // place before the first real middleware runs - exactly where a socket,
+            // or the forwarded-headers middleware, would have put it.
+            builder.ConfigureServices(services =>
+                services.AddSingleton<IStartupFilter>(new TestClientIpStartupFilter()));
         }
+    }
+
+    private sealed class TestClientIpStartupFilter : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use(async (context, nextMiddleware) =>
+            {
+                if (context.Request.Headers.TryGetValue(ClientIpHeader, out var value)
+                    && IPAddress.TryParse(value.ToString(), out var address))
+                {
+                    context.Connection.RemoteIpAddress = address;
+                }
+
+                await nextMiddleware(context);
+            });
+
+            next(app);
+        };
     }
 }
 

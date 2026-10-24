@@ -269,7 +269,11 @@ services:
       # Pre-registers the platform database, so the console opens on something
       # useful instead of an empty tree.
       PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      # The console sits on loopback only now, but the stored DB password is
+      # still worth its own lock: without a master password, anyone who can
+      # reach the login form and knows the one account password gets a
+      # pre-wired owner session on the platform database.
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "True"
       # pgAdmin validates the login address with email_validator, which rejects
       # every special-use domain - .local, .internal, .test - unless it is told
       # the address does not have to be deliverable on the public internet.
@@ -290,9 +294,12 @@ services:
       # libpq ignores a pass file with looser modes or another owner.
       - ./pgadmin/pgpass:/var/lib/pgadmin/storage/${PGADMIN_STORAGE_DIR:-admin_endpoint.local}/pgpass:ro
     ports:
-      # Also reachable through the HTTPS origin at /pgadmin/ ; this direct port
-      # is the fallback for a browser on the server's own LAN.
-      - "${PGADMIN_PORT:-5050}:5050"
+      # Loopback ONLY, deliberately. This is a database console with a
+      # pre-wired schema-owner connection and no MFA; it has no business on
+      # the public origin (it used to be proxied at /pgadmin/ — removed) or on
+      # a world-reachable host port. Reach it over an SSH tunnel:
+      #   ssh -L 5050:127.0.0.1:5050 ec2-user@<host>  →  http://localhost:5050/
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:5050"
     depends_on:
       postgres:
         condition: service_healthy

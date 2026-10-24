@@ -27,9 +27,11 @@ sudo ./bootstrap-admin.sh you@example.com --generate
 
 `deploy.sh` generates the secrets and the certificate on the first run, builds
 the four images, starts everything in dependency order and then **proves it
-works** — it exits non-zero unless the dashboard, both APIs and pgAdmin all
-answer on the real public URL. Re-running it is the normal way to deploy a
-change; it keeps the secrets, the certificate and the database.
+works** — it exits non-zero unless the dashboard and both APIs answer on the
+real public URL, and unless pgAdmin is confirmed ABSENT from that URL (it is
+loopback-only; a 302 at `/pgadmin/` fails the deploy). Re-running it is the
+normal way to deploy a change; it keeps the secrets, the certificate and the
+database.
 
 `sudo` is needed for exactly one thing: giving `pgadmin/pgpass` to uid 5050 so
 pgAdmin can open it. Without it everything still works and pgAdmin asks for the
@@ -66,10 +68,10 @@ Install `tls/ca.crt` on every machine that talks to the platform (browsers, and
 any endpoint running the agent). It is served for convenience over plain HTTP
 at `http://<host>/endpoint-platform-ca.crt`.
 
-**One origin for everything.** Dashboard, `/api/`, `/agent/` and `/pgadmin/` are
-all served by the `web` container. Same reason: a dashboard on a different host
-name or port than the Admin API cannot hold the session cookie. 5080 and 5081
-are never published.
+**One origin for everything.** Dashboard, `/api/` and `/agent/` are all served
+by the `web` container. Same reason: a dashboard on a different host name or
+port than the Admin API cannot hold the session cookie. 5080 and 5081 are never
+published. pgAdmin is deliberately NOT part of the origin — see its section.
 
 **`ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` on both APIs.** TLS terminates in
 nginx, so without it the APIs see plain HTTP and `UseHttpsRedirection` bounces
@@ -145,13 +147,20 @@ the router (dnsmasq: `rebind-domain-ok=/example.com/`) or add it to local DNS.
 
 ## pgAdmin
 
-Reachable two ways: `https://<host>/pgadmin/` through the same HTTPS origin, or
-directly on `http://<host>:5050`. The login is in `.env` as `PGADMIN_EMAIL` and
-`PGADMIN_PASSWORD`; the platform database is pre-registered, connecting as the
-schema owner so every table is visible.
+**Loopback only, on purpose.** pgAdmin is a database console with a pre-wired
+schema-owner connection and a single password in front of it — no MFA, none of
+the Admin API's throttling. Serving it on the public origin meant one
+guessed or reused password equalled full control of the platform database, so
+it is no longer proxied at `/pgadmin/` and its port is bound to `127.0.0.1`.
 
-To take the direct port away and leave only the HTTPS path, delete the `ports:`
-block from the `pgadmin` service.
+Reach it over an SSH tunnel from your machine:
+
+    ssh -L 5050:127.0.0.1:5050 <user>@<host>
+
+then browse `http://localhost:5050/`. The login is in `.env` as
+`PGADMIN_EMAIL` / `PGADMIN_PASSWORD`; pgAdmin now also asks for a master
+password (its own at-rest lock) on first use. The platform database is
+pre-registered, connecting as the schema owner so every table is visible.
 
 ## Day to day
 
