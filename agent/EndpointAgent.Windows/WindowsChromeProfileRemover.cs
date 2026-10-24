@@ -22,7 +22,7 @@ namespace EndpointAgent.Windows;
 /// <para>
 /// <b>No decision lives here.</b> Which profile may be removed, in what order the
 /// operations run, and what a failure means are
-/// <c>RemoveChromeProfileExecutor</c>'s, pinned with fakes; this class only
+/// <c>ChromeProfileRemovalEngine</c>'s, pinned with fakes; this class only
 /// answers for what needs a real machine. It is registered separately from the
 /// read-only <see cref="Core.Abstractions.IChromeCollector"/>, so inventory stays
 /// incapable of deletion and deletion incapable of inventory.

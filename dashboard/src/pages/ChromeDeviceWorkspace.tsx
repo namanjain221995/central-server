@@ -36,11 +36,17 @@ import {
 } from './chromeExtensionRulesView'
 import {
   canRemove,
+  canRemoveEverywhere,
   removeProfileLabel,
+  removeRestartLabel,
   removeSuggested,
   removeTitle,
+  RestartCheckboxLabel,
+  RestartFinishesNote,
+  ScheduledRemovalNote,
   statusBadge,
 } from './chromeProfilesView'
+import { RemoveChromeAccountDialog } from './RemoveChromeAccountDialog'
 import {
   chromeStatusLabel,
   chromeStatusTone,
@@ -85,11 +91,16 @@ const TABS: { key: Tab; label: string }[] = [
  * Profiles carry the server's lifecycle status (active, sign-in broken,
  * dormant, not signed in — the server's verdict, rendered as-is and never
  * re-derived here), and `chrome.manage` can remove a non-Default profile from
- * the device: a queued task the agent refuses while Chrome is open for that
- * Windows user, followed to its real outcome like every other mutation.
- * Extension enforcement stays machine-wide (Chrome's enterprise policy applies
- * to every profile on the PC), so the extensions list answers "what does each
- * profile have", not "which profile to change".
+ * the device: a queued task followed to its real outcome like every other
+ * mutation. Since agent 1.26.0 an open Chrome no longer fails it — the device
+ * reports the removal as scheduled and completes it when Chrome closes or at
+ * the next startup — and a viewer who also holds `device.restart` can queue a
+ * restart alongside to finish it immediately. A signed-in profile additionally
+ * offers "Remove on all devices…", the fleet-wide form of the same removal
+ * (RemoveChromeAccountDialog). Extension enforcement stays machine-wide
+ * (Chrome's enterprise policy applies to every profile on the PC), so the
+ * extensions list answers "what does each profile have", not "which profile to
+ * change".
  */
 export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string; onClose: () => void }) {
   const { hasPermission } = useAuth()
@@ -97,6 +108,11 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
   // Viewing rules rides the page's chrome view permission; every mutating
   // control below is gated on this and hidden without it. The server re-checks.
   const canManage = hasPermission('chrome.manage')
+  // The restart-to-finish option rides the SAME permission as the device
+  // Restart action (DeviceDetailPage's power actions): asking for a restart is
+  // restarting, whatever queued it. Without it the checkbox does not exist and
+  // the server would answer 403 anyway.
+  const canRestart = hasPermission('device.restart')
 
   const [detail, setDetail] = useState<ChromeDeviceDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -112,6 +128,11 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
   const [ruleBusy, setRuleBusy] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState<{ extensionId: string; name: string | null } | null>(null)
   const [confirmProfileRemove, setConfirmProfileRemove] = useState<ChromeProfileRow | null>(null)
+  // The restart-to-finish choice for the open confirmation. Reset every time
+  // the dialog opens, so a restart picked for one removal never carries over
+  // to the next (mirrors the restart dialog's delay on the device page).
+  const [removeWithRestart, setRemoveWithRestart] = useState(false)
+  const [removeEverywhere, setRemoveEverywhere] = useState<ChromeProfileRow | null>(null)
   const [profileBusy, setProfileBusy] = useState(false)
 
   const load = useCallback(async () => {
@@ -161,6 +182,7 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
     setRulesError(null)
     setConfirmRemove(null)
     setConfirmProfileRemove(null)
+    setRemoveEverywhere(null)
     trackedRef.current.forEach((t) => dismiss(t.taskId))
     void load()
     void loadRules()
@@ -211,22 +233,28 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
 
   /**
    * Queues the removal of one Chrome profile and follows the task exactly the
-   * way an extension rule is followed: the agent's own refusal — "Chrome is
-   * running…", "profile's signed-in account no longer matches…" — reaches the
-   * banner verbatim via useTaskTracker, and the profile list itself only
-   * changes once the device has uploaded its next snapshot (onTaskSettled
-   * re-reads the detail).
+   * way an extension rule is followed: the agent's own report — "Scheduled: …"
+   * while Chrome stays open, "profile's signed-in account no longer matches…" —
+   * reaches the banner verbatim via useTaskTracker, and the profile list itself
+   * only changes once the device has uploaded its next snapshot (onTaskSettled
+   * re-reads the detail). When a restart was asked for, the server queues it as
+   * a second task, which is tracked beside the first so the operator sees both
+   * settle.
    */
   const removeProfile = useCallback(
-    async (profile: ChromeProfileRow) => {
+    async (profile: ChromeProfileRow, restartDevice: boolean) => {
       setProfileBusy(true)
       setError(null)
       try {
-        const { taskId } = await removeChromeProfile(profile.id)
+        const { taskId, restartTaskId } = await removeChromeProfile(profile.id, restartDevice)
         track(taskId, removeProfileLabel(profile))
+        if (restartTaskId) {
+          track(restartTaskId, removeRestartLabel(profile))
+          setNotice('Removal and restart queued. The restart finishes the removal immediately; both tasks are tracked below.')
+        }
       } catch (e) {
-        // 403/404, or the problem+json refusal when the device's agent predates
-        // profile removal (1.25.0) — the server's own wording beats a guess.
+        // 403/404, or the problem+json refusal naming the agent floor (1.26.0
+        // for scheduled removal) — the server's own wording beats a guess.
         setError(e instanceof ApiError && e.detail ? e.detail : 'The profile removal could not be queued.')
       } finally {
         setProfileBusy(false)
@@ -389,7 +417,13 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
               ruleBusy={ruleBusy}
               onRuleAction={onRuleAction}
               profileBusy={profileBusy}
-              onRemoveProfile={setConfirmProfileRemove}
+              onRemoveProfile={(profile) => {
+                // Every removal starts without a restart; it is opted into
+                // deliberately each time.
+                setRemoveWithRestart(false)
+                setConfirmProfileRemove(profile)
+              }}
+              onRemoveEverywhere={setRemoveEverywhere}
             />
           )}
 
@@ -439,14 +473,40 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
           onConfirm={() => {
             const target = confirmProfileRemove
             setConfirmProfileRemove(null)
-            void removeProfile(target)
+            void removeProfile(target, canRestart && removeWithRestart)
           }}
         >
-          This removes the profile from Chrome on the device. Bookmarks, history and saved passwords stored only in
-          this profile go with it; anything synced to a signed-in Google account stays in that account. The device
-          refuses while Chrome is open for {confirmProfileRemove.userAccount ?? 'its Windows user'} — the task will
-          report it; have them close Chrome (or restart the PC) and try again.
+          <>
+            This removes the profile from Chrome on the device. Bookmarks, history and saved passwords stored only in
+            this profile go with it; anything synced to a signed-in Google account stays in that account.{' '}
+            {ScheduledRemovalNote}
+            {canRestart && (
+              // The restart option exists only for a viewer who could restart
+              // this device anyway (device.restart); the server re-checks and
+              // answers 403 regardless. Spans, not divs: ConfirmDialog renders
+              // its children inside a <p>.
+              <span style={{ display: 'block', marginTop: 12 }}>
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={removeWithRestart}
+                    onChange={(e) => setRemoveWithRestart(e.target.checked)}
+                  />
+                  {' '}{RestartCheckboxLabel}
+                </label>
+                <span className="field-hint" style={{ display: 'block', marginTop: 4 }}>{RestartFinishesNote}</span>
+              </span>
+            )}
+          </>
         </ConfirmDialog>
+      )}
+
+      {removeEverywhere?.accountEmail && (
+        <RemoveChromeAccountDialog
+          accountEmail={removeEverywhere.accountEmail}
+          canRestart={canRestart}
+          onClose={() => setRemoveEverywhere(null)}
+        />
       )}
     </div>
   )
@@ -515,6 +575,7 @@ function ProfileList({
   canManage,
   busy,
   onRemove,
+  onRemoveEverywhere,
 }: {
   profiles: ChromeProfileRow[]
   selectedProfile: ChromeProfileRow | null
@@ -522,6 +583,7 @@ function ProfileList({
   canManage: boolean
   busy: boolean
   onRemove: (profile: ChromeProfileRow) => void
+  onRemoveEverywhere: (profile: ChromeProfileRow) => void
 }) {
   return (
     <div className="card split-aside" style={{ margin: 0 }}>
@@ -558,20 +620,35 @@ function ProfileList({
               </div>
             </button>
             {canManage && (
-              <button
-                type="button"
-                // Dormant profiles are the cleanup target, so their Remove is
-                // the suggested (primary) button; it stays available on every
-                // non-Default profile regardless.
-                className={removeSuggested(p.status) ? 'btn-primary btn-sm' : 'btn-sm'}
-                style={{ flexShrink: 0 }}
-                disabled={!canRemove(p.profileKey) || busy}
-                title={removeTitle(p.profileKey)}
-                aria-label={`Remove Chrome profile ${profileTitle(p)}`}
-                onClick={() => onRemove(p)}
-              >
-                Remove
-              </button>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0, alignItems: 'stretch' }}>
+                <button
+                  type="button"
+                  // Dormant profiles are the cleanup target, so their Remove is
+                  // the suggested (primary) button; it stays available on every
+                  // non-Default profile regardless.
+                  className={removeSuggested(p.status) ? 'btn-primary btn-sm' : 'btn-sm'}
+                  disabled={!canRemove(p.profileKey) || busy}
+                  title={removeTitle(p.profileKey)}
+                  aria-label={`Remove Chrome profile ${profileTitle(p)}`}
+                  onClick={() => onRemove(p)}
+                >
+                  Remove
+                </button>
+                {/* The fleet-wide action addresses a Google account, so it only
+                    exists where one is signed in (and never on Default). */}
+                {canRemoveEverywhere(p) && (
+                  <button
+                    type="button"
+                    className="btn-ghost btn-sm"
+                    disabled={busy}
+                    title={`Removes the Chrome profile signed in to ${p.accountEmail} from every targeted device`}
+                    aria-label={`Remove Chrome profile for ${p.accountEmail} on all devices`}
+                    onClick={() => onRemoveEverywhere(p)}
+                  >
+                    Remove on all devices…
+                  </button>
+                )}
+              </div>
             )}
           </div>
         )
@@ -592,6 +669,7 @@ function ProfilesTab({
   onRuleAction,
   profileBusy,
   onRemoveProfile,
+  onRemoveEverywhere,
 }: {
   detail: ChromeDeviceDetail
   selectedProfile: ChromeProfileRow | null
@@ -604,6 +682,7 @@ function ProfilesTab({
   onRuleAction: (action: ChromeExtensionRuleAction, target: { extensionId: string; name: string | null }) => void
   profileBusy: boolean
   onRemoveProfile: (profile: ChromeProfileRow) => void
+  onRemoveEverywhere: (profile: ChromeProfileRow) => void
 }) {
   if (!detail.installation) return <NotReported />
   if (detail.profiles.length === 0) {
@@ -625,6 +704,7 @@ function ProfilesTab({
         canManage={canManage}
         busy={profileBusy}
         onRemove={onRemoveProfile}
+        onRemoveEverywhere={onRemoveEverywhere}
       />
       <div className="card split-main" style={{ margin: 0 }}>
         {selectedProfile && (

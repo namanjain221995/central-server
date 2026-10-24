@@ -388,13 +388,29 @@ public static class Program
             // stale profile from one user's Chrome: the Local State entry first,
             // then the directory. Every decision -- the Default refusal, the path
             // and account checks, the Chrome-not-running gate, the edit-before-
-            // delete order -- lives in the executor and is pinned with fakes; the
-            // remover answers only for the machine (ProfileList, process tokens,
-            // the two file operations). Registered separately from the read-only
-            // IChromeCollector above for the same reason as the policy writer:
-            // inventory stays incapable of deletion and deletion incapable of
-            // inventory.
+            // delete order -- lives in the removal ENGINE and is pinned with
+            // fakes; the remover answers only for the machine (ProfileList,
+            // process tokens, the two file operations). Registered separately
+            // from the read-only IChromeCollector above for the same reason as
+            // the policy writer: inventory stays incapable of deletion and
+            // deletion incapable of inventory.
+            //
+            // Chrome being open DEFERS a removal rather than failing it: the
+            // executor parks the validated request with the hosted worker (a
+            // plain-JSON pending store under ProgramData -- nothing in it is
+            // secret -- surviving restarts and reboots), the task completes as
+            // scheduled, and the worker re-runs the same engine on start and
+            // every two minutes until Chrome's closed moment. Hosted BEFORE the
+            // task loop below, so a reboot's first pass usually finishes the
+            // removal before anyone reopens Chrome.
             builder.Services.AddSingleton<IChromeProfileRemover, WindowsChromeProfileRemover>();
+            builder.Services.AddSingleton<EndpointAgent.Core.ChromeProfiles.ChromeProfileRemovalEngine>();
+            builder.Services.AddSingleton<
+                EndpointAgent.Core.ChromeProfiles.IPendingChromeRemovalStore,
+                EndpointAgent.Core.ChromeProfiles.FilePendingChromeRemovalStore>();
+            builder.Services.AddSingleton<EndpointAgent.Core.ChromeProfiles.ChromeProfileRemovalWorker>();
+            builder.Services.AddHostedService(sp =>
+                sp.GetRequiredService<EndpointAgent.Core.ChromeProfiles.ChromeProfileRemovalWorker>());
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.RemoveChromeProfileExecutor>();
 
             builder.Services.AddHttpClient<IAgentApiClient, AgentApiClient>((serviceProvider, client) =>

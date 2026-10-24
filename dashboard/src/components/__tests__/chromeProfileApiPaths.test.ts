@@ -1,24 +1,32 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  removeChromeAccountEverywhere,
   removeChromeProfile,
+  type ChromeAccountRemovalResult,
   type ChromeProfileActionAccepted,
   type ChromeProfileRow,
   type ChromeProfileStatus,
 } from '../../api/client'
 
 /**
- * The profile lifecycle action reaches the API with exactly one `/api` prefix
- * and the route the server maps — the same property chromeApiPaths.test.ts and
+ * The profile lifecycle actions reach the API with exactly one `/api` prefix
+ * and the routes the server maps — the same property chromeApiPaths.test.ts and
  * chromeExtensionRuleApiPaths.test.ts guard, for the same reason: a doubled
- * prefix is a 404 that blanks a whole page. The 202 body is `{taskId}` and
- * nothing more, and the profile row type carries the lifecycle fields the
- * server now sends.
+ * prefix is a 404 that blanks a whole page. The body shapes are exact: a plain
+ * single remove still has NO body (older servers accept it unchanged), a
+ * restart rides as `{"restartDevice":true}`, and the fleet action sends exactly
+ * the contract's `{accountEmail, target, restartDevices}`. The profile row type
+ * carries the lifecycle fields the server now sends.
  */
 
 const PROFILE = '0192f3a1-2222-7000-8000-aaaabbbbcccc'
 const TASK = '0192f3a1-3333-7000-8000-aaaabbbbcccc'
+const RESTART_TASK = '0192f3a1-4444-7000-8000-aaaabbbbcccc'
 
-function captureRequests(): { urls: string[]; inits: (RequestInit | undefined)[] } {
+function captureRequests(body: unknown = { taskId: TASK }, status = 202): {
+  urls: string[]
+  inits: (RequestInit | undefined)[]
+} {
   const urls: string[] = []
   const inits: (RequestInit | undefined)[] = []
 
@@ -27,9 +35,10 @@ function captureRequests(): { urls: string[]; inits: (RequestInit | undefined)[]
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       urls.push(typeof input === 'string' ? input : input.toString())
       inits.push(init)
-      // The contract's acknowledgement: 202 Accepted with the task to follow.
-      return new Response(JSON.stringify({ taskId: TASK }), {
-        status: 202,
+      // The contract's acknowledgement: 202 Accepted with the task(s) to
+      // follow, or the fleet action's 200 with its tallies.
+      return new Response(JSON.stringify(body), {
+        status,
         headers: { 'Content-Type': 'application/json' },
       })
     }),
@@ -99,5 +108,137 @@ describe('Chrome profile action API paths', () => {
     expect(status).toBe('dormant')
     expect(row.signedIn).toBeNull()
     expect(row.signInBroken).toBeNull()
+  })
+})
+
+describe('Chrome profile removal with a restart', () => {
+  it('sends exactly {"restartDevice":true} as JSON only when the restart is asked for', async () => {
+    const { urls, inits } = captureRequests({ taskId: TASK, restartTaskId: RESTART_TASK })
+
+    await removeChromeProfile(PROFILE, true)
+
+    expect(urls).toEqual([`/api/admin/v1/chrome/profiles/${PROFILE}/actions/remove`])
+    expect(inits[0]?.method).toBe('POST')
+    const headers = inits[0]?.headers as Record<string, string>
+    expect(headers['Content-Type']).toBe('application/json')
+    expect(JSON.parse(inits[0]?.body as string)).toEqual({ restartDevice: true })
+  })
+
+  it('sends no body at all when restartDevice is explicitly false — the shape every server accepts', async () => {
+    const { inits } = captureRequests()
+
+    await removeChromeProfile(PROFILE, false)
+
+    expect(inits[0]?.method).toBe('POST')
+    expect(inits[0]?.body).toBeUndefined()
+  })
+
+  it('parses the 202 with both the removal task and the restart task', async () => {
+    captureRequests({ taskId: TASK, restartTaskId: RESTART_TASK })
+
+    const accepted: ChromeProfileActionAccepted = await removeChromeProfile(PROFILE, true)
+
+    expect(accepted).toEqual({ taskId: TASK, restartTaskId: RESTART_TASK })
+  })
+
+  it('parses a null restartTaskId — the contract when no restart was asked for', async () => {
+    captureRequests({ taskId: TASK, restartTaskId: null })
+
+    const accepted = await removeChromeProfile(PROFILE)
+
+    expect(accepted.taskId).toBe(TASK)
+    expect(accepted.restartTaskId).toBeNull()
+  })
+})
+
+describe('Fleet Chrome account removal API', () => {
+  const TALLY: ChromeAccountRemovalResult = {
+    targetedDevices: 9,
+    queuedRemovals: 5,
+    queuedRestarts: 5,
+    skippedNoProfile: 2,
+    skippedDefault: 1,
+    rejectedAgentTooOld: 1,
+  }
+
+  it('posts to the mapped route with one /api prefix', async () => {
+    const { urls, inits } = captureRequests(TALLY, 200)
+
+    await removeChromeAccountEverywhere({
+      accountEmail: 'person@example.com',
+      target: { kind: 'all' },
+      restartDevices: false,
+    })
+
+    expect(urls).toEqual(['/api/admin/v1/chrome/accounts/actions/remove'])
+    expect(urls[0].includes('/api/api')).toBe(false)
+    expect(urls[0].split('/api/').length - 1).toBe(1)
+    expect(inits[0]?.method).toBe('POST')
+    const headers = inits[0]?.headers as Record<string, string>
+    expect(headers['Content-Type']).toBe('application/json')
+  })
+
+  it('sends exactly the contract body for an all-devices target', async () => {
+    const { inits } = captureRequests(TALLY, 200)
+
+    await removeChromeAccountEverywhere({
+      accountEmail: 'person@example.com',
+      target: { kind: 'all' },
+      restartDevices: false,
+    })
+
+    // The target carries its kind and nothing else — no null groupId or empty
+    // deviceIds riding along for the server to reject.
+    expect(JSON.parse(inits[0]?.body as string)).toEqual({
+      accountEmail: 'person@example.com',
+      target: { kind: 'all' },
+      restartDevices: false,
+    })
+  })
+
+  it('names the group, and only the group, for a group target', async () => {
+    const { inits } = captureRequests(TALLY, 200)
+
+    await removeChromeAccountEverywhere({
+      accountEmail: 'person@example.com',
+      target: { kind: 'group', groupId: 'g-42' },
+      restartDevices: true,
+    })
+
+    expect(JSON.parse(inits[0]?.body as string)).toEqual({
+      accountEmail: 'person@example.com',
+      target: { kind: 'group', groupId: 'g-42' },
+      restartDevices: true,
+    })
+  })
+
+  it('names the devices for a selection target', async () => {
+    const { inits } = captureRequests(TALLY, 200)
+
+    await removeChromeAccountEverywhere({
+      accountEmail: 'person@example.com',
+      target: { kind: 'devices', deviceIds: ['d1', 'd2'] },
+      restartDevices: false,
+    })
+
+    expect(JSON.parse(inits[0]?.body as string)).toEqual({
+      accountEmail: 'person@example.com',
+      target: { kind: 'devices', deviceIds: ['d1', 'd2'] },
+      restartDevices: false,
+    })
+  })
+
+  it('returns the tallies exactly as the server sent them, keys this build does not know included', async () => {
+    captureRequests({ ...TALLY, offline: 3, alreadyQueued: 2 }, 200)
+
+    const result = await removeChromeAccountEverywhere({
+      accountEmail: 'person@example.com',
+      target: { kind: 'all' },
+      restartDevices: false,
+    })
+
+    expect(result).toEqual({ ...TALLY, offline: 3, alreadyQueued: 2 })
+    expect(result.queuedRemovals).toBe(5)
+    expect(result['alreadyQueued']).toBe(2)
   })
 })

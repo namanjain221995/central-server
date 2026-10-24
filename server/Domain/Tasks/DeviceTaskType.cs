@@ -376,7 +376,7 @@ public enum DeviceTaskType
 
     /// <summary>
     /// Remove one named Chrome profile -- Chrome's profile-list entry and its
-    /// directory -- from one Windows user's Chrome on the device (agent 1.25.0+).
+    /// directory -- from one Windows user's Chrome on the device (agent 1.26.0+).
     /// </summary>
     /// <remarks>
     /// <para>
@@ -385,11 +385,13 @@ public enum DeviceTaskType
     /// decided on: the Windows user by SID, the profile by its directory key and
     /// by the full path the console recorded, and the signed-in account it
     /// believed was there. The agent re-derives the path for itself and refuses
-    /// any mismatch, refuses the "Default" profile outright, refuses when the
+    /// any mismatch, refuses the "Default" profile outright, and refuses when the
     /// profile's signed-in account no longer matches the console's view (a stale
-    /// inventory must not delete a profile that changed hands), and refuses while
-    /// Chrome is running for that user. A refusal is a failed task the operator
-    /// can read, never a partial delete.
+    /// inventory must not delete a profile that changed hands). A refusal is a
+    /// failed task the operator can read, never a partial delete. Chrome being
+    /// open is not a refusal since 1.26.0: the task completes as "scheduled" and
+    /// the agent persists the removal, carrying it out when Chrome closes for
+    /// that user or at the next boot.
     /// </para>
     /// <para>
     /// Gated on the agent that has the removal executor: an older one would fail

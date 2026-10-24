@@ -217,6 +217,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Chrome.ChromeReadService>();
         services.AddScoped<Chrome.ChromeExtensionRuleService>();
         services.AddScoped<Chrome.ChromeProfileRemovalService>();
+        services.AddScoped<Chrome.BulkChromeProfileRemovalService>();
         services.AddScoped<Devices.DeviceLifecycleService>();
         services.AddScoped<Reporting.ReportReadService>();
         services.AddScoped<Devices.LocalAccountManagementService>();
