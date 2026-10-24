@@ -1612,24 +1612,105 @@ export function deleteChromeExtensionRule(deviceId: string, extensionId: string)
   })
 }
 
-/** The 202 acknowledgement of a queued profile action: the task to follow. */
+/** The 202 acknowledgement of a queued profile action: the task(s) to follow. */
 export interface ChromeProfileActionAccepted {
   taskId: string
+  /**
+   * The queued restart's own task when `restartDevice` was asked for; null when
+   * it was not. Absent from a server that predates the restart option, which a
+   * caller treats exactly like null.
+   */
+  restartTaskId?: string | null
 }
 
 /**
  * Queues the task that removes a Chrome profile from its device — the profile
  * directory and everything stored only in it. `profileId` is the row's `id`.
- * Answers 202 with the task to follow (the device refuses while Chrome is open
- * for that Windows user, and the task reports it); a problem+json refusal when
- * the device's agent predates 1.25.0 carries the server's own `detail`, which
- * the caller surfaces verbatim rather than guessing.
+ *
+ * Answers 202 with the task(s) to follow. Since agent 1.26.0 an open Chrome no
+ * longer fails the task: the device reports the removal as scheduled and
+ * completes it the moment Chrome closes, or at the next startup. An agent below
+ * that floor is a 409 problem+json naming it, whose `detail` the caller
+ * surfaces verbatim rather than guessing.
+ *
+ * `restartDevice` additionally queues a device restart so the removal finishes
+ * immediately; it requires the same permission as the device Restart action
+ * (`device.restart`) and is a 403 problem-details without it. The JSON body is
+ * sent only when the restart is asked for, so a plain removal keeps the exact
+ * no-body request shape every server already accepts.
  */
-export function removeChromeProfile(profileId: string): Promise<ChromeProfileActionAccepted> {
+export function removeChromeProfile(profileId: string, restartDevice?: boolean): Promise<ChromeProfileActionAccepted> {
   return request<ChromeProfileActionAccepted>(
     `/admin/v1/chrome/profiles/${encodeURIComponent(profileId)}/actions/remove`,
-    { method: 'POST' },
+    {
+      method: 'POST',
+      ...(restartDevice ? { body: JSON.stringify({ restartDevice: true }) } : {}),
+    },
   )
+}
+
+/**
+ * Where a fleet-wide Chrome account removal is aimed. Exactly the wire shape:
+ * a kind, and only the field that kind needs — the server rejects a body that
+ * carries the others.
+ */
+export type ChromeAccountRemovalTarget =
+  | { kind: 'all' }
+  | { kind: 'group'; groupId: string }
+  | { kind: 'devices'; deviceIds: string[] }
+
+export interface RemoveChromeAccountEverywhereInput {
+  /** The Google account whose signed-in profile is removed wherever it exists. */
+  accountEmail: string
+  target: ChromeAccountRemovalTarget
+  /**
+   * Also queue a restart on every device that got a removal, finishing each one
+   * immediately. Requires the same permission as the device Restart action
+   * (`device.restart`); a 403 problem-details without it.
+   */
+  restartDevices: boolean
+}
+
+/**
+ * The server's tally of a fleet-wide removal; every value is a device count.
+ * The named keys are today's contract. The index signature keeps any further
+ * tally a newer server adds — rendered, never dropped — and every key is
+ * optional because the view treats a missing one as "not reported", not zero.
+ */
+export interface ChromeAccountRemovalResult {
+  /** Devices the target resolved to in the caller's scope. */
+  targetedDevices?: number
+  /** Removal tasks queued. Where Chrome is open the device schedules the removal instead of failing it. */
+  queuedRemovals?: number
+  /** Restart tasks queued alongside (0 unless `restartDevices` was set). */
+  queuedRestarts?: number
+  /** Targeted devices with no Chrome profile signed in to the account. */
+  skippedNoProfile?: number
+  /** Devices where the account's profile is Chrome's built-in Default, which cannot be removed. */
+  skippedDefault?: number
+  /** Devices whose agent predates scheduled removal (1.26.0) and was refused. */
+  rejectedAgentTooOld?: number
+  /** Queued but offline — they act when the agent reconnects. */
+  offline?: number
+  [tally: string]: number | undefined
+}
+
+/**
+ * Removes the Chrome profile signed in to one Google account from every
+ * targeted device — the fleet-wide form of {@link removeChromeProfile}, fanned
+ * out on the server like the bulk local-account actions. Answers 200 with the
+ * tallies alone; the per-device work is ordinary tasks on each device.
+ * Problem-details refusals (403 when restarts are asked for without the
+ * restart permission, among others) carry the server's own `detail`, which the
+ * caller surfaces verbatim.
+ */
+export function removeChromeAccountEverywhere(
+  input: RemoveChromeAccountEverywhereInput,
+): Promise<ChromeAccountRemovalResult> {
+  return request<ChromeAccountRemovalResult>('/admin/v1/chrome/accounts/actions/remove', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export function getDevice(deviceId: string): Promise<DeviceDetail> {

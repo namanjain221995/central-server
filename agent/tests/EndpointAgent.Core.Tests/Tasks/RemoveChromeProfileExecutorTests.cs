@@ -1,25 +1,35 @@
 using System.Text.Json;
-using EndpointAgent.Core.Abstractions;
+using EndpointAgent.Core.ChromeProfiles;
 using EndpointAgent.Core.Tasks;
+using EndpointAgent.Core.Tests.ChromeProfiles;
+using EndpointAgent.Core.Tests.Usb;
 using EndpointPlatform.Contracts.Agent;
 using Microsoft.Extensions.Logging.Abstractions;
+using FakeRemover = EndpointAgent.Core.Tests.ChromeProfiles.FakeChromeProfileRemover;
 
 namespace EndpointAgent.Core.Tests.Tasks;
 
 /// <summary>
-/// The Chrome profile removal executor's whole decision table, against a fake
+/// The Chrome profile removal task's whole decision table, against a fake
 /// remover so no file system or process table is touched: the payload gates, the
 /// Default-profile and stale-payload refusals, the account check against a stale
-/// console view, the Chrome-running gate, the Local State rewrite (entry out,
-/// <c>last_used</c> fixed, everything else preserved), the edit-before-delete
-/// order with the partial outcome, the one retry a sharing violation gets, and
-/// the idempotent re-run after a partial or completed removal.
+/// console view, the Local State rewrite (entry out, <c>last_used</c> fixed,
+/// everything else preserved), the edit-before-delete order with the partial
+/// outcome, the one retry a sharing violation gets, and the idempotent re-run
+/// after a partial or completed removal. Chrome running for the user is the one
+/// blocker that no longer refuses: a request that passed every other gate is
+/// parked with the deferred-removal worker and the task completes as scheduled
+/// -- and a request any OTHER gate faults must never be parked, which is pinned
+/// here too. The worker's own passes are pinned in
+/// <c>ChromeProfileRemovalWorkerTests</c>.
 /// </summary>
 public sealed class RemoveChromeProfileExecutorTests
 {
     private const string Sid = "S-1-5-21-1000000000-2000000000-3000000000-1001";
     private const string UserData = @"C:\Users\casey\AppData\Local\Google\Chrome\User Data";
     private const string ProfileNinePath = UserData + @"\Profile 9";
+
+    private static readonly DateTimeOffset Start = new(2026, 10, 24, 9, 0, 0, TimeSpan.Zero);
 
     /// <summary>
     /// A Local State with two profiles and the noise a real file carries, so the
@@ -50,60 +60,7 @@ public sealed class RemoveChromeProfileExecutorTests
         }
         """;
 
-    // =================================================================  THE FAKE
-
-    private sealed class FakeRemover : IChromeProfileRemover
-    {
-        public Dictionary<string, string> UserDataBySid { get; } = new(StringComparer.OrdinalIgnoreCase);
-        public HashSet<string> ChromeRunningFor { get; } = new(StringComparer.OrdinalIgnoreCase);
-
-        /// <summary>The Local State text reads return; null reads as unreadable.</summary>
-        public string? LocalState { get; set; }
-
-        /// <summary>Profile keys whose directory exists under User Data.</summary>
-        public HashSet<string> Directories { get; } = new(StringComparer.OrdinalIgnoreCase);
-
-        public List<string> Written { get; } = [];
-        public List<string> Deleted { get; } = [];
-        public Queue<Exception> WriteFailures { get; } = new();
-        public Queue<Exception> DeleteFailures { get; } = new();
-        public int WriteCalls { get; private set; }
-        public int DeleteCalls { get; private set; }
-
-        public string? ResolveUserDataDirectory(string userSid) =>
-            UserDataBySid.TryGetValue(userSid, out var directory) ? directory : null;
-
-        public bool IsChromeRunningFor(string userSid) => ChromeRunningFor.Contains(userSid);
-
-        public string? ReadLocalState(string userDataDirectory) => LocalState;
-
-        public void WriteLocalState(string userDataDirectory, string json)
-        {
-            WriteCalls++;
-            if (WriteFailures.Count > 0)
-            {
-                throw WriteFailures.Dequeue();
-            }
-
-            Written.Add(json);
-            LocalState = json;
-        }
-
-        public bool ProfileDirectoryExists(string userDataDirectory, string profileKey) =>
-            Directories.Contains(profileKey);
-
-        public void DeleteProfileDirectory(string userDataDirectory, string profileKey)
-        {
-            DeleteCalls++;
-            if (DeleteFailures.Count > 0)
-            {
-                throw DeleteFailures.Dequeue();
-            }
-
-            Directories.Remove(profileKey);
-            Deleted.Add(profileKey);
-        }
-    }
+    // ===============================================================  THE WIRING
 
     private static FakeRemover Remover(string? localState = LocalStateDocument)
     {
@@ -113,8 +70,15 @@ public sealed class RemoveChromeProfileExecutorTests
         return remover;
     }
 
-    private static RemoveChromeProfileExecutor Executor(FakeRemover remover) =>
-        new(remover, NullLogger<RemoveChromeProfileExecutor>.Instance);
+    private static RemoveChromeProfileExecutor Executor(
+        FakeRemover remover, MemoryPendingChromeRemovalStore? store = null, TimeProvider? clock = null)
+    {
+        var engine = new ChromeProfileRemovalEngine(remover, NullLogger<ChromeProfileRemovalEngine>.Instance);
+        var worker = new ChromeProfileRemovalWorker(
+            store ?? new MemoryPendingChromeRemovalStore(), engine,
+            NullLogger<ChromeProfileRemovalWorker>.Instance, clock);
+        return new RemoveChromeProfileExecutor(engine, worker, NullLogger<RemoveChromeProfileExecutor>.Instance, clock);
+    }
 
     private static AgentTask RemovalTask(string? payload) =>
         new(Guid.CreateVersion7(), "RemoveChromeProfile", payload);
@@ -273,19 +237,6 @@ public sealed class RemoveChromeProfileExecutorTests
     }
 
     [Fact]
-    public async Task Chrome_running_for_that_user_is_refused_with_the_documented_message()
-    {
-        var remover = Remover();
-        remover.ChromeRunningFor.Add(Sid);
-
-        var result = await Executor(remover).ExecuteAsync(RemovalTask(Payload()));
-
-        result.Succeeded.ShouldBeFalse();
-        result.Message.ShouldBe("Chrome is running for this user; close Chrome (or restart the device) and retry.");
-        NothingTouched(remover);
-    }
-
-    [Fact]
     public async Task Chrome_running_for_another_user_does_not_block_the_removal()
     {
         var remover = Remover();
@@ -359,6 +310,171 @@ public sealed class RemoveChromeProfileExecutorTests
         result.Succeeded.ShouldBeFalse();
         (result.Message ?? "").ShouldContain("no longer matches the console's view");
         NothingTouched(remover);
+    }
+
+    // ==========================================  CHROME RUNNING: DEFER, NOT FAIL
+
+    /// <summary>
+    /// The feature: on a busy laptop Chrome is open all day, so the one blocker
+    /// that clears itself parks the request instead of failing the task. The
+    /// message and the result document are a contract with the console, pinned
+    /// verbatim.
+    /// </summary>
+    [Fact]
+    public async Task Chrome_running_for_that_user_schedules_the_removal_and_the_task_succeeds()
+    {
+        var remover = Remover();
+        remover.ChromeRunningFor.Add(Sid);
+        var store = new MemoryPendingChromeRemovalStore();
+        var clock = new TestClock(Start);
+        var task = RemovalTask(Payload());
+
+        var result = await Executor(remover, store, clock).ExecuteAsync(task);
+
+        result.Succeeded.ShouldBeTrue(result.Message);
+        result.Message.ShouldBe(
+            "Scheduled: Chrome is open for this user; the profile will be removed the moment "
+            + "Chrome closes or at the next startup. The console reflects it after the next "
+            + "Chrome inventory refresh.");
+
+        var resultRoot = JsonDocument.Parse(result.ResultJson!).RootElement;
+        resultRoot.GetProperty("profileKey").GetString().ShouldBe("Profile 9");
+        resultRoot.GetProperty("scheduled").GetBoolean().ShouldBeTrue();
+
+        var pending = store.Saved.ShouldHaveSingleItem();
+        pending.TaskId.ShouldBe(task.TaskId, "the deferred completion's logs read back to this click");
+        pending.UserSid.ShouldBe(Sid);
+        pending.ProfileKey.ShouldBe("Profile 9");
+        pending.ExpectedEmail.ShouldBe("casey@example.com");
+        pending.ProfilePath.ShouldBe(ProfileNinePath);
+        pending.RequestedAt.ShouldBe(Start);
+
+        NothingTouched(remover);
+    }
+
+    /// <summary>One entry per profile per user: clicking again moves the request's clock, it does not queue a second removal.</summary>
+    [Fact]
+    public async Task Scheduling_the_same_profile_again_requeues_it_with_the_new_request_time()
+    {
+        var remover = Remover();
+        remover.ChromeRunningFor.Add(Sid);
+        var store = new MemoryPendingChromeRemovalStore();
+        var clock = new TestClock(Start);
+        var executor = Executor(remover, store, clock);
+
+        await executor.ExecuteAsync(RemovalTask(Payload()));
+        clock.Advance(TimeSpan.FromHours(3));
+        var second = RemovalTask(Payload());
+        var result = await executor.ExecuteAsync(second);
+
+        result.Succeeded.ShouldBeTrue(result.Message);
+        var pending = store.Saved.ShouldHaveSingleItem("same user + same profile is one intent, not two");
+        pending.TaskId.ShouldBe(second.TaskId);
+        pending.RequestedAt.ShouldBe(Start.AddHours(3), "the operator's latest click restarts the seven-day window");
+    }
+
+    [Fact]
+    public async Task Different_profiles_of_the_same_user_are_scheduled_separately()
+    {
+        var remover = Remover();
+        remover.ChromeRunningFor.Add(Sid);
+        remover.Directories.Add("Profile 2");
+        var store = new MemoryPendingChromeRemovalStore();
+        var executor = Executor(remover, store, new TestClock(Start));
+
+        await executor.ExecuteAsync(RemovalTask(Payload()));
+        await executor.ExecuteAsync(RemovalTask(Payload(
+            key: "Profile 2", email: "casey.example@example.com", path: UserData + @"\Profile 2")));
+
+        store.Saved.Count.ShouldBe(2);
+    }
+
+    /// <summary>
+    /// "Scheduled" is reserved for a request that passed every other gate: a
+    /// stale or wrong request fails NOW, exactly as before, whether or not
+    /// Chrome happens to be running -- it must never sit parked, waiting to do
+    /// the wrong thing at a quiet moment.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_account_is_refused_not_scheduled_even_while_chrome_runs()
+    {
+        var remover = Remover();
+        remover.ChromeRunningFor.Add(Sid);
+        var store = new MemoryPendingChromeRemovalStore();
+
+        var result = await Executor(remover, store).ExecuteAsync(
+            RemovalTask(Payload(email: "someoneelse@example.com")));
+
+        result.Succeeded.ShouldBeFalse();
+        result.Message.ShouldBe(
+            "The profile's signed-in account no longer matches the console's view; "
+            + "refresh Chrome inventory and retry.");
+        store.Saved.ShouldBeEmpty();
+        NothingTouched(remover);
+    }
+
+    [Fact]
+    public async Task A_wrong_path_is_refused_not_scheduled_even_while_chrome_runs()
+    {
+        var remover = Remover();
+        remover.ChromeRunningFor.Add(Sid);
+        var store = new MemoryPendingChromeRemovalStore();
+
+        var result = await Executor(remover, store).ExecuteAsync(
+            RemovalTask(Payload(path: @"D:\Profile 9")));
+
+        result.Succeeded.ShouldBeFalse();
+        (result.Message ?? "").ShouldContain("does not match this device's path");
+        store.Saved.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task The_default_profile_is_refused_not_scheduled_even_while_chrome_runs()
+    {
+        var remover = Remover();
+        remover.ChromeRunningFor.Add(Sid);
+        var store = new MemoryPendingChromeRemovalStore();
+
+        var result = await Executor(remover, store).ExecuteAsync(
+            RemovalTask(Payload(key: "Default", path: UserData + "\\Default")));
+
+        result.Succeeded.ShouldBeFalse();
+        (result.Message ?? "").ShouldContain("refused by policy");
+        store.Saved.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task An_unresolvable_user_is_refused_not_scheduled_even_while_chrome_runs()
+    {
+        var remover = Remover();
+        remover.UserDataBySid.Clear();
+        remover.ChromeRunningFor.Add(Sid);
+        var store = new MemoryPendingChromeRemovalStore();
+
+        var result = await Executor(remover, store).ExecuteAsync(RemovalTask(Payload()));
+
+        result.Succeeded.ShouldBeFalse();
+        (result.Message ?? "").ShouldContain("could not be resolved");
+        store.Saved.ShouldBeEmpty();
+    }
+
+    /// <summary>
+    /// The account gate needs Local State, so an unreadable file is a refusal
+    /// even while Chrome runs: without reading the entry nothing can prove the
+    /// request still describes the profile the console meant.
+    /// </summary>
+    [Fact]
+    public async Task An_unreadable_local_state_is_refused_not_scheduled_even_while_chrome_runs()
+    {
+        var remover = Remover(localState: null);
+        remover.ChromeRunningFor.Add(Sid);
+        var store = new MemoryPendingChromeRemovalStore();
+
+        var result = await Executor(remover, store).ExecuteAsync(RemovalTask(Payload()));
+
+        result.Succeeded.ShouldBeFalse();
+        (result.Message ?? "").ShouldContain("could not be read");
+        store.Saved.ShouldBeEmpty();
     }
 
     // ===============================================================  HAPPY PATHS

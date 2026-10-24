@@ -10,9 +10,11 @@ namespace EndpointAgent.Core.Abstractions;
 /// The seam is cut here, below the decisions, on purpose: everything that decides
 /// whether a profile may be removed -- payload validation, the Default refusal,
 /// the path and account checks, the <c>Local State</c> rewrite, the ordering of
-/// edit before delete and the partial-failure reporting -- lives in the executor
-/// and is pinned with fakes, while this interface carries only what needs a real
-/// machine (the ProfileList registry, process tokens, NTFS).
+/// edit before delete and the partial-failure reporting -- lives in the removal
+/// engine (<c>ChromeProfileRemovalEngine</c>, shared by the task executor and the
+/// deferred-removal worker) and is pinned with fakes, while this interface
+/// carries only what needs a real machine (the ProfileList registry, process
+/// tokens, NTFS).
 /// </para>
 /// <para>
 /// Both directory operations take the <c>User Data</c> directory and the profile
