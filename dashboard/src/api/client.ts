@@ -1403,11 +1403,13 @@ export function cancelRestartSchedule(scheduleId: string, deviceIds?: string[]):
 }
 
 // ---------------------------------------------------------------------------
-// Chrome Management. The reads report what the fleet said; the one control is
+// Chrome Management. The reads report what the fleet said; the controls are
 // per-device extension rules (force-install, block, allow, remove), each of
-// which queues a task the device applies as machine-wide Chrome policy -- the
-// console follows the returned taskId via useTaskTracker rather than calling a
-// rule "applied" because the server stored it. Group membership is the Groups
+// which queues a task the device applies as machine-wide Chrome policy, and
+// per-profile removal, which queues the task that deletes a profile from
+// Chrome on the device. Either way the console follows the returned taskId via
+// useTaskTracker rather than calling a mutation "applied" because the server
+// stored it. Group membership is the Groups
 // page's -- the server resolves a group's devices with the same rule, so "All
 // Devices" is the built-in group's devices (the ones in no custom group),
 // never the whole fleet.
@@ -1467,7 +1469,19 @@ export interface ChromeInstallationView {
   collectedAt: string
 }
 
+/**
+ * The server's verdict on a profile's lifecycle state:
+ * - active: signed in and used within the last 7 days.
+ * - signInBroken: an account is attached but its sign-in no longer works
+ *   (Chrome's "sign-in paused").
+ * - dormant: unused for 7 days or more, or never used.
+ * - notSignedIn: no account attached.
+ */
+export type ChromeProfileStatus = 'active' | 'signInBroken' | 'dormant' | 'notSignedIn'
+
 export interface ChromeProfileRow {
+  /** The profile row id — what the lifecycle actions address ({@link removeChromeProfile}). */
+  id: string
   profileId: string
   userSid: string
   userAccount: string | null
@@ -1478,6 +1492,16 @@ export interface ChromeProfileRow {
   profilePath: string
   isManaged: boolean | null
   lastActiveAt: string | null
+  /** Whether a Google account is signed in; null when the agent is too old to say. */
+  signedIn: boolean | null
+  /** Account attached but its sign-in no longer works; null when the agent is too old to say. */
+  signInBroken: boolean | null
+  /**
+   * The server's status verdict, rendered as-is. Authoritative even when the
+   * two booleans above are null (an old agent): the server has already folded
+   * what it knows into this value, and the console never derives its own.
+   */
+  status: ChromeProfileStatus
   /** Without Chrome's own built-in components. */
   extensionCount: number
   managedExtensionCount: number
@@ -1586,6 +1610,26 @@ export function deleteChromeExtensionRule(deviceId: string, extensionId: string)
   return request<QueuedTask>(chromeDevicePath(deviceId, `/extension-rules/${encodeURIComponent(extensionId)}`), {
     method: 'DELETE',
   })
+}
+
+/** The 202 acknowledgement of a queued profile action: the task to follow. */
+export interface ChromeProfileActionAccepted {
+  taskId: string
+}
+
+/**
+ * Queues the task that removes a Chrome profile from its device — the profile
+ * directory and everything stored only in it. `profileId` is the row's `id`.
+ * Answers 202 with the task to follow (the device refuses while Chrome is open
+ * for that Windows user, and the task reports it); a problem+json refusal when
+ * the device's agent predates 1.25.0 carries the server's own `detail`, which
+ * the caller surfaces verbatim rather than guessing.
+ */
+export function removeChromeProfile(profileId: string): Promise<ChromeProfileActionAccepted> {
+  return request<ChromeProfileActionAccepted>(
+    `/admin/v1/chrome/profiles/${encodeURIComponent(profileId)}/actions/remove`,
+    { method: 'POST' },
+  )
 }
 
 export function getDevice(deviceId: string): Promise<DeviceDetail> {

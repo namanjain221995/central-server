@@ -384,6 +384,19 @@ public static class Program
             builder.Services.AddSingleton<IChromeExtensionPolicyWriter, WindowsChromeExtensionPolicyWriter>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ApplyChromeExtensionPolicyExecutor>();
 
+            // Chrome profile lifecycle. RemoveChromeProfile deletes exactly one
+            // stale profile from one user's Chrome: the Local State entry first,
+            // then the directory. Every decision -- the Default refusal, the path
+            // and account checks, the Chrome-not-running gate, the edit-before-
+            // delete order -- lives in the executor and is pinned with fakes; the
+            // remover answers only for the machine (ProfileList, process tokens,
+            // the two file operations). Registered separately from the read-only
+            // IChromeCollector above for the same reason as the policy writer:
+            // inventory stays incapable of deletion and deletion incapable of
+            // inventory.
+            builder.Services.AddSingleton<IChromeProfileRemover, WindowsChromeProfileRemover>();
+            builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.RemoveChromeProfileExecutor>();
+
             builder.Services.AddHttpClient<IAgentApiClient, AgentApiClient>((serviceProvider, client) =>
                 {
                     var options = serviceProvider.GetRequiredService<IOptions<AgentOptions>>().Value;

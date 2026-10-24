@@ -6,6 +6,7 @@ import {
   getChromeExtensionRules,
   getChromeProfileExtensions,
   getDeviceChrome,
+  removeChromeProfile,
   requestInventoryRefresh,
   setChromeExtensionRule,
   type ChromeDeviceDetail,
@@ -33,6 +34,13 @@ import {
   ruleModeTone,
   type ChromeExtensionRuleAction,
 } from './chromeExtensionRulesView'
+import {
+  canRemove,
+  removeProfileLabel,
+  removeSuggested,
+  removeTitle,
+  statusBadge,
+} from './chromeProfilesView'
 import {
   chromeStatusLabel,
   chromeStatusTone,
@@ -74,9 +82,14 @@ const TABS: { key: Tab; label: string }[] = [
  * extension rows only change when the device uploads its next snapshot, so a
  * fresh rule shows in Managed extensions before the inventory catches up.
  *
- * Profiles are shown for inspection. Enforcement is machine-wide (Chrome's
- * enterprise policy applies to every profile on the PC), so the profile list
- * answers "what does each profile have", not "which profile to change".
+ * Profiles carry the server's lifecycle status (active, sign-in broken,
+ * dormant, not signed in — the server's verdict, rendered as-is and never
+ * re-derived here), and `chrome.manage` can remove a non-Default profile from
+ * the device: a queued task the agent refuses while Chrome is open for that
+ * Windows user, followed to its real outcome like every other mutation.
+ * Extension enforcement stays machine-wide (Chrome's enterprise policy applies
+ * to every profile on the PC), so the extensions list answers "what does each
+ * profile have", not "which profile to change".
  */
 export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string; onClose: () => void }) {
   const { hasPermission } = useAuth()
@@ -98,6 +111,8 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
   const [rulesError, setRulesError] = useState<string | null>(null)
   const [ruleBusy, setRuleBusy] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState<{ extensionId: string; name: string | null } | null>(null)
+  const [confirmProfileRemove, setConfirmProfileRemove] = useState<ChromeProfileRow | null>(null)
+  const [profileBusy, setProfileBusy] = useState(false)
 
   const load = useCallback(async () => {
     setError(null)
@@ -145,6 +160,7 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
     setRules(null)
     setRulesError(null)
     setConfirmRemove(null)
+    setConfirmProfileRemove(null)
     trackedRef.current.forEach((t) => dismiss(t.taskId))
     void load()
     void loadRules()
@@ -191,6 +207,32 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
       }
     },
     [deviceId, track, loadRules],
+  )
+
+  /**
+   * Queues the removal of one Chrome profile and follows the task exactly the
+   * way an extension rule is followed: the agent's own refusal — "Chrome is
+   * running…", "profile's signed-in account no longer matches…" — reaches the
+   * banner verbatim via useTaskTracker, and the profile list itself only
+   * changes once the device has uploaded its next snapshot (onTaskSettled
+   * re-reads the detail).
+   */
+  const removeProfile = useCallback(
+    async (profile: ChromeProfileRow) => {
+      setProfileBusy(true)
+      setError(null)
+      try {
+        const { taskId } = await removeChromeProfile(profile.id)
+        track(taskId, removeProfileLabel(profile))
+      } catch (e) {
+        // 403/404, or the problem+json refusal when the device's agent predates
+        // profile removal (1.25.0) — the server's own wording beats a guess.
+        setError(e instanceof ApiError && e.detail ? e.detail : 'The profile removal could not be queued.')
+      } finally {
+        setProfileBusy(false)
+      }
+    },
+    [track],
   )
 
   /** One entry point for every per-extension menu; Remove confirms first. */
@@ -346,6 +388,8 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
               canManage={canManage}
               ruleBusy={ruleBusy}
               onRuleAction={onRuleAction}
+              profileBusy={profileBusy}
+              onRemoveProfile={setConfirmProfileRemove}
             />
           )}
 
@@ -384,6 +428,24 @@ export function ChromeDeviceWorkspace({ deviceId, onClose }: { deviceId: string;
           Chrome uninstalls it from every profile on this device and keeps it out while the rule stands — the device
           applies the policy on its next check-in, without asking the person using it. Clear the rule later to let it be
           installed again.
+        </ConfirmDialog>
+      )}
+
+      {confirmProfileRemove && (
+        <ConfirmDialog
+          title={`Remove Chrome profile "${profileTitle(confirmProfileRemove)}" from this device?`}
+          confirmLabel="Remove profile"
+          onCancel={() => setConfirmProfileRemove(null)}
+          onConfirm={() => {
+            const target = confirmProfileRemove
+            setConfirmProfileRemove(null)
+            void removeProfile(target)
+          }}
+        >
+          This removes the profile from Chrome on the device. Bookmarks, history and saved passwords stored only in
+          this profile go with it; anything synced to a signed-in Google account stays in that account. The device
+          refuses while Chrome is open for {confirmProfileRemove.userAccount ?? 'its Windows user'} — the task will
+          report it; have them close Chrome (or restart the PC) and try again.
         </ConfirmDialog>
       )}
     </div>
@@ -450,34 +512,70 @@ function ProfileList({
   profiles,
   selectedProfile,
   onSelect,
+  canManage,
+  busy,
+  onRemove,
 }: {
   profiles: ChromeProfileRow[]
   selectedProfile: ChromeProfileRow | null
   onSelect: (profileId: string) => void
+  canManage: boolean
+  busy: boolean
+  onRemove: (profile: ChromeProfileRow) => void
 }) {
   return (
     <div className="card split-aside" style={{ margin: 0 }}>
       <h2 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         Chrome profiles <span className="badge plain neutral">{profiles.length}</span>
       </h2>
-      {profiles.map((p) => (
-        <button
-          key={p.profileId}
-          type="button"
-          className="list-item"
-          aria-selected={selectedProfile?.profileId === p.profileId}
-          onClick={() => onSelect(p.profileId)}
-        >
-          <div className="list-item-title">
-            {profileTitle(p)}
-            {p.isManaged && <span className="muted" style={{ fontWeight: 400 }}> · managed</span>}
+      {profiles.map((p) => {
+        // The badge is the server's status verdict, never derived here; the
+        // hint under it carries the explanation ("unused 12 days", the broken
+        // sign-in wording).
+        const badge = statusBadge(p.status, p.lastActiveAt)
+        return (
+          // The select button and the Remove button are siblings, not nested:
+          // a button inside a button is invalid HTML and unreachable by keyboard.
+          <div key={p.profileId} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              type="button"
+              className="list-item"
+              style={{ flex: 1, minWidth: 0 }}
+              aria-selected={selectedProfile?.profileId === p.profileId}
+              onClick={() => onSelect(p.profileId)}
+            >
+              <div className="list-item-title" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span>
+                  {profileTitle(p)}
+                  {p.isManaged && <span className="muted" style={{ fontWeight: 400 }}> · managed</span>}
+                </span>
+                <span className={`badge ${badge.tone}`} title={badge.hint ?? undefined}>{badge.label}</span>
+              </div>
+              {badge.hint && <div className="list-item-sub">{badge.hint}</div>}
+              {p.accountEmail && <div className="list-item-sub">{p.accountEmail}</div>}
+              <div className="list-item-sub">
+                {profileSubtitle(p)} · {countLabel(p.extensionCount, 'extension')}
+              </div>
+            </button>
+            {canManage && (
+              <button
+                type="button"
+                // Dormant profiles are the cleanup target, so their Remove is
+                // the suggested (primary) button; it stays available on every
+                // non-Default profile regardless.
+                className={removeSuggested(p.status) ? 'btn-primary btn-sm' : 'btn-sm'}
+                style={{ flexShrink: 0 }}
+                disabled={!canRemove(p.profileKey) || busy}
+                title={removeTitle(p.profileKey)}
+                aria-label={`Remove Chrome profile ${profileTitle(p)}`}
+                onClick={() => onRemove(p)}
+              >
+                Remove
+              </button>
+            )}
           </div>
-          {p.accountEmail && <div className="list-item-sub">{p.accountEmail}</div>}
-          <div className="list-item-sub">
-            {profileSubtitle(p)} · {countLabel(p.extensionCount, 'extension')}
-          </div>
-        </button>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -492,6 +590,8 @@ function ProfilesTab({
   canManage,
   ruleBusy,
   onRuleAction,
+  profileBusy,
+  onRemoveProfile,
 }: {
   detail: ChromeDeviceDetail
   selectedProfile: ChromeProfileRow | null
@@ -502,6 +602,8 @@ function ProfilesTab({
   canManage: boolean
   ruleBusy: boolean
   onRuleAction: (action: ChromeExtensionRuleAction, target: { extensionId: string; name: string | null }) => void
+  profileBusy: boolean
+  onRemoveProfile: (profile: ChromeProfileRow) => void
 }) {
   if (!detail.installation) return <NotReported />
   if (detail.profiles.length === 0) {
@@ -516,7 +618,14 @@ function ProfilesTab({
 
   return (
     <div className="split" style={{ marginTop: 12 }}>
-      <ProfileList profiles={detail.profiles} selectedProfile={selectedProfile} onSelect={onSelect} />
+      <ProfileList
+        profiles={detail.profiles}
+        selectedProfile={selectedProfile}
+        onSelect={onSelect}
+        canManage={canManage}
+        busy={profileBusy}
+        onRemove={onRemoveProfile}
+      />
       <div className="card split-main" style={{ margin: 0 }}>
         {selectedProfile && (
           <>

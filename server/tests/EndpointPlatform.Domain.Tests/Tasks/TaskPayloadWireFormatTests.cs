@@ -187,4 +187,49 @@ public sealed class TaskPayloadWireFormatTests
         rules.ValueKind.ShouldBe(JsonValueKind.Array);
         rules.GetArrayLength().ShouldBe(0);
     }
+
+    /// <summary>
+    /// The Chrome profile removal payload as the agent's executor reads it:
+    /// camelCase <c>userSid</c>, <c>profileKey</c>, <c>expectedEmail</c> and
+    /// <c>profilePath</c>, every one a string.
+    /// </summary>
+    [Fact]
+    public void Remove_chrome_profile_payload_matches_what_the_agent_executor_parses()
+    {
+        const string sid = "S-1-5-21-1111111111-2222222222-3333333333-1001";
+        const string path = @"C:\Users\user\AppData\Local\Google\Chrome\User Data\Profile 2";
+
+        var json = Serialize(new TaskPayloads.RemoveChromeProfile(
+            sid, "Profile 2", "someone@example.com", path));
+
+        using var doc = JsonDocument.Parse(json);
+
+        // GetString() throws on anything but a JSON string — these calls ARE the
+        // agent's parse.
+        doc.RootElement.GetProperty("userSid").GetString().ShouldBe(sid);
+        doc.RootElement.GetProperty("profileKey").GetString().ShouldBe("Profile 2");
+        doc.RootElement.GetProperty("expectedEmail").GetString().ShouldBe("someone@example.com");
+        doc.RootElement.GetProperty("profilePath").GetString().ShouldBe(path);
+    }
+
+    /// <summary>
+    /// A profile the console saw no account on travels with <c>expectedEmail</c>
+    /// null, never an empty string.
+    /// </summary>
+    /// <remarks>
+    /// The agent reads null (or absence) as "the console saw no account" and skips
+    /// the stale-inventory e-mail check, but refuses a non-null non-string and a
+    /// blank string as an unusable payload -- so an empty string here would turn
+    /// every removal of a signed-out profile into a refusal.
+    /// </remarks>
+    [Fact]
+    public void A_profile_with_no_account_travels_with_a_null_expected_email()
+    {
+        var json = Serialize(new TaskPayloads.RemoveChromeProfile(
+            "S-1-5-21-1-2-3-1001", "Profile 1", null,
+            @"C:\Users\user\AppData\Local\Google\Chrome\User Data\Profile 1"));
+
+        using var doc = JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("expectedEmail").ValueKind.ShouldBe(JsonValueKind.Null);
+    }
 }

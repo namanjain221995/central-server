@@ -60,7 +60,12 @@ public sealed class InventoryChromeContractTests
                         "https://updates.example.com/crx", null, null),
                     new InventoryChromeExtension(
                         ComponentId, null, null, null, null, "Component", false, null, null, null, null),
-                ]),
+                ],
+                AccountEmail: "alice@contoso.example",
+                SignedIn: true,
+                SignInBroken: false),
+            // Bob's row leaves every trailing field at its default, pinning that
+            // the null tristates survive the trip as null rather than false.
             new InventoryChromeProfile(
                 BobSid,
                 BobSid,
@@ -124,6 +129,7 @@ public sealed class InventoryChromeContractTests
             "\"chrome\":", "\"status\":", "\"installation\":", "\"profiles\":",
             "\"executablePath\":", "\"installationScope\":", "\"installedForUser\":", "\"updaterVersion\":", "\"lastUpdateCheck\":",
             "\"userSid\":", "\"userAccount\":", "\"profileKey\":", "\"profileName\":", "\"profilePath\":", "\"lastActiveAt\":",
+            "\"accountEmail\":", "\"signedIn\":", "\"signInBroken\":",
             "\"extensions\":", "\"extensionId\":", "\"manifestVersion\":", "\"enabled\":", "\"installType\":",
             "\"isManaged\":", "\"fromWebStore\":", "\"updateUrl\":", "\"installedAt\":", "\"updatedAt\":",
         })

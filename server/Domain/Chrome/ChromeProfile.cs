@@ -14,8 +14,10 @@ namespace EndpointPlatform.Domain.Chrome;
 /// whatever the person typed, and Chrome itself keys the profile by directory.
 /// </para>
 /// <para>
-/// No Google account e-mail address is carried, by construction: the wire contract
-/// has no field for one, so there is nothing here to store and nothing to redact.
+/// The signed-in Google account is carried as its e-mail address and two
+/// nullable facts (<see cref="SignedIn"/>, <see cref="SignInBroken"/>), nothing
+/// more: the account's id and picture have no field in the wire contract, so
+/// there is nothing here to store and nothing to redact.
 /// </para>
 /// <para>
 /// Hangs off <see cref="ChromeInstallation"/> as well as the device so the whole
@@ -47,7 +49,11 @@ public sealed class ChromeProfile : AuditableEntity
         DateTimeOffset collectedAt,
         // Last and optional: added after the first rows existed, so every
         // caller and fixture written before it stays valid.
-        string? accountEmail = null)
+        string? accountEmail = null,
+        // Likewise, appended with the sign-in lifecycle fields: agents older
+        // than the fields simply never supply them, and null means unknown.
+        bool? signedIn = null,
+        bool? signInBroken = null)
     {
         DeviceId = Guard.NotEmpty(deviceId);
         ChromeInstallationId = Guard.NotEmpty(chromeInstallationId);
@@ -59,6 +65,8 @@ public sealed class ChromeProfile : AuditableEntity
         AccountEmail = Guard.OptionalMaxLength(accountEmail, 256);
         IsManaged = isManaged;
         LastActiveAt = lastActiveAt;
+        SignedIn = signedIn;
+        SignInBroken = signInBroken;
         CollectedAt = collectedAt;
     }
 
@@ -92,6 +100,23 @@ public sealed class ChromeProfile : AuditableEntity
 
     /// <summary>When the profile was last used, as Chrome records it. Null when unrecorded.</summary>
     public DateTimeOffset? LastActiveAt { get; private set; }
+
+    /// <summary>
+    /// Whether a Google account is signed in to the profile, as Chrome's
+    /// <c>Local State</c> records it. Null means unknown -- an agent older than
+    /// the field, or an entry that predates the keys it is read from -- and is
+    /// never collapsed into false.
+    /// </summary>
+    public bool? SignedIn { get; private set; }
+
+    /// <summary>
+    /// Whether the profile's sign-in is broken -- Chrome's "Sign-in paused"
+    /// state, where the account must re-authenticate. Null means unknown, never
+    /// "healthy": today's agents always send null (the wire contract reserves the
+    /// field until a reliable persisted signal exists), so status derivation must
+    /// treat only an explicit true as broken.
+    /// </summary>
+    public bool? SignInBroken { get; private set; }
 
     public DateTimeOffset CollectedAt { get; private set; }
 }

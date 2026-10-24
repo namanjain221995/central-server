@@ -556,4 +556,47 @@ public static class TaskPayloads
     public sealed record ApplyChromeExtensionPolicy(
         IReadOnlyList<ChromeExtensionRulePayload> Rules,
         DateTimeOffset IssuedAt);
+
+    // ---- Chrome profile lifecycle ----
+
+    /// <summary>
+    /// Remove one Chrome profile from one Windows user's Chrome. Every field is
+    /// server-derived from the stored inventory row, never supplied by a client,
+    /// and nothing here is a secret -- a SID, a directory name, a path and an
+    /// e-mail address the inventory already carries -- so the payload is safe in
+    /// the task audit record that <c>DeviceTaskService</c> writes for every
+    /// queued task.
+    /// </summary>
+    /// <remarks>
+    /// The payload deliberately over-specifies the target so the agent can refuse
+    /// a stale or mis-addressed instruction instead of guessing: it re-derives
+    /// the path for <paramref name="ProfileKey"/> under
+    /// <paramref name="UserSid"/>'s Chrome and refuses when that is not
+    /// <paramref name="ProfilePath"/> (a payload built against another device, or
+    /// against a profile list that has since changed shape), refuses the
+    /// "Default" profile by policy, and refuses when the profile's signed-in
+    /// account is not <paramref name="ExpectedEmail"/> -- the console decided on
+    /// an inventory snapshot, and a profile that changed hands since is not the
+    /// profile the administrator meant.
+    /// </remarks>
+    /// <param name="UserSid">The Windows account whose Chrome holds the profile.</param>
+    /// <param name="ProfileKey">
+    /// The profile directory name under <c>User Data</c> -- Chrome's stable
+    /// identity for the profile. Never "Default"; the agent refuses that too.
+    /// </param>
+    /// <param name="ExpectedEmail">
+    /// The Google account the console's inventory recorded as signed in, or null
+    /// when it recorded none. The agent's stale-inventory check; null means
+    /// "the console saw no account", not "skip the check on whatever is there".
+    /// </param>
+    /// <param name="ProfilePath">
+    /// The profile directory as the inventory recorded it, absolute and local to
+    /// the endpoint. Cross-checked, never trusted as the thing to delete: the
+    /// agent deletes only the path it derives for itself.
+    /// </param>
+    public sealed record RemoveChromeProfile(
+        string UserSid,
+        string ProfileKey,
+        string? ExpectedEmail,
+        string ProfilePath);
 }

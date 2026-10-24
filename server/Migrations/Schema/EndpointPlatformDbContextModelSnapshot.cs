@@ -959,6 +959,14 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasColumnType("character varying(512)")
                         .HasColumnName("profile_path");
 
+                    b.Property<bool?>("SignInBroken")
+                        .HasColumnType("boolean")
+                        .HasColumnName("sign_in_broken");
+
+                    b.Property<bool?>("SignedIn")
+                        .HasColumnType("boolean")
+                        .HasColumnName("signed_in");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");

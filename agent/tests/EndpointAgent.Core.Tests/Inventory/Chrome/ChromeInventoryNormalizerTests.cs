@@ -58,11 +58,14 @@ public sealed class ChromeInventoryNormalizerTests
         bool? isManaged = false,
         DateTimeOffset? lastActiveAt = null,
         IReadOnlyList<ChromeExtensionEntry>? secure = null,
-        IReadOnlyList<ChromeExtensionEntry>? preferences = null) =>
+        IReadOnlyList<ChromeExtensionEntry>? preferences = null,
+        string? email = null,
+        bool? signedIn = null,
+        bool? signInBroken = null) =>
         new(
             sid,
             account,
-            new ChromeProfileInfo(key, name, isManaged, lastActiveAt),
+            new ChromeProfileInfo(key, name, isManaged, lastActiveAt, email, signedIn, signInBroken),
             path ?? $@"C:\Users\alice\AppData\Local\Google\Chrome\User Data\{key}",
             secure ?? [],
             preferences ?? []);
@@ -414,7 +417,8 @@ public sealed class ChromeInventoryNormalizerTests
 
         var result = ChromeInventoryNormalizer.Normalize(
             Install(),
-            [Profile(key: "Profile 3", name: "  Work  ", isManaged: true, lastActiveAt: lastActive)],
+            [Profile(key: "Profile 3", name: "  Work  ", isManaged: true, lastActiveAt: lastActive,
+                email: " casey@example.com ", signedIn: true, signInBroken: false)],
             enumerationFailed: false);
 
         var profile = result.Profiles.ShouldHaveSingleItem();
@@ -425,6 +429,9 @@ public sealed class ChromeInventoryNormalizerTests
         profile.ProfilePath.ShouldBe(@"C:\Users\alice\AppData\Local\Google\Chrome\User Data\Profile 3");
         profile.IsManaged.ShouldBe(true);
         profile.LastActiveAt.ShouldBe(lastActive);
+        profile.AccountEmail.ShouldBe("casey@example.com");
+        profile.SignedIn.ShouldBe(true);
+        profile.SignInBroken.ShouldBe(false);
     }
 
     [Fact]
@@ -438,6 +445,25 @@ public sealed class ChromeInventoryNormalizerTests
         profile.UserAccount.ShouldBeNull();
         profile.IsManaged.ShouldBeNull();
         profile.LastActiveAt.ShouldBeNull();
+        profile.AccountEmail.ShouldBeNull();
+        profile.SignedIn.ShouldBeNull();
+        profile.SignInBroken.ShouldBeNull();
+    }
+
+    /// <summary>
+    /// The sign-in flags are tristate for the same reason IsManaged is: false is a
+    /// recorded fact and null is "the file did not say", and a normalizer that
+    /// collapsed one into the other would hand the server a guess. False in
+    /// particular must survive, because a signed-out profile is exactly what the
+    /// lifecycle feature exists to surface.
+    /// </summary>
+    [Fact]
+    public void A_recorded_signed_out_profile_stays_false_rather_than_null()
+    {
+        var result = ChromeInventoryNormalizer.Normalize(
+            Install(), [Profile(signedIn: false)], enumerationFailed: false);
+
+        result.Profiles.ShouldHaveSingleItem().SignedIn.ShouldBe(false);
     }
 
     [Fact]

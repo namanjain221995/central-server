@@ -57,6 +57,61 @@ public sealed class ChromeReadService(
     /// </summary>
     public const int MaxDevicesPerGroupListing = 5000;
 
+    /// <summary>
+    /// Days without recorded activity after which a profile reads as dormant.
+    /// The one place the window is stated; derivation and tests both use it.
+    /// </summary>
+    public const int DormancyDays = 7;
+
+    // The profile status values the console contract carries, verbatim. Strings
+    // rather than an enum so the wire value IS the declared value and a rename
+    // cannot silently change what the dashboard switches on.
+    public const string ProfileStatusActive = "active";
+    public const string ProfileStatusSignInBroken = "signInBroken";
+    public const string ProfileStatusDormant = "dormant";
+    public const string ProfileStatusNotSignedIn = "notSignedIn";
+
+    /// <summary>
+    /// One profile's lifecycle status, derived at read time from the stored facts
+    /// -- nothing persists it, so a change of judgement here is a redeploy, not a
+    /// data migration or a sweeper.
+    /// </summary>
+    /// <remarks>
+    /// The order is deliberate. A broken sign-in is reported over dormancy,
+    /// because it needs a person to act whether or not the profile is in use. A
+    /// profile not used for <see cref="DormancyDays"/> days -- or whose last use
+    /// Chrome never recorded -- is dormant before it is anything else: sign-in
+    /// facts describe a profile somebody still opens. And a freshly used profile
+    /// with no signed-in account only counts as such when nothing says an account
+    /// is there: an explicit <paramref name="signedIn"/> of true outranks a
+    /// missing e-mail, which Chrome records separately and can simply not have
+    /// written yet.
+    /// </remarks>
+    public static string DeriveProfileStatus(
+        bool? signInBroken,
+        bool? signedIn,
+        string? accountEmail,
+        DateTimeOffset? lastActiveAt,
+        DateTimeOffset now)
+    {
+        if (signInBroken == true)
+        {
+            return ProfileStatusSignInBroken;
+        }
+
+        if (lastActiveAt is not { } lastActive || lastActive < now - TimeSpan.FromDays(DormancyDays))
+        {
+            return ProfileStatusDormant;
+        }
+
+        if (string.IsNullOrEmpty(accountEmail) && signedIn != true)
+        {
+            return ProfileStatusNotSignedIn;
+        }
+
+        return ProfileStatusActive;
+    }
+
     private readonly EndpointPlatformDbContext _dbContext = dbContext
         ?? throw new ArgumentNullException(nameof(dbContext));
 
@@ -289,6 +344,11 @@ public sealed class ChromeReadService(
                 r.Profile.ProfilePath,
                 r.Profile.IsManaged,
                 r.Profile.LastActiveAt,
+                r.Profile.SignedIn,
+                r.Profile.SignInBroken,
+                DeriveProfileStatus(
+                    r.Profile.SignInBroken, r.Profile.SignedIn, r.Profile.AccountEmail,
+                    r.Profile.LastActiveAt, now),
                 r.ExtensionCount,
                 r.ManagedExtensionCount,
                 r.Profile.CollectedAt))
@@ -466,7 +526,15 @@ public sealed record ChromeInstallationView(
     string UpdateStatus,
     DateTimeOffset CollectedAt);
 
-/// <summary>One Chrome profile on a device with its extension counts (components excluded).</summary>
+/// <summary>
+/// One Chrome profile on a device with its extension counts (components
+/// excluded) and its derived lifecycle <paramref name="Status"/>: one of
+/// <see cref="ChromeReadService.ProfileStatusActive"/>,
+/// <see cref="ChromeReadService.ProfileStatusSignInBroken"/>,
+/// <see cref="ChromeReadService.ProfileStatusDormant"/> and
+/// <see cref="ChromeReadService.ProfileStatusNotSignedIn"/>, computed at read
+/// time by <see cref="ChromeReadService.DeriveProfileStatus"/>.
+/// </summary>
 public sealed record ChromeProfileRow(
     Guid ProfileId,
     string UserSid,
@@ -477,9 +545,21 @@ public sealed record ChromeProfileRow(
     string ProfilePath,
     bool? IsManaged,
     DateTimeOffset? LastActiveAt,
+    bool? SignedIn,
+    bool? SignInBroken,
+    string Status,
     int ExtensionCount,
     int ManagedExtensionCount,
-    DateTimeOffset CollectedAt);
+    DateTimeOffset CollectedAt)
+{
+    /// <summary>
+    /// The same row guid again, under the name the profile actions contract uses
+    /// (<c>POST /admin/v1/chrome/profiles/{id}/actions/...</c> takes it).
+    /// <see cref="ProfileId"/> is kept beside it because the extensions route and
+    /// the console already read that name; removing it would be a wire break.
+    /// </summary>
+    public Guid Id => ProfileId;
+}
 
 /// <summary>
 /// One extension in one profile, as Chrome recorded it. <paramref name="ExtensionRowId"/>

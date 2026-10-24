@@ -145,6 +145,29 @@ public sealed record InventoryChromeInstallation(
 /// (<c>user_name</c>). Null when the profile is not signed in, and null from
 /// agents older than the field, which sits last so they bind unchanged.
 /// </param>
+/// <param name="SignedIn">
+/// Whether a Google account is signed in to the profile, as Chrome's
+/// <c>Local State</c> records it: true when Chrome marks the account as the
+/// consented primary account (<c>is_consented_primary_account</c>) or records a
+/// non-empty account id for the profile (<c>gaia_id</c> -- only its presence is
+/// read; the id itself is never carried), false when those keys record no
+/// account, and null when the entry predates them. Null from agents older than
+/// the field. Appended after <see cref="AccountEmail"/> on purpose: agents may
+/// send it before the server's slice lands, because System.Text.Json ignores
+/// unknown members on deserialization, so the currently-deployed server simply
+/// drops it until it learns the field.
+/// </param>
+/// <param name="SignInBroken">
+/// Whether the profile's sign-in is broken -- Chrome's "Sign-in paused" state,
+/// where the account must re-authenticate (typically after a password change).
+/// Reserved on the wire for when a reliable persisted signal exists: current
+/// Chrome keeps that state in its encrypted token store, not in
+/// <c>Local State</c> or <c>Preferences</c> (verified empirically), so today's
+/// agents always send null and the server derives profile status from
+/// <see cref="SignedIn"/> and <see cref="LastActiveAt"/> alone. Null means
+/// unknown, never "healthy". Ignored by servers deployed before the field, as
+/// above.
+/// </param>
 public sealed record InventoryChromeProfile(
     string UserSid,
     string? UserAccount,
@@ -154,7 +177,9 @@ public sealed record InventoryChromeProfile(
     bool? IsManaged,
     DateTimeOffset? LastActiveAt,
     IReadOnlyList<InventoryChromeExtension> Extensions,
-    string? AccountEmail = null)
+    string? AccountEmail = null,
+    bool? SignedIn = null,
+    bool? SignInBroken = null)
 {
     public const int MaxUserSid = 184;
     public const int MaxUserAccount = 256;
