@@ -3661,3 +3661,50 @@ export function endChat(sessionId: string): Promise<{ status: string }> {
     method: 'POST',
   })
 }
+
+// ---------------------------------------------------------------------------
+// Network access (console IP allowlist).
+//
+// When enabled, the admin console and Admin API answer only from the listed
+// networks — plus the server's own loopback, which always works as break-glass.
+// Managed devices and the Agent API are never affected. Both endpoints are
+// gated on platform.settings.manage (Super Administrator only); the page hides
+// itself on 403 rather than rendering a card that can only refuse.
+// ---------------------------------------------------------------------------
+
+/** The console allowlist as the server holds it, plus where the caller is now. */
+export interface NetworkAccessPolicy {
+  /** True when the console only answers from `allowedCidrs` (and loopback). */
+  enabled: boolean
+  /** IPv4/IPv6 CIDR ranges; a bare IP is stored by the server as a /32. */
+  allowedCidrs: string[]
+  /** When the policy was last written, or null when it never has been. */
+  updatedAtUtc: string | null
+  /** Email of whoever last wrote it, or null. */
+  updatedBy: string | null
+  /** The caller's current address as the server sees it — the lockout check's subject. */
+  callerIp: string
+}
+
+export interface UpdateNetworkAccessPolicyInput {
+  enabled: boolean
+  allowedCidrs: string[]
+}
+
+export function getNetworkAccessPolicy(): Promise<NetworkAccessPolicy> {
+  return request<NetworkAccessPolicy>('/admin/v1/settings/network')
+}
+
+/**
+ * Replaces the whole policy. The server answers 400 (problem detail) when a
+ * range is invalid or when the new policy would lock the caller out — the
+ * detail names the caller's address, so the page shows it verbatim.
+ */
+export function updateNetworkAccessPolicy(
+  input: UpdateNetworkAccessPolicyInput,
+): Promise<NetworkAccessPolicy> {
+  return request<NetworkAccessPolicy>('/admin/v1/settings/network', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}

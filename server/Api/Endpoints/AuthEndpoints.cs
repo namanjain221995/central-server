@@ -15,6 +15,14 @@ public static class AuthEndpoints
     /// <summary>Rate-limit policy name applied to the sign-in endpoint.</summary>
     public const string LoginRateLimitPolicy = "auth-login";
 
+    /// <summary>
+    /// Rate-limit policy name applied to the change-password endpoint, which
+    /// re-verifies the current password. Keyed per session (see Program.cs), so a
+    /// stolen session cannot grind at the current password full-speed while the
+    /// account's own lockout counter catches up.
+    /// </summary>
+    public const string ChangePasswordRateLimitPolicy = "auth-change-password";
+
     public static IEndpointRouteBuilder MapAuthEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/admin/v1/auth");
@@ -38,9 +46,14 @@ public static class AuthEndpoints
         // not an administrative act over someone else, and gating it would mean a
         // user could be locked out of securing their own account by a role change.
         // The current password is re-verified in the service regardless of session.
+        // Rate limited per session: this endpoint verifies a password, so like the
+        // login route it gets a request-rate brake in front of the per-account
+        // lockout - but keyed by the caller's own session rather than the address,
+        // so an office NAT cannot be used to starve a victim of the endpoint.
         group.MapPost("/change-password", ChangePasswordAsync)
             .WithName("AdminChangePassword")
-            .RequireAuthorization();
+            .RequireAuthorization()
+            .RequireRateLimiting(ChangePasswordRateLimitPolicy);
 
         // The signed-in administrator's own console theme. Authenticated, behind no
         // permission: it is a preference about their own screen, it can only ever
@@ -490,7 +503,13 @@ public static class AuthEndpoints
         });
     }
 
-    private static string? ReadToken(HttpContext httpContext)
+    /// <summary>
+    /// The session token the request presents, bearer header first, cookie second -
+    /// the same precedence as <see cref="AdminAuthenticationHandler"/>. Internal so
+    /// the change-password rate limiter in Program.cs can partition by the identity
+    /// the authentication handler is about to use, before it has run.
+    /// </summary>
+    internal static string? ReadToken(HttpContext httpContext)
     {
         var authorization = httpContext.Request.Headers.Authorization.ToString();
 

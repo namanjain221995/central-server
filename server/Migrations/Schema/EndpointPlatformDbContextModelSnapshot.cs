@@ -3972,6 +3972,41 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("screen_lock_devices", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Security.NetworkAccessPolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AllowedCidrs")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("allowed_cidrs");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<string>("UpdatedByEmail")
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("updated_by_email");
+
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_network_access_policies");
+
+                    b.ToTable("network_access_policies", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Security.OrganizationSecuritySetting", b =>
                 {
                     b.Property<Guid>("Id")

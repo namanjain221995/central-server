@@ -144,7 +144,12 @@ check "Admin API ready  " "${origin}/api/health/ready"   '^200$'
 # 405 is the correct answer to a GET on a POST-only route, and the cheapest
 # proof that /agent/ reaches the Agent API rather than nginx's own 404.
 check "Agent API routed " "${origin}/agent/v1/heartbeat" '^(200|401|404|405)$'
-check "pgAdmin          " "${origin}/pgadmin/"           '^(200|302)$'
+# Security assertion, not availability: pgAdmin must NOT answer on the public
+# origin any more (it is loopback-only; see the pgadmin service in compose).
+# Proxied, GET /pgadmin/ answered 302 (its login redirect); removed, the SPA
+# catch-all serves index.html as 200. A 302 here means the console is exposed
+# again and the deploy must fail loudly.
+check "pgAdmin hidden   " "${origin}/pgadmin/"           '^200$'
 check "CA download      " "http://${origin#https://}/endpoint-platform-ca.crt" '^200$'
 
 if [ "$failed" -ne 0 ]; then
@@ -157,5 +162,5 @@ docker compose ps
 echo
 echo "deploy.sh: done"
 echo "  dashboard  ${origin}/"
-echo "  pgAdmin    ${origin}/pgadmin/   (or http://${origin#https://}:$(grep -E '^PGADMIN_PORT=' .env | cut -d= -f2))"
+echo "  pgAdmin    loopback only: ssh -L 5050:127.0.0.1:5050 <host>  ->  http://localhost:5050/"
 echo "  CA root    http://${origin#https://}/endpoint-platform-ca.crt"

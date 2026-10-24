@@ -175,6 +175,14 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     public DbSet<Domain.Security.OrganizationSecuritySetting> OrganizationSecuritySettings =>
         Set<Domain.Security.OrganizationSecuritySetting>();
 
+    /// <remarks>
+    /// Platform-wide singleton (<see cref="Domain.Security.NetworkAccessPolicy.SingletonId"/>):
+    /// the admin-console network allow-list is enforced before authentication, where
+    /// no organization is known yet, so exactly one row serves the whole platform.
+    /// </remarks>
+    public DbSet<Domain.Security.NetworkAccessPolicy> NetworkAccessPolicies =>
+        Set<Domain.Security.NetworkAccessPolicy>();
+
     public DbSet<Domain.RemoteSupport.RemoteSupportEnrollment> RemoteSupportEnrollments =>
         Set<Domain.RemoteSupport.RemoteSupportEnrollment>();
 

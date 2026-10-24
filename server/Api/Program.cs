@@ -93,6 +93,13 @@ public sealed class Program
             // sign-in form to protect.
             builder.Services.AddSingleton<SignInAddressThrottle>();
 
+            // The platform-wide network access policy, served to the middleware as
+            // a cached compiled snapshot. Singleton: it is consulted on every
+            // request before authentication, so it cannot ride the request scope;
+            // it opens its own scope to reload. Admin API only - the Agent API must
+            // never gate devices by network, the fleet calls in from anywhere.
+            builder.Services.AddSingleton<NetworkAccessPolicyProvider>();
+
             // Multi-factor. Registered here rather than in shared infrastructure
             // for the same reason as the escrow key: the Agent API must never hold
             // the key that unseals a TOTP secret, because that would let the
@@ -181,6 +188,37 @@ public sealed class Program
                             QueueLimit = 0,
                         });
                 });
+
+                // Brute-force protection on change-password, which re-verifies the
+                // current password from an authenticated session. Keyed per caller,
+                // not per address: the limiter middleware runs before authentication,
+                // so there is no user-id claim yet - the presented session token is
+                // the caller's stable identity at this point, and it is hashed so no
+                // credential becomes a partition key. Keying by address instead
+                // would let one noisy office neighbour block an administrator from
+                // securing their own account. A request without a token falls back
+                // to the address and dies at authentication anyway. The per-account
+                // lockout in AdminAuthService remains the primary brake; this bounds
+                // how fast a stolen session can drive it.
+                limiter.AddPolicy(AuthEndpoints.ChangePasswordRateLimitPolicy, httpContext =>
+                {
+                    var authOptions = httpContext.RequestServices
+                        .GetRequiredService<Microsoft.Extensions.Options.IOptions<AdminAuthOptions>>().Value;
+
+                    var token = AuthEndpoints.ReadToken(httpContext);
+                    var partitionKey = string.IsNullOrWhiteSpace(token)
+                        ? "addr:" + (httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown")
+                        : "session:" + SecretGenerator.HashSecret(token);
+
+                    return RateLimitPartition.GetFixedWindowLimiter(
+                        partitionKey,
+                        _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = authOptions.LoginAttemptsPerMinutePerAddress,
+                            Window = TimeSpan.FromMinutes(1),
+                            QueueLimit = 0,
+                        });
+                });
             });
 
             builder.Services.AddEndpointsApiExplorer();
@@ -234,6 +272,15 @@ public sealed class Program
             app.UseCors(DashboardCorsPolicy);
 
             app.UseRateLimiter();
+
+            // BEFORE authentication, deliberately: the network access policy decides
+            // whether this network may talk to the console at all, so a blocked
+            // network never even sees the login form. Loopback always passes (the
+            // operator on the box is the break-glass) and health probes bypass by
+            // path inside the middleware. This is a perimeter, not a credential -
+            // everything behind it keeps its own authentication and authorization.
+            app.UseMiddleware<NetworkAccessPolicyMiddleware>();
+
             app.UseMiddleware<CsrfProtectionMiddleware>();
             app.UseAuthentication();
 
@@ -256,6 +303,7 @@ public sealed class Program
             app.MapAuthEndpoints();
             app.MapPlatformUserEndpoints();
             app.MapAccessLevelEndpoints();
+            app.MapNetworkAccessPolicyEndpoints();
             app.MapEnrollmentTokenEndpoints();
             app.MapEnrollmentApprovalEndpoints();
             app.MapDeviceEndpoints();
