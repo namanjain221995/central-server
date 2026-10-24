@@ -148,8 +148,10 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
     {
         var releaseId = await CreateDraftAsync(client, version);
 
+        // Publish is step-up gated; the body carries the account's own password.
         (await client.PostAsync(
-                new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative), null))
+                new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative),
+                ReleaseStepUpTestSupport.PublishBody()))
             .EnsureSuccessStatusCode();
 
         return releaseId;
@@ -182,7 +184,7 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
 
         using var unscoped = await AdminAsync(allDeviceScope: false);
 
-        (await unscoped.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await unscoped.PostAsync(UpdateAgent(deviceId), ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldBe(HttpStatusCode.NotFound);
 
         await AssertNothingQueuedAsync(deviceId);
@@ -198,7 +200,7 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
 
         using var scoped = await AdminAsync(allDeviceScope: true);
 
-        (await scoped.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await scoped.PostAsync(UpdateAgent(deviceId), ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldBe(HttpStatusCode.Accepted);
 
         await using var db = _fixture.CreateDbContext();
@@ -224,7 +226,7 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
 
         var foreignDeviceId = await SeedDeviceAsync("1.0.0", foreignOrgId);
 
-        (await client.PostAsJsonAsync(UpdateAgent(foreignDeviceId), new { releaseId }))
+        (await client.PostAsync(UpdateAgent(foreignDeviceId), ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldBe(HttpStatusCode.NotFound);
 
         await AssertNothingQueuedAsync(foreignDeviceId);
@@ -258,7 +260,7 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
             await db.SaveChangesAsync();
         }
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await client.PostAsync(UpdateAgent(deviceId), ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldBe(HttpStatusCode.NotFound);
 
         await AssertNothingQueuedAsync(deviceId);
@@ -280,7 +282,7 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
 
         var deviceId = await SeedDeviceAsync("1.0.0");
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await client.PostAsync(UpdateAgent(deviceId), ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldNotBe(HttpStatusCode.Accepted);
 
         await AssertNothingQueuedAsync(deviceId);
@@ -293,7 +295,7 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
         var releaseId = await PublishedReleaseAsync(client, "9.25.0");
         var deviceId = await SeedDeviceAsync("9.25.0");
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await client.PostAsync(UpdateAgent(deviceId), ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
 
         await AssertNothingQueuedAsync(deviceId);
@@ -306,7 +308,7 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
         var releaseId = await PublishedReleaseAsync(client, "9.26.0");
         var deviceId = await SeedDeviceAsync("9.27.0");
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await client.PostAsync(UpdateAgent(deviceId), ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
 
         await AssertNothingQueuedAsync(deviceId);
@@ -320,7 +322,7 @@ public sealed class AgentUpdateAuthorizationTests(AdminApiPostgresFixture fixtur
         var draftId = await CreateDraftAsync(client, "9.28.0");
         var deviceId = await SeedDeviceAsync("1.0.0");
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId = draftId }))
+        (await client.PostAsync(UpdateAgent(deviceId), ReleaseStepUpTestSupport.UpdateAgentBody(draftId)))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
 
         await AssertNothingQueuedAsync(deviceId);

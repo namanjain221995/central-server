@@ -132,13 +132,15 @@ public sealed class TestDatabase : IAsyncDisposable
 }
 
 /// <summary>
-/// The locally installed Redis the Admin API suite uses, so the ephemeral-secret
-/// path (create user / reset password) is exercised end to end.
+/// The locally installed Redis the API suites use: the Admin API suite for the
+/// ephemeral-secret path (create user / reset password), and — since re-enrolling
+/// an active device started requiring approval — the Agent API enrollment suite
+/// and the device-lifecycle tests for the pending-enrollment store.
 /// </summary>
 /// <remarks>
 /// Shared, not per-fixture: every key the platform writes is addressed by a random
-/// reference or carries the host's own instance prefix, so runs cannot collide.
-/// Needs Redis 6.2 or later, because redemption uses GETDEL.
+/// reference, a digest of per-test identifiers, or the host's own instance prefix,
+/// so runs cannot collide. Needs Redis 6.2 or later, because redemption uses GETDEL.
 /// </remarks>
 public static class TestRedis
 {

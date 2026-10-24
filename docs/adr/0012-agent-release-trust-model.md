@@ -100,10 +100,50 @@ Internal, rather than implying a refusal that will not happen.
   agents, which is the larger real risk — the unpatched fleet is a certain
   exposure, the unsigned-installer risk a contingent one.
 
+## Note — 2026-10-24: step-up on the dangerous routes; Public-mode latents fixed
+
+**Step-up is now required on publish, artifact replace and update-agent.** The
+stolen-`Software.Deploy`-session consequence above, plus the 1.16.0 accident (a
+broken localhost build published fleet-wide that uninstalled the agent from the
+machines it updated), motivated gating the three actions that put SYSTEM-level
+code on the path to devices the way a recovery-key reveal is gated: a per-user
+rate limit (5 actions per 15-minute fixed window, consumed before judging, fail
+open without Redis), then re-verification of the caller's own password through
+the sign-in verifier (wrong attempts count toward the account lockout), then the
+action, with a mandatory justification recorded in the success audit entry.
+Denials are audited as `agent_release.publish_denied` /
+`artifact_replace_denied` / `update_agent_denied`. Permissions are unchanged;
+revoke deliberately carries no step-up — withdrawing a build is the safe
+direction. See `AgentReleaseStepUpService` and `ReleaseActionRateLimiter`.
+
+**Two latent defects that would have broken a future flip to Public were
+fixed.** (1) The compose file passed no
+`ENDPOINTPLATFORM_AgentReleases__ExpectedSignerSubject`, so setting
+`AGENT_RELEASE_TRUST_MODE=Public` would have crash-looped admin-api at options
+validation with no way to wire the publisher through; the variable
+(`AGENT_RELEASE_EXPECTED_SIGNER`) now flows through compose and
+`generate-env.sh`. (2) The signature stream-name constant carried its mandatory
+U+0005 prefix as a raw, invisible control byte that every editor rendered as
+plain `"DigitalSignature"` — it was misread exactly that way in review, and one
+innocent cleanup would have silently made Public mode refuse every genuinely
+signed MSI as unsigned, with the test suite staying green because the test
+artifact writer shares the constant. The prefix is an explicit `\u0005` escape
+now, a regression test pins the literal value, and a second test proves a
+stream named plain `DigitalSignature` is treated as not signed.
+
+**Still outstanding before Public can be enabled:** a CA-issued code-signing
+certificate; the signing step and its secrets in CI; the fleet staged onto
+agent 1.20.1 or later (earlier agents' `WinVerifyTrust` call used the
+cache-only flag that fails fresh machines with 0x800B010A); and a dry-run
+confirming the certificate subject as .NET-on-Linux renders it matches
+`ExpectedSignerSubject` — the substring-match semantics are deliberately
+unchanged until a real certificate exists to pin a cross-platform test against.
+
 ## References
 
 - `server/Infrastructure/Agents/ReleasePublishVerifier.cs` — the gate and the mode
 - `server/Infrastructure/Agents/AgentReleaseOptions.cs` — validation, Public start-up refusal
+- `server/Infrastructure/Agents/AgentReleaseStepUpService.cs` — step-up on the dangerous routes
 - [threat-model.md](../threat-model.md) — T10
 - [agent-updates.md](../agent-updates.md) — operator-facing behaviour
 - [ADR-0005](0005-no-shell-execution-in-agent.md) — the unchanged software-package signer pin

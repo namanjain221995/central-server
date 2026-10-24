@@ -52,8 +52,19 @@ public sealed class AgentReleaseEndpointTests(AdminApiPostgresFixture fixture)
         return form;
     }
 
+    /// <summary>
+    /// A fresh deploy-capable administrator per test. Publish and update-agent
+    /// are step-up gated behind a per-user rate limit (five actions per window,
+    /// success does not reset it), so tests sharing one account would exhaust
+    /// the budget between them; see <see cref="ReleaseStepUpTestSupport"/>.
+    /// </summary>
     private async Task<HttpClient> AdminAsync() =>
-        _fixture.CreateClientFor(await _fixture.SignInAsync(AdminApiPostgresFixture.ItAdminEmail));
+        (await _fixture.MintDeployAdminAsync("rel-ep")).Client;
+
+    private static Task<HttpResponseMessage> PublishAsync(HttpClient client, Guid releaseId) =>
+        client.PostAsync(
+            new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative),
+            ReleaseStepUpTestSupport.PublishBody());
 
     private async Task<Guid> CreateDraftAsync(HttpClient client, string version, string seed)
     {
@@ -84,8 +95,7 @@ public sealed class AgentReleaseEndpointTests(AdminApiPostgresFixture fixture)
         var draftDownload = await client.GetAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/download", UriKind.Relative));
         draftDownload.StatusCode.ShouldBe(HttpStatusCode.OK);
 
-        (await client.PostAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative), null))
-            .StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await PublishAsync(client, releaseId)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
 
         var download = await client.GetAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/download", UriKind.Relative));
         download.StatusCode.ShouldBe(HttpStatusCode.OK);
@@ -125,15 +135,15 @@ public sealed class AgentReleaseEndpointTests(AdminApiPostgresFixture fixture)
     {
         using var client = await AdminAsync();
         var releaseId = await CreateDraftAsync(client, "9.0.4", "revoke");
-        await client.PostAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative), null);
+        await PublishAsync(client, releaseId);
 
+        // Revoke deliberately takes no step-up body: withdrawing is the safe direction.
         (await client.PostAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/revoke", UriKind.Relative), null))
             .StatusCode.ShouldBe(HttpStatusCode.NoContent);
 
         (await client.GetAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/download", UriKind.Relative)))
             .StatusCode.ShouldBe(HttpStatusCode.NotFound);
-        (await client.PostAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative), null))
-            .StatusCode.ShouldBe(HttpStatusCode.Conflict);
+        (await PublishAsync(client, releaseId)).StatusCode.ShouldBe(HttpStatusCode.Conflict);
     }
 
     [Fact]
@@ -144,8 +154,8 @@ public sealed class AgentReleaseEndpointTests(AdminApiPostgresFixture fixture)
         // numeric top so releases published by sibling tests cannot outrank them.
         var older = await CreateDraftAsync(client, "99.0.9", "latest-old");
         var newer = await CreateDraftAsync(client, "99.0.10", "latest-new");
-        await client.PostAsync(new Uri($"/admin/v1/agent-releases/{older}/publish", UriKind.Relative), null);
-        await client.PostAsync(new Uri($"/admin/v1/agent-releases/{newer}/publish", UriKind.Relative), null);
+        await PublishAsync(client, older);
+        await PublishAsync(client, newer);
 
         var latest = await client.GetStringAsync(new Uri("/admin/v1/agent-releases/latest", UriKind.Relative));
 
@@ -158,7 +168,7 @@ public sealed class AgentReleaseEndpointTests(AdminApiPostgresFixture fixture)
     {
         using var client = await AdminAsync();
         var releaseId = await CreateDraftAsync(client, "9.0.5", "audit");
-        await client.PostAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative), null);
+        await PublishAsync(client, releaseId);
         await client.GetAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/download", UriKind.Relative));
 
         await using var db = _fixture.CreateDbContext();
@@ -231,12 +241,12 @@ public sealed class AgentReleaseEndpointTests(AdminApiPostgresFixture fixture)
     {
         using var client = await AdminAsync();
         var releaseId = await CreateDraftAsync(client, "9.1.0", "queue-ok");
-        await client.PostAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative), null);
+        await PublishAsync(client, releaseId);
         var deviceId = await SeedDeviceAsync("UPD-OK", "1.0.0");
 
-        var response = await client.PostAsJsonAsync(
+        var response = await client.PostAsync(
             new Uri($"/admin/v1/devices/{deviceId}/actions/update-agent", UriKind.Relative),
-            new { releaseId });
+            ReleaseStepUpTestSupport.UpdateAgentBody(releaseId));
 
         response.StatusCode.ShouldBe(HttpStatusCode.Accepted);
         await using var db = _fixture.CreateDbContext();
@@ -252,18 +262,20 @@ public sealed class AgentReleaseEndpointTests(AdminApiPostgresFixture fixture)
     {
         using var client = await AdminAsync();
         var releaseId = await CreateDraftAsync(client, "9.2.0", "queue-downgrade");
-        await client.PostAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative), null);
+        await PublishAsync(client, releaseId);
 
         // Device already ahead of the release.
         var ahead = await SeedDeviceAsync("UPD-AHEAD", "9.3.0");
-        (await client.PostAsJsonAsync(
-                new Uri($"/admin/v1/devices/{ahead}/actions/update-agent", UriKind.Relative), new { releaseId }))
+        (await client.PostAsync(
+                new Uri($"/admin/v1/devices/{ahead}/actions/update-agent", UriKind.Relative),
+                ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
 
         // Device already exactly on the release.
         var same = await SeedDeviceAsync("UPD-SAME", "9.2.0");
-        (await client.PostAsJsonAsync(
-                new Uri($"/admin/v1/devices/{same}/actions/update-agent", UriKind.Relative), new { releaseId }))
+        (await client.PostAsync(
+                new Uri($"/admin/v1/devices/{same}/actions/update-agent", UriKind.Relative),
+                ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
     }
 
@@ -274,9 +286,9 @@ public sealed class AgentReleaseEndpointTests(AdminApiPostgresFixture fixture)
         var draft = await CreateDraftAsync(client, "9.4.0", "queue-draft");
         var deviceId = await SeedDeviceAsync("UPD-DRAFT", "1.0.0");
 
-        (await client.PostAsJsonAsync(
+        (await client.PostAsync(
                 new Uri($"/admin/v1/devices/{deviceId}/actions/update-agent", UriKind.Relative),
-                new { releaseId = draft }))
+                ReleaseStepUpTestSupport.UpdateAgentBody(draft)))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
     }
 
@@ -285,15 +297,15 @@ public sealed class AgentReleaseEndpointTests(AdminApiPostgresFixture fixture)
     {
         using var admin = await AdminAsync();
         var releaseId = await CreateDraftAsync(admin, "9.5.0", "queue-helpdesk");
-        await admin.PostAsync(new Uri($"/admin/v1/agent-releases/{releaseId}/publish", UriKind.Relative), null);
+        await PublishAsync(admin, releaseId);
         var deviceId = await SeedDeviceAsync("UPD-HD", "1.0.0");
 
         var token = await _fixture.SignInAsync(AdminApiPostgresFixture.HelpdeskEmail);
         using var helpdesk = _fixture.CreateClientFor(token);
 
-        (await helpdesk.PostAsJsonAsync(
+        (await helpdesk.PostAsync(
                 new Uri($"/admin/v1/devices/{deviceId}/actions/update-agent", UriKind.Relative),
-                new { releaseId }))
+                ReleaseStepUpTestSupport.UpdateAgentBody(releaseId)))
             .StatusCode.ShouldBe(HttpStatusCode.Forbidden);
     }
 }

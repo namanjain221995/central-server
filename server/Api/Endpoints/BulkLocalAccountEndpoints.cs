@@ -23,7 +23,11 @@ namespace EndpointPlatform.Api.Endpoints;
 /// additionally requires <see cref="Permissions.LocalUser.ChangeType"/>, checked in
 /// the handler exactly as the per-device route does — so there is no route around the
 /// change-type gate. Reset is its own lower authority
-/// (<see cref="Permissions.LocalUser.ResetPassword"/>), which Helpdesk holds.
+/// (<see cref="Permissions.LocalUser.ResetPassword"/>), which Helpdesk holds — but a
+/// reset aimed at an administrator account is the same grant as promotion, so the
+/// service refuses the whole request unless the caller also holds
+/// <see cref="Permissions.LocalUser.ChangeType"/>, and the built-in Administrator
+/// (RID 500) is never reset for anyone.
 /// </para>
 /// <para>
 /// Disable and enable share <see cref="Permissions.LocalUser.Disable"/> and delete is
@@ -204,8 +208,14 @@ public static class BulkLocalAccountEndpoints
         var scopedDeviceIds = await scope.ScopedDeviceIdsOrNullAsync(
             actor.UserId, actor.OrganizationId, cancellationToken);
 
+        // Resetting an administrator's password is the same grant as promoting one, so
+        // the service refuses administrator-flagged targets fleet-wide unless the
+        // caller also holds user.change_type — found with the exact mechanism the
+        // create-an-administrator guard above uses.
+        var callerMayTargetAdministrators = HasPermission(httpContext, Permissions.LocalUser.ChangeType);
+
         var result = await service.ResetPasswordsAsync(
-            actor.OrganizationId, request.Username.Trim(), request.Password,
+            actor.OrganizationId, request.Username.Trim(), request.Password, callerMayTargetAdministrators,
             request.AllDevices, request.GroupId, request.DeviceIds, scopedDeviceIds,
             actor.UserId, actor.Email, cancellationToken);
 
@@ -326,6 +336,12 @@ public static class BulkLocalAccountEndpoints
             result.Offline,
             result.Skipped,
         }),
+
+        // A fleet-wide guard refused the whole request — the protected built-in
+        // Administrator, or an administrator target without user.change_type. One
+        // clear refusal, never a partial fan-out, matching the lifecycle routes.
+        BulkLocalAccountOutcome.Refused =>
+            Results.Problem(result.Error, statusCode: StatusCodes.Status400BadRequest),
 
         // Unknown or foreign group, out-of-scope, or an empty selection — one 404 for
         // every shade of "resolved to no devices you may act on".

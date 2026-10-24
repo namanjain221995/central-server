@@ -10,6 +10,8 @@ using EndpointPlatform.Infrastructure.Tests.Persistence;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 
 namespace EndpointPlatform.Infrastructure.Tests.Devices;
 
@@ -39,11 +41,31 @@ public sealed class DeviceLifecycleTests(PostgresFixture fixture)
         return (org, token);
     }
 
+    /// <summary>
+    /// The suite's shared Redis connection, for the re-enrollment approval gate.
+    /// </summary>
+    /// <remarks>
+    /// abortConnect=false so merely CONSTRUCTING the enrollment service never
+    /// requires a reachable Redis: only the one test that exercises the gate
+    /// actually talks to it, and with Redis down that test fails with the store's
+    /// own fail-closed refusal rather than at setup.
+    /// </remarks>
+    private static readonly Lazy<IConnectionMultiplexer> Redis = new(() =>
+        ConnectionMultiplexer.Connect(TestRedis.ConnectionString + ",abortConnect=false"));
+
+    private static PendingEnrollmentStore PendingStore() =>
+        new(Redis.Value,
+            // An empty key makes the protector generate a process-local one, which is
+            // fine here: re-enrollment records never carry a sealed token secret.
+            new AesGcmSecretProtector(Options.Create(new SecretProtectionOptions())),
+            NullLogger<PendingEnrollmentStore>.Instance);
+
     private static AgentEnrollmentService Enrollment(Infrastructure.Persistence.EndpointPlatformDbContext db) =>
         new(db, Audit(db), TimeProvider.System, NullLogger<AgentEnrollmentService>.Instance,
             // Unconfigured: these tests predate automatic escrow and assert enrollment
             // behaviour that must not change when no sealing key is present.
-            new Infrastructure.Security.EscrowSealingKeyProvider(null));
+            new Infrastructure.Security.EscrowSealingKeyProvider(null),
+            PendingStore());
 
     [Fact]
     public async Task Offboarding_revokes_credentials_and_retires_the_device()
@@ -124,8 +146,15 @@ public sealed class DeviceLifecycleTests(PostgresFixture fixture)
     /// credential. Kept because it is a separate administrative path from the
     /// successor flow above, and undoing a retirement must remain possible.
     /// </summary>
+    /// <remarks>
+    /// A reactivated device is ACTIVE again, so its re-enrollment now rides the
+    /// re-enrollment approval gate like any other active device's: the first
+    /// token attempt parks a pending request and is refused, an administrator
+    /// approves it, and the next attempt completes in place. This test walks that
+    /// whole path at the service level.
+    /// </remarks>
     [Fact]
-    public async Task A_reactivated_device_re_enrolls_in_place()
+    public async Task A_reactivated_device_re_enrolls_in_place_after_approval()
     {
         await using var db = _fixture.CreateDbContext();
         var (org, _) = await SeedOrgAndTokenAsync(db);
@@ -140,15 +169,34 @@ public sealed class DeviceLifecycleTests(PostgresFixture fixture)
         (await service.ReactivateAsync(org.Id, first.DeviceId, Guid.CreateVersion7(), "admin"))
             .ShouldBe(DeviceLifecycleResult.Success);
 
-        var reenrolled = await Enrollment(db).EnrollAsync(
-            await IssueTokenSecretAsync(db, org.Id), "RA-PC", machineId, "1.0", null);
+        var secret = await IssueTokenSecretAsync(db, org.Id);
 
-        reenrolled.Success.ShouldBeTrue("a reactivated device may re-enroll");
+        // Active device + token = parked behind the approval gate, not re-enrolled.
+        var gated = await Enrollment(db).EnrollAsync(secret, "RA-PC", machineId, "1.0", null);
+        gated.Success.ShouldBeFalse("re-enrolling an ACTIVE device waits for an administrator");
+
+        (await activeCredentialCount()).ShouldBe(0, "the gated attempt must not have issued anything");
+
+        // The administrator approves the parked request…
+        var requestId = PendingEnrollmentStore.DeriveReEnrollRequestId(org.Id, machineId);
+        (await PendingStore().DecideAsync(
+                requestId, PendingEnrollmentStatus.Approved, org.Id, tokenSecret: null, "approver@test.local"))
+            .ShouldNotBeNull("the gated attempt must have parked a decidable request");
+
+        // …and the agent's own retry completes in place.
+        var reenrolled = await Enrollment(db).EnrollAsync(secret, "RA-PC", machineId, "1.0", null);
+
+        reenrolled.Success.ShouldBeTrue("an approved re-enrollment completes on the next retry");
         reenrolled.DeviceId.ShouldBe(first.DeviceId, "reactivation keeps the original record");
 
-        await using var verify = _fixture.CreateDbContext();
-        (await verify.AgentCredentials.CountAsync(c => c.DeviceId == first.DeviceId && c.RevokedAt == null))
-            .ShouldBe(1, "re-enrollment issues exactly one fresh active credential");
+        (await activeCredentialCount()).ShouldBe(1, "re-enrollment issues exactly one fresh active credential");
+
+        async Task<int> activeCredentialCount()
+        {
+            await using var verify = _fixture.CreateDbContext();
+            return await verify.AgentCredentials.CountAsync(
+                c => c.DeviceId == first.DeviceId && c.RevokedAt == null);
+        }
     }
 
     [Fact]

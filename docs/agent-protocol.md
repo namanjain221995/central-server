@@ -47,12 +47,24 @@ Anonymous (the enrollment token is the credential). Body: `EnrollRequest`
 `EnrollResponse` with the device id and the credential — the credential secret's
 only transmission, ever.
 
-Refusals (unknown/expired/revoked/exhausted token, retired device) are a
-uniform 403 with identical bodies, verified by test, so callers cannot probe
-the token space. Every refusal is audited as `Denied` with the real reason.
+Refusals (unknown/expired/revoked/exhausted token, and re-enrollments awaiting
+approval) are a uniform 403 with identical bodies, verified by test, so callers
+cannot probe the token space — or discover which machine identifiers belong to
+active devices. Every refusal is audited as `Denied` with the real reason. (A
+retired device is not refused: it no longer matches, so the machine enrolls
+again as a new device.)
 
-Re-enrollment of a known machine identifier updates the existing device,
-revokes its previous credentials and issues a fresh one (`ReEnrolled: true`).
+Re-enrollment — a machine identifier that matches an **active** device —
+**requires administrator approval**: completing it revokes the real device's
+credentials and hands its identity (queued tasks, device-bound secrets) to the
+caller, and a valid token plus the SMBIOS UUID (which is not a secret) must not
+be enough for that. The first such attempt parks a pending re-enrollment on the
+Pending Enrollments page and answers the uniform 403; the agent's normal
+5-minute token retry keeps the request fresh without consuming token uses, and
+the retry after approval completes in place (`ReEnrolled: true`), revoking the
+previous credentials and issuing a fresh one. The request/claim flow below is
+not gated a second time — its approval already happened. New machine
+identifiers enroll immediately, as before.
 
 ### `POST /agent/v1/heartbeat` — implemented
 Requires `X-Agent-Credential`. Body: `HeartbeatRequest` (hostname, agent

@@ -5,7 +5,8 @@ public sealed record LocalAccountView(string Sid, string Username, bool Enabled,
 
 /// <summary>
 /// Domain safety rules that stop a local-account mutation from locking the
-/// organization out of a managed endpoint.
+/// organization out of a managed endpoint — or from quietly handing an operator
+/// control of its built-in Administrator.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -13,16 +14,28 @@ public sealed record LocalAccountView(string Sid, string Username, bool Enabled,
 /// local accounts. The Admin API runs them as a fast pre-check against the last
 /// reported inventory; the agent re-checks the same invariants against LIVE
 /// Windows state at execution time, because inventory can be stale. Both layers
-/// enforce them — the UI is never the boundary.
+/// enforce them — the UI is never the boundary. (The agent-side live re-check for
+/// the password-reset, force-change and enable rules rides the next agent release;
+/// until then the server pre-check is the enforced boundary for those three.)
 /// </para>
 /// <para>
-/// Two protections:
+/// Three protections:
 /// <list type="bullet">
-///   <item><b>Protected account</b>: the built-in Administrator (RID 500) cannot be
-///   deleted or disabled.</item>
+///   <item><b>Protected account</b>: the platform never touches the built-in
+///   Administrator (RID 500) in ANY direction — it cannot be deleted, disabled,
+///   enabled, have its password reset, or be forced to change it. Enable was
+///   deliberately unguarded at first; the 2026-10 security audit showed
+///   enable-then-reset composes into a silent takeover of RID 500, so the
+///   hands-off rule is now symmetric.</item>
 ///   <item><b>Last administrator</b>: deleting, disabling, or demoting the last
 ///   <em>enabled</em> member of the local Administrators group is refused — that is
 ///   the classic self-lockout.</item>
+///   <item><b>Administrator password equivalence</b>: resetting (or forcing a
+///   change of) an administrator account's password to a value the caller chose is
+///   equivalent to granting that caller administrator access, so it demands the
+///   change-account-type authority on top of the reset permission. That rule needs
+///   the caller's permissions, which these pure predicates never see, so it is
+///   enforced by <c>LocalAccountManagementService</c> alongside the rules here.</item>
 /// </list>
 /// </para>
 /// </remarks>
@@ -53,6 +66,28 @@ public static class LocalAccountSafetyRules
 
         return LastAdminGuard(targetSid, users, "disabling");
     }
+
+    /// <summary>Returns a refusal reason, or null when the enable is permitted.</summary>
+    /// <remarks>
+    /// Enabling can only ever add an administrator, never remove the last one, so this
+    /// rule needs no account snapshot — RID 500 is recognisable from the SID alone.
+    /// </remarks>
+    public static string? ValidateEnable(string targetSid) =>
+        IsBuiltInAdministrator(targetSid)
+            ? "The built-in Administrator account is protected and cannot be enabled."
+            : null;
+
+    /// <summary>Returns a refusal reason, or null when the password reset is permitted.</summary>
+    public static string? ValidateResetPassword(string targetSid) =>
+        IsBuiltInAdministrator(targetSid)
+            ? "The built-in Administrator account is protected and its password cannot be reset."
+            : null;
+
+    /// <summary>Returns a refusal reason, or null when the forced password change is permitted.</summary>
+    public static string? ValidateForcePasswordChange(string targetSid) =>
+        IsBuiltInAdministrator(targetSid)
+            ? "The built-in Administrator account is protected and cannot be forced to change its password."
+            : null;
 
     /// <summary>
     /// Returns a refusal reason, or null when the demotion (remove from Administrators)

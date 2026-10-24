@@ -88,11 +88,19 @@ public sealed class EnrollmentToken : AuditableEntity
     public bool IsUsable(DateTimeOffset now) => !IsRevoked && !IsExpired(now) && !IsExhausted;
 
     /// <summary>
-    /// Attempts to consume one use. Returns the reason on refusal rather than
-    /// throwing, because a refused enrollment is an expected, auditable outcome —
-    /// not an exceptional one.
+    /// Answers what <see cref="TryConsume"/> would answer right now, without
+    /// spending a use.
     /// </summary>
-    public EnrollmentTokenConsumeResult TryConsume(DateTimeOffset now)
+    /// <remarks>
+    /// Exists for decisions that must be made BEFORE committing a use — above all
+    /// the re-enrollment approval gate, where a parked agent retries the same
+    /// token every few minutes while it waits. Consuming on each retry would burn
+    /// a limited-use token down to nothing before anyone approved anything, so
+    /// the gate validates here and consumes only on the attempt that actually
+    /// enrolls. Checks in the same order as <see cref="TryConsume"/>, so the
+    /// audited refusal reason cannot differ between the two.
+    /// </remarks>
+    public EnrollmentTokenConsumeResult Validate(DateTimeOffset now)
     {
         if (IsRevoked)
         {
@@ -107,6 +115,22 @@ public sealed class EnrollmentToken : AuditableEntity
         if (IsExhausted)
         {
             return EnrollmentTokenConsumeResult.Exhausted;
+        }
+
+        return EnrollmentTokenConsumeResult.Consumed;
+    }
+
+    /// <summary>
+    /// Attempts to consume one use. Returns the reason on refusal rather than
+    /// throwing, because a refused enrollment is an expected, auditable outcome —
+    /// not an exceptional one.
+    /// </summary>
+    public EnrollmentTokenConsumeResult TryConsume(DateTimeOffset now)
+    {
+        var result = Validate(now);
+        if (result != EnrollmentTokenConsumeResult.Consumed)
+        {
+            return result;
         }
 
         UseCount++;

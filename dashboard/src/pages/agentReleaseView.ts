@@ -17,6 +17,31 @@ export function apiFailureMessage(error: unknown, fallback: string): string {
 }
 
 /**
+ * Whether a release-action step-up form may be submitted.
+ *
+ * Mirrors the recovery-key reveal gate, against the server's own rule
+ * (CurrentPassword 1..256, Justification 3..500): a step-up password must be
+ * present and a justification must be more than a stray keystroke. Client-side
+ * only, for immediate feedback -- the server verifies and audits independently,
+ * and what it refuses it refuses whatever this said.
+ */
+export function validateStepUpForm({
+  currentPassword,
+  justification,
+}: {
+  currentPassword: string
+  justification: string
+}): boolean {
+  const reason = justification.trim()
+  return (
+    currentPassword.length >= 1
+    && currentPassword.length <= 256
+    && reason.length >= 3
+    && reason.length <= 500
+  )
+}
+
+/**
  * Which release is "the latest", asked three different ways.
  *
  * The page used to have one answer -- the first Published row in a list ordered

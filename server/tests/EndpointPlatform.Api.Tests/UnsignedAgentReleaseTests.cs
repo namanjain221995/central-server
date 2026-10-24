@@ -40,6 +40,15 @@ public sealed class UnsignedAgentReleaseTests(AdminApiPostgresFixture fixture)
     private static Uri UpdateAgent(Guid deviceId) =>
         new($"/admin/v1/devices/{deviceId}/actions/update-agent", UriKind.Relative);
 
+    // Publish and update-agent are step-up gated: the caller re-types their own
+    // password and records a justification. These wrappers carry that body; the
+    // step-up behaviour itself is pinned in AgentReleaseStepUpTests.
+    private static Task<HttpResponseMessage> PublishAsync(HttpClient client, Guid releaseId) =>
+        client.PostAsync(Release(releaseId, "publish"), ReleaseStepUpTestSupport.PublishBody());
+
+    private static Task<HttpResponseMessage> QueueUpdateAsync(HttpClient client, Guid deviceId, Guid releaseId) =>
+        client.PostAsync(UpdateAgent(deviceId), ReleaseStepUpTestSupport.UpdateAgentBody(releaseId));
+
     private async Task<HttpClient> AdminAsync()
     {
         var email = $"rel-{Guid.CreateVersion7():N}@test.local";
@@ -171,7 +180,7 @@ public sealed class UnsignedAgentReleaseTests(AdminApiPostgresFixture fixture)
         var (releaseId, _) = await UploadAsync(client, "8.42.0");
         var deviceId = await SeedDeviceAsync("1.0.0");
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await QueueUpdateAsync(client, deviceId, releaseId))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
 
         await using var db = _fixture.CreateDbContext();
@@ -222,15 +231,15 @@ public sealed class UnsignedAgentReleaseTests(AdminApiPostgresFixture fixture)
         var deviceId = await SeedDeviceAsync("1.0.0");
 
         // Draft: refused as a target.
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await QueueUpdateAsync(client, deviceId, releaseId))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
 
         // Publishing needs no signature under Internal.
-        (await client.PostAsync(Release(releaseId, "publish"), null))
+        (await PublishAsync(client, releaseId))
             .StatusCode.ShouldBe(HttpStatusCode.NoContent);
 
         // Published: a target.
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await QueueUpdateAsync(client, deviceId, releaseId))
             .StatusCode.ShouldBe(HttpStatusCode.Accepted);
     }
 
@@ -243,10 +252,10 @@ public sealed class UnsignedAgentReleaseTests(AdminApiPostgresFixture fixture)
         var (releaseId, _) = await UploadAsync(client, "8.55.0", signed: true);
         var deviceId = await SeedDeviceAsync("1.0.0");
 
-        (await client.PostAsync(Release(releaseId, "publish"), null))
+        (await PublishAsync(client, releaseId))
             .StatusCode.ShouldBe(HttpStatusCode.NoContent);
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await QueueUpdateAsync(client, deviceId, releaseId))
             .StatusCode.ShouldBe(HttpStatusCode.Accepted);
     }
 
@@ -257,12 +266,12 @@ public sealed class UnsignedAgentReleaseTests(AdminApiPostgresFixture fixture)
         using var client = await AdminAsync();
 
         var (releaseId, _) = await UploadAsync(client, "8.45.0", signed: true);
-        (await client.PostAsync(Release(releaseId, "publish"), null)).EnsureSuccessStatusCode();
+        (await PublishAsync(client, releaseId)).EnsureSuccessStatusCode();
         (await client.PostAsync(Release(releaseId, "revoke"), null)).EnsureSuccessStatusCode();
 
         var deviceId = await SeedDeviceAsync("1.0.0");
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await QueueUpdateAsync(client, deviceId, releaseId))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
 
         await using var db = _fixture.CreateDbContext();
@@ -282,11 +291,11 @@ public sealed class UnsignedAgentReleaseTests(AdminApiPostgresFixture fixture)
         using var client = await AdminAsync();
 
         var (releaseId, _) = await UploadAsync(client, "8.46.0", signed: true);
-        (await client.PostAsync(Release(releaseId, "publish"), null)).EnsureSuccessStatusCode();
+        (await PublishAsync(client, releaseId)).EnsureSuccessStatusCode();
 
         var deviceId = await SeedDeviceAsync("8.47.0");
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await QueueUpdateAsync(client, deviceId, releaseId))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict);
 
         await using var db = _fixture.CreateDbContext();
@@ -338,7 +347,7 @@ public sealed class UnsignedAgentReleaseTests(AdminApiPostgresFixture fixture)
         using var client = await AdminAsync();
 
         var (releaseId, sha256) = await UploadAsync(client, "8.51.0", signed: true);
-        (await client.PostAsync(Release(releaseId, "publish"), null)).EnsureSuccessStatusCode();
+        (await PublishAsync(client, releaseId)).EnsureSuccessStatusCode();
 
         var response = await client.GetAsync(Release(releaseId, "download"));
         response.StatusCode.ShouldBe(HttpStatusCode.OK);
@@ -379,7 +388,7 @@ public sealed class UnsignedAgentReleaseTests(AdminApiPostgresFixture fixture)
         (await client.GetAsync(Release(releaseId, "download")))
             .StatusCode.ShouldBe(HttpStatusCode.OK, "the artifact is retrievable");
 
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId }))
+        (await QueueUpdateAsync(client, deviceId, releaseId))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict, "but it is still not deployable");
 
         await using var db = _fixture.CreateDbContext();

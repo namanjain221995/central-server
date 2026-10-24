@@ -73,6 +73,52 @@ public sealed class AuthenticodeVerifierTests
             .Verify(msi).IsTrusted.ShouldBeTrue();
     }
 
+    // ---- the stream name itself --------------------------------------------
+
+    /// <summary>
+    /// Pins the signature stream's name, control prefix included.
+    /// </summary>
+    /// <remarks>
+    /// Windows Installer stores the Authenticode blob under
+    /// <c>\u0005DigitalSignature</c> -- U+0005 first, as compound files name
+    /// their metadata streams. The constant used to carry that prefix as a raw,
+    /// invisible control byte that every editor rendered as plain
+    /// <c>"DigitalSignature"</c>; it was misread exactly that way in review, and
+    /// one well-meaning cleanup would have stripped it -- after which Public
+    /// mode would refuse every genuinely signed MSI as unsigned, while every
+    /// test stayed green because the test artifact writer shares the constant.
+    /// Assertions are spelled out character by character so this test cannot be
+    /// fooled by the same invisible-byte trick, and "simplifying" the constant
+    /// back to the visible name fails here first.
+    /// </remarks>
+    [Fact]
+    public void The_signature_stream_name_is_the_msi_literal_with_the_control_prefix()
+    {
+        AuthenticodeVerifier.SignatureStreamName.ShouldBe("\u0005DigitalSignature");
+
+        AuthenticodeVerifier.SignatureStreamName.Length.ShouldBe("DigitalSignature".Length + 1);
+        AuthenticodeVerifier.SignatureStreamName[0].ShouldBe('\u0005');
+        AuthenticodeVerifier.SignatureStreamName[1..].ShouldBe("DigitalSignature");
+    }
+
+    /// <summary>
+    /// A stream named plain <c>DigitalSignature</c> -- no U+0005 prefix -- is not
+    /// where Windows Installer keeps a signature, so even a valid Authenticode
+    /// blob stored there is treated as no signature at all.
+    /// </summary>
+    [Fact]
+    public void A_valid_blob_in_a_stream_named_plain_DigitalSignature_is_not_signed()
+    {
+        using var authority = TestArtifacts.CreateAuthority();
+        var blob = TestArtifacts.SignatureBlob(authority);
+        var msi = TestArtifacts.CompoundFile("DigitalSignature", blob);
+
+        var result = Verifier(new TestArtifacts.TrustingChainPolicy(authority.Root)).Verify(msi);
+
+        result.IsTrusted.ShouldBeFalse();
+        result.Failure.ShouldBe(AuthenticodeFailure.Unsigned);
+    }
+
     // ---- each check, failed in isolation ----------------------------------
 
     [Fact]

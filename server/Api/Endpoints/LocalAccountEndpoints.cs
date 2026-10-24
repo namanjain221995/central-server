@@ -476,7 +476,18 @@ public static class LocalAccountEndpoints
             return OutOfScope();
         }
 
-        return ToResult(await service.ResetPasswordAsync(context, sid, request.Password, cancellationToken), deviceId);
+        // Resetting an administrator's password to a known value grants exactly what
+        // promoting the caller would, so targeting an administrator demands
+        // user.change_type on top of user.reset_password — the same extra-permission
+        // mechanism as the create-an-administrator guard above. The service decides
+        // (it can see the device's inventory); the endpoint only reports whether this
+        // caller holds the permission.
+        var callerMayTargetAdministrators = HasPermission(httpContext, Permissions.LocalUser.ChangeType);
+
+        return ToResult(
+            await service.ResetPasswordAsync(
+                context, sid, request.Password, callerMayTargetAdministrators, cancellationToken),
+            deviceId);
     }
 
     private static async Task<IResult> ForcePasswordChangeAsync(
@@ -489,7 +500,12 @@ public static class LocalAccountEndpoints
             return OutOfScope();
         }
 
-        return ToResult(await service.ForcePasswordChangeAsync(context, sid, cancellationToken), deviceId);
+        // Same administrator-targeting rule as reset-password; see that handler.
+        var callerMayTargetAdministrators = HasPermission(httpContext, Permissions.LocalUser.ChangeType);
+
+        return ToResult(
+            await service.ForcePasswordChangeAsync(context, sid, callerMayTargetAdministrators, cancellationToken),
+            deviceId);
     }
 
     private static async Task<IResult> DeleteUserAsync(

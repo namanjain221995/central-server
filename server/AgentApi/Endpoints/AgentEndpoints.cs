@@ -644,11 +644,21 @@ public static class AgentEndpoints
             request.MachineIdentifier.Trim(),
             request.AgentVersion.Trim(),
             string.IsNullOrWhiteSpace(request.OperatingSystem) ? null : request.OperatingSystem.Trim(),
+            // Never pre-approved on the raw token path. When the machine identifier
+            // matches an ACTIVE device, the service parks the request for an
+            // administrator and refuses this attempt; the deployed agents retry the
+            // same token every five minutes, so the re-enrollment completes on the
+            // first retry after approval with no agent change.
+            alreadyApproved: false,
             cancellationToken);
 
         if (!outcome.Success)
         {
-            // Deliberately indistinguishable for unknown/expired/revoked/exhausted.
+            // Deliberately indistinguishable for unknown/expired/revoked/exhausted —
+            // and for "an active device matched; approval is pending", which must
+            // not be probeable either: it would confirm which machine identifiers
+            // exist. Must also stay non-2xx: released agents deserialize ANY 2xx
+            // body as a credential.
             return Results.Problem(
                 title: "Enrollment refused.",
                 statusCode: StatusCodes.Status403Forbidden);
@@ -798,6 +808,12 @@ public static class AgentEndpoints
             pending.MachineIdentifier,
             pending.AgentVersion,
             pending.OperatingSystem,
+            // An administrator approved THIS machine moments ago, and the approval's
+            // Redis record was just redeemed (GETDEL) — if the re-enrollment gate
+            // refused here, the approval would be lost and the agent sent back to
+            // file a new request. So the claim path, and only the claim path,
+            // vouches for itself past the gate.
+            alreadyApproved: true,
             cancellationToken);
 
         if (!enrolled.Success)

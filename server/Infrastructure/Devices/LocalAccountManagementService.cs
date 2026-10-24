@@ -46,6 +46,29 @@ public sealed class LocalAccountManagementService(
         "The secure secret store is unavailable, so the password could not be handed over safely. "
         + "No change was made; try again once it recovers.";
 
+    /// <summary>
+    /// Refusal when a caller without <c>user.change_type</c> aims a password reset or a
+    /// forced password change at an administrator account. Resetting an administrator's
+    /// password to a value the caller chose is equivalent to granting administrator
+    /// access, so it demands the same permission that guards promotion — exactly as
+    /// creating an Administrator demands it on top of <c>user.create</c>.
+    /// </summary>
+    public const string AdministratorTargetRequiresChangeType =
+        "Targeting an administrator account with a password reset or forced password change "
+        + "additionally requires the permission to change account type (user.change_type).";
+
+    /// <summary>
+    /// Refusal when the target SID is absent from the device's reported inventory and
+    /// the caller lacks <c>user.change_type</c>. This check fails CLOSED: the
+    /// administrator-targeting rule must not be ridden around on stale inventory, so an
+    /// account the server cannot classify is refused rather than assumed harmless.
+    /// (The last-administrator guard, by contrast, keeps deferring unknown targets to
+    /// the agent — refusing there would block legitimate work the agent re-checks live.)
+    /// </summary>
+    public const string UnknownTargetRequiresChangeType =
+        "Account not in the device's reported inventory; refresh inventory first "
+        + "(or an administrator can perform the reset).";
+
     /// <summary>Local users last reported by the device, projected for the safety rules.</summary>
     public async Task<IReadOnlyList<LocalAccountView>> GetKnownAccountsAsync(
         Guid deviceId, CancellationToken cancellationToken = default) =>
@@ -156,7 +179,20 @@ public sealed class LocalAccountManagementService(
     {
         var target = await FindAccountAsync(context.DeviceId, sid, cancellationToken);
 
-        if (!enabled)
+        if (enabled)
+        {
+            // RID 500 may not be re-enabled: enable + password reset composes into a
+            // silent takeover of the built-in Administrator, so the hands-off rule is
+            // symmetric with delete/disable. The agent-side live re-check for the
+            // enable/reset rules rides the next agent release; until then this server
+            // pre-check is the enforced boundary.
+            var refusal = LocalAccountSafetyRules.ValidateEnable(sid);
+            if (refusal is not null)
+            {
+                return LocalAccountOperationResult.Rejected(refusal);
+            }
+        }
+        else
         {
             var accounts = await GetKnownAccountsAsync(context.DeviceId, cancellationToken);
             var refusal = LocalAccountSafetyRules.ValidateDisable(sid, accounts);
@@ -171,10 +207,33 @@ public sealed class LocalAccountManagementService(
         return await QueueAsync(context, type, payload, cancellationToken);
     }
 
+    /// <param name="callerMayTargetAdministrators">
+    /// Whether the endpoint found <c>user.change_type</c> on the caller. Without it the
+    /// target must be a known non-administrator, because resetting an administrator's
+    /// password is the same grant as promoting the caller.
+    /// </param>
     public async Task<LocalAccountOperationResult> ResetPasswordAsync(
-        LocalAccountRequestContext context, string sid, string password, CancellationToken cancellationToken = default)
+        LocalAccountRequestContext context, string sid, string password,
+        bool callerMayTargetAdministrators, CancellationToken cancellationToken = default)
     {
+        // The platform never resets RID 500, whoever asks. Checked first, so not even a
+        // caller holding every permission reaches the secret store with this target.
+        // The agent-side live re-check for the reset/enable rules rides the next agent
+        // release; until then this server pre-check is the enforced boundary.
+        if (LocalAccountSafetyRules.ValidateResetPassword(sid) is { } protectedRefusal)
+        {
+            return LocalAccountOperationResult.Rejected(protectedRefusal);
+        }
+
         var target = await FindAccountAsync(context.DeviceId, sid, cancellationToken);
+
+        if (EscalationRefusal(target, callerMayTargetAdministrators) is { } escalationRefusal)
+        {
+            return LocalAccountOperationResult.Rejected(escalationRefusal);
+        }
+
+        // The refusals above run before the store so a refused request never burns a
+        // one-time secret slot.
         var secretRef = await _secretStore.StoreAsync(context.DeviceId, password, cancellationToken);
         if (secretRef is null)
         {
@@ -185,12 +244,53 @@ public sealed class LocalAccountManagementService(
         return await QueueAsync(context, DeviceTaskType.ResetLocalUserPassword, payload, cancellationToken);
     }
 
+    /// <param name="callerMayTargetAdministrators">
+    /// Whether the endpoint found <c>user.change_type</c> on the caller; the same rule
+    /// as <see cref="ResetPasswordAsync"/>, because both operations take over an
+    /// administrator account's credential.
+    /// </param>
     public async Task<LocalAccountOperationResult> ForcePasswordChangeAsync(
-        LocalAccountRequestContext context, string sid, CancellationToken cancellationToken = default)
+        LocalAccountRequestContext context, string sid,
+        bool callerMayTargetAdministrators, CancellationToken cancellationToken = default)
     {
+        // Same boundary note as ResetPasswordAsync: server pre-check is authoritative
+        // until the agent-side live re-check ships with the next agent release.
+        if (LocalAccountSafetyRules.ValidateForcePasswordChange(sid) is { } protectedRefusal)
+        {
+            return LocalAccountOperationResult.Rejected(protectedRefusal);
+        }
+
         var target = await FindAccountAsync(context.DeviceId, sid, cancellationToken);
+
+        if (EscalationRefusal(target, callerMayTargetAdministrators) is { } escalationRefusal)
+        {
+            return LocalAccountOperationResult.Rejected(escalationRefusal);
+        }
+
         var payload = new TaskPayloads.LocalUserTarget(sid, target?.Username ?? sid);
         return await QueueAsync(context, DeviceTaskType.ForceLocalUserPasswordChange, payload, cancellationToken);
+    }
+
+    /// <summary>
+    /// The administrator-password-equivalence rule for reset / force-change: a caller
+    /// without <c>user.change_type</c> may only target an account the inventory knows
+    /// AND reports as a non-administrator. Unknown targets fail closed here — the
+    /// escalation check must not ride stale inventory — unlike the last-administrator
+    /// guard, which defers unknown targets to the agent's live re-check.
+    /// </summary>
+    private static string? EscalationRefusal(LocalAccountView? target, bool callerMayTargetAdministrators)
+    {
+        if (callerMayTargetAdministrators)
+        {
+            return null;
+        }
+
+        if (target is null)
+        {
+            return UnknownTargetRequiresChangeType;
+        }
+
+        return target.IsAdministrator ? AdministratorTargetRequiresChangeType : null;
     }
 
     /// <summary>Promotes or demotes by changing real BUILTIN\Administrators membership.</summary>

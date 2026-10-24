@@ -1,4 +1,4 @@
-import type { AgentReleaseRow } from '../api/client'
+import { ApiError, type AgentReleaseRow } from '../api/client'
 
 /**
  * Which releases a device may actually be moved to, and why not otherwise.
@@ -222,6 +222,31 @@ export function publishedReleases(releases: AgentReleaseRow[]): AgentReleaseRow[
 export interface UpdateOutcome {
   hostname: string
   error: string | null
+}
+
+/**
+ * Whether a refusal is about the operator rather than the device.
+ *
+ * A 403 is the step-up gate ("That password is not correct.") and a 429 the
+ * rate limiter; neither says anything about the device the call named, and both
+ * would refuse every remaining device for the same reason. A bulk run must stop
+ * on one instead of replaying it down the list -- each wrong-password attempt
+ * counts towards the operator's own sign-in lockout.
+ */
+export function isOperatorRefusal(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 403 || error.status === 429)
+}
+
+/**
+ * The server's reason for one device's refusal, verbatim when it gave one.
+ *
+ * The detail is where the actionable part lives -- "Release 1.5.0 is not newer
+ * than the installed agent" -- and it never quotes what the operator typed, so
+ * it is safe to show as written.
+ */
+export function refusalText(error: unknown): string {
+  if (error instanceof ApiError && error.detail?.trim()) return error.detail
+  return error instanceof Error ? error.message : 'Refused'
 }
 
 /**

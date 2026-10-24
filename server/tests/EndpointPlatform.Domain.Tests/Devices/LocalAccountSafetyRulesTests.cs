@@ -104,4 +104,46 @@ public sealed class LocalAccountSafetyRulesTests
         LocalAccountSafetyRules.ValidateDisable(AdminB, users)
             .ShouldBeNull("it is already not counted among the enabled administrators");
     }
+
+    // ------------------------------------------- symmetric RID-500 hands-off rules
+    //
+    // The platform never touches the built-in Administrator in ANY direction. The
+    // messages are asserted exactly: the API surfaces them verbatim and the bulk
+    // routes reuse them, so a rewording here is a visible contract change.
+
+    [Fact]
+    public void The_built_in_administrator_cannot_be_enabled()
+    {
+        // Enable used to be deliberately unguarded; enable + reset composes into a
+        // silent takeover of RID 500, so the hands-off rule became symmetric.
+        LocalAccountSafetyRules.ValidateEnable(BuiltInAdmin)
+            .ShouldBe("The built-in Administrator account is protected and cannot be enabled.");
+    }
+
+    [Fact]
+    public void The_built_in_administrators_password_cannot_be_reset()
+    {
+        LocalAccountSafetyRules.ValidateResetPassword(BuiltInAdmin)
+            .ShouldBe("The built-in Administrator account is protected and its password cannot be reset.");
+    }
+
+    [Fact]
+    public void The_built_in_administrator_cannot_be_forced_to_change_its_password()
+    {
+        LocalAccountSafetyRules.ValidateForcePasswordChange(BuiltInAdmin)
+            .ShouldBe("The built-in Administrator account is protected and cannot be forced to change its password.");
+    }
+
+    [Fact]
+    public void Ordinary_accounts_pass_the_enable_reset_and_force_change_rules()
+    {
+        // The rules are SID-suffix-only: an ordinary admin, a standard user and a SID
+        // inventory has never seen all pass. (Whether an ADMIN target may be reset by
+        // THIS caller is the escalation rule in the management service, not here.)
+        LocalAccountSafetyRules.ValidateEnable(AdminA).ShouldBeNull();
+        LocalAccountSafetyRules.ValidateResetPassword(AdminA).ShouldBeNull();
+        LocalAccountSafetyRules.ValidateResetPassword(Standard).ShouldBeNull();
+        LocalAccountSafetyRules.ValidateResetPassword("S-1-5-21-9-9-9-5001").ShouldBeNull();
+        LocalAccountSafetyRules.ValidateForcePasswordChange(Standard).ShouldBeNull();
+    }
 }

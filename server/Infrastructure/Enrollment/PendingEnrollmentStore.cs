@@ -55,6 +55,37 @@ public sealed class PendingEnrollmentStore(
     }
 
     /// <summary>
+    /// Derives the request id for a re-enrollment of one machine into one
+    /// organization.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Deliberately derived from PUBLIC identity rather than a per-request secret:
+    /// a re-enrolling agent calls <c>/enroll</c> statelessly every few minutes and
+    /// holds no request secret, so the only way its retries can land on the SAME
+    /// pending record — and an administrator can decide once rather than per retry
+    /// — is for the id to be a pure function of who is asking about what. The
+    /// organization comes from the presented token, never from the caller's own
+    /// claim, so a caller cannot park requests in a tenant its token does not open.
+    /// </para>
+    /// <para>
+    /// Knowing (or guessing) this id grants nothing. Approval is read server-side
+    /// by the enrollment gate, which still requires a valid token for the same
+    /// organization; the admin endpoints require authentication; and the agent
+    /// claim path refuses re-enrollment records outright (a claim must present a
+    /// secret whose hash IS the id, and this id is not the hash of any secret).
+    /// The domain prefix keeps it from ever colliding with a secret-derived id.
+    /// </para>
+    /// </remarks>
+    public static string DeriveReEnrollRequestId(Guid organizationId, string machineIdentifier)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(machineIdentifier);
+        var hash = SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"re-enroll:v1:{organizationId:N}:{machineIdentifier}"));
+        return Convert.ToHexStringLower(hash);
+    }
+
+    /// <summary>
     /// Records a machine asking to be managed. Returns false when the store is
     /// unreachable, which the caller must surface as a retryable failure rather than
     /// as a rejection.
@@ -105,12 +136,14 @@ public sealed class PendingEnrollmentStore(
     /// Uses SCAN rather than KEYS so a large keyspace does not block Redis. The result
     /// is a point-in-time view: entries expire on their own, so a request may vanish
     /// between listing and approving, which the approve path treats as "gone" rather
-    /// than as an error.
+    /// than as an error. Each entry carries its remaining time to live, because
+    /// lifetimes now differ by kind and by state (and are refreshed by retries), so
+    /// only Redis itself knows when a given record actually dies.
     /// </remarks>
-    public async Task<IReadOnlyList<(string RequestId, PendingEnrollment Request)>> ListAsync(
+    public async Task<IReadOnlyList<(string RequestId, PendingEnrollment Request, TimeSpan? TimeToLive)>> ListAsync(
         CancellationToken cancellationToken = default)
     {
-        var results = new List<(string, PendingEnrollment)>();
+        var results = new List<(string, PendingEnrollment, TimeSpan?)>();
 
         try
         {
@@ -126,16 +159,16 @@ public sealed class PendingEnrollmentStore(
             await foreach (var key in server.KeysAsync(pattern: KeyPrefix + "*", pageSize: 250)
                                .WithCancellation(cancellationToken))
             {
-                var value = await database.StringGetAsync(key);
-                if (value.IsNullOrEmpty)
+                var value = await database.StringGetWithExpiryAsync(key);
+                if (value.Value.IsNullOrEmpty)
                 {
                     continue;
                 }
 
-                var request = Deserialize(value!);
+                var request = Deserialize(value.Value!);
                 if (request is not null)
                 {
-                    results.Add((((string?)key)![KeyPrefix.Length..], request));
+                    results.Add((((string?)key)![KeyPrefix.Length..], request, value.Expiry));
                 }
             }
         }
@@ -165,6 +198,196 @@ public sealed class PendingEnrollmentStore(
         {
             _logger.LogError(ex, "Could not read an enrollment request; the pending store is unreachable.");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Records that a token-holding agent is asking to re-enroll an active device,
+    /// and answers where that request stands.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the storage half of the re-enrollment approval gate, called on every
+    /// gated <c>/enroll</c> attempt. Retries land on the same key (see
+    /// <see cref="DeriveReEnrollRequestId"/>), so the method's job is to move the
+    /// record's state honestly without ever moving it backwards: a Pending record is
+    /// refreshed (new snapshot, new TTL) because the agent is still knocking; an
+    /// Approved record is returned untouched for the caller to claim; a Rejected
+    /// record is left to serve out its cooling-off untouched, so an administrator's
+    /// "no" is not converted back into a question by the very retry it refused.
+    /// </para>
+    /// <para>
+    /// <see cref="ReEnrollAttemptState.Unavailable"/> means the store could not be
+    /// reached. The caller must refuse the enrollment (fail closed): "could not
+    /// check for approval" and "approved" must never be confused.
+    /// </para>
+    /// </remarks>
+    public async Task<ReEnrollAttemptOutcome> UpsertReEnrollRequestAsync(
+        string requestId, PendingEnrollment candidate, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestId);
+        ArgumentNullException.ThrowIfNull(candidate);
+
+        if (candidate.Kind != PendingEnrollmentKind.ReEnrollment)
+        {
+            throw new ArgumentException("Only re-enrollment records go through this method.", nameof(candidate));
+        }
+
+        try
+        {
+            var database = _redis.GetDatabase();
+            var key = KeyPrefix + requestId;
+
+            var existing = await database.StringGetAsync(key);
+            if (!existing.IsNullOrEmpty)
+            {
+                var current = Deserialize(existing!);
+
+                // A corrupt record, or (unreachably — the id is domain-prefixed) a
+                // plain-enrollment record at this key, is never overwritten from an
+                // anonymous call; fail closed and let it expire.
+                if (current is null || current.Kind != PendingEnrollmentKind.ReEnrollment)
+                {
+                    _logger.LogError(
+                        "Re-enrollment request {RequestId} found an unreadable or foreign record; refusing.",
+                        requestId);
+                    return ReEnrollAttemptOutcome.Unavailable();
+                }
+
+                switch (current.Status)
+                {
+                    case PendingEnrollmentStatus.Approved:
+                        return ReEnrollAttemptOutcome.Approved(current);
+
+                    case PendingEnrollmentStatus.Rejected:
+                        return ReEnrollAttemptOutcome.RejectedCoolingOff(current);
+
+                    case PendingEnrollmentStatus.Pending:
+                        // Refresh the snapshot the administrator will decide on, and
+                        // the TTL, but keep RequestedAt: it answers "since when has
+                        // this machine been asking", not "when did it last retry".
+                        var refreshed = candidate with { RequestedAt = current.RequestedAt };
+
+                        // Conditional on what was read, so a decision landing between
+                        // the read and this write is never clobbered back to Pending.
+                        var transaction = database.CreateTransaction();
+                        transaction.AddCondition(Condition.StringEqual(key, existing));
+                        _ = transaction.StringSetAsync(
+                            key, JsonSerializer.Serialize(refreshed, Json), PendingEnrollment.ReEnrollPendingLifetime);
+
+                        if (await transaction.ExecuteAsync())
+                        {
+                            return ReEnrollAttemptOutcome.PendingRefreshed(refreshed);
+                        }
+
+                        // Lost a race with a decision (or another retry). Refusing
+                        // this attempt is safe either way: the agent retries, and the
+                        // next attempt sees the record as it now is.
+                        return ReEnrollAttemptOutcome.Unavailable();
+                }
+            }
+
+            // First knock (or the previous record expired): create the pending record.
+            // NX so two concurrent first knocks produce one record and ONE "created"
+            // answer — the caller audits only on created, and a race must not double it.
+            var created = await database.StringSetAsync(
+                key,
+                JsonSerializer.Serialize(candidate, Json),
+                PendingEnrollment.ReEnrollPendingLifetime,
+                When.NotExists);
+
+            return created
+                ? ReEnrollAttemptOutcome.PendingCreated(candidate)
+                : ReEnrollAttemptOutcome.Unavailable();
+        }
+        catch (RedisException ex)
+        {
+            _logger.LogError(ex, "Could not record a re-enrollment request; the pending store is unreachable.");
+            return ReEnrollAttemptOutcome.Unavailable();
+        }
+    }
+
+    /// <summary>
+    /// Redeems an approved re-enrollment exactly once.
+    /// </summary>
+    /// <remarks>
+    /// GETDEL, for the same reason the claim path uses it: an approval is one
+    /// administrator decision and must complete at most one re-enrollment. Returns
+    /// null when the record is gone or is not an approved re-enrollment — the caller
+    /// refuses then, and the agent's next retry re-pends. If the enrollment this
+    /// admits subsequently fails to commit, <see cref="RestoreReEnrollApprovalAsync"/>
+    /// puts the approval back so the decision is not silently spent on a failure.
+    /// </remarks>
+    public async Task<PendingEnrollment?> ClaimReEnrollApprovalAsync(
+        string requestId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestId);
+
+        try
+        {
+            var database = _redis.GetDatabase();
+            var claimed = await database.StringGetDeleteAsync(KeyPrefix + requestId);
+            if (claimed.IsNullOrEmpty)
+            {
+                return null;
+            }
+
+            var record = Deserialize(claimed!);
+            if (record is { Kind: PendingEnrollmentKind.ReEnrollment, Status: PendingEnrollmentStatus.Approved })
+            {
+                return record;
+            }
+
+            // Deleted something that was not an approved re-enrollment. Only possible
+            // if the record changed between the caller's read and this claim; put it
+            // back (best effort) rather than eat someone else's state.
+            if (record is not null)
+            {
+                await database.StringSetAsync(
+                    KeyPrefix + requestId,
+                    JsonSerializer.Serialize(record, Json),
+                    LifetimeFor(record),
+                    When.NotExists);
+            }
+
+            return null;
+        }
+        catch (RedisException ex)
+        {
+            _logger.LogError(ex, "Could not claim a re-enrollment approval; the pending store is unreachable.");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Returns a claimed approval to the store after the enrollment it admitted
+    /// failed to commit.
+    /// </summary>
+    /// <remarks>
+    /// Best effort and NX: if the agent has already knocked again and re-pended,
+    /// the newer record wins and the administrator decides again — losing an
+    /// approval to a race costs one more click, while double-writing could revive
+    /// a decision that was already superseded.
+    /// </remarks>
+    public async Task RestoreReEnrollApprovalAsync(
+        string requestId, PendingEnrollment approved, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestId);
+        ArgumentNullException.ThrowIfNull(approved);
+
+        try
+        {
+            await _redis.GetDatabase().StringSetAsync(
+                KeyPrefix + requestId,
+                JsonSerializer.Serialize(approved, Json),
+                PendingEnrollment.ReEnrollDecisionLifetime,
+                When.NotExists);
+        }
+        catch (RedisException ex)
+        {
+            _logger.LogError(
+                ex,
+                "Could not restore a claimed re-enrollment approval; the administrator will need to approve again.");
         }
     }
 
@@ -218,10 +441,12 @@ public sealed class PendingEnrollmentStore(
             };
 
             // Conditional on the value we read, so two administrators clicking Approve
-            // at the same moment cannot both succeed.
+            // at the same moment cannot both succeed. The decided record's lifetime
+            // depends on its kind: a decided re-enrollment lives the cooling-off /
+            // claim window, a decided enrollment its original 15 minutes.
             var transaction = database.CreateTransaction();
             transaction.AddCondition(Condition.StringEqual(key, current));
-            _ = transaction.StringSetAsync(key, JsonSerializer.Serialize(updated, Json), PendingEnrollment.Lifetime);
+            _ = transaction.StringSetAsync(key, JsonSerializer.Serialize(updated, Json), LifetimeFor(updated));
 
             return await transaction.ExecuteAsync() ? updated : null;
         }
@@ -265,6 +490,17 @@ public sealed class PendingEnrollmentStore(
 
             var request = Deserialize(value!);
             if (request is null)
+            {
+                return ClaimOutcome.NotFound();
+            }
+
+            // Re-enrollment records are never claimable here. Their approval is
+            // redeemed by the enrollment gate against the agent's own token; this
+            // path redeems a minted token against a request SECRET, and a
+            // re-enrollment id is not the hash of any secret. Unreachable in
+            // practice (it would take a SHA-256 preimage), but a claim must not be
+            // the thing that deletes a record an administrator just approved.
+            if (request.Kind == PendingEnrollmentKind.ReEnrollment)
             {
                 return ClaimOutcome.NotFound();
             }
@@ -319,6 +555,15 @@ public sealed class PendingEnrollmentStore(
         }
     }
 
+    /// <summary>The lifetime a record of this kind and state is (re)written with.</summary>
+    private static TimeSpan LifetimeFor(PendingEnrollment record) => record switch
+    {
+        { Kind: PendingEnrollmentKind.ReEnrollment, Status: PendingEnrollmentStatus.Pending } =>
+            PendingEnrollment.ReEnrollPendingLifetime,
+        { Kind: PendingEnrollmentKind.ReEnrollment } => PendingEnrollment.ReEnrollDecisionLifetime,
+        _ => PendingEnrollment.Lifetime,
+    };
+
     private static PendingEnrollment? Deserialize(string value)
     {
         try
@@ -330,6 +575,43 @@ public sealed class PendingEnrollmentStore(
             return null;
         }
     }
+}
+
+/// <summary>Where a gated re-enrollment attempt stands after being recorded.</summary>
+public enum ReEnrollAttemptState
+{
+    /// <summary>An administrator approved; the caller may claim and complete.</summary>
+    Approved = 0,
+
+    /// <summary>No record existed; a pending one was created. Audit this one.</summary>
+    PendingCreated = 1,
+
+    /// <summary>A pending record already existed and was refreshed. The retry drum; not audited.</summary>
+    PendingRefreshed = 2,
+
+    /// <summary>An administrator rejected recently; the refusal stands without re-pending.</summary>
+    RejectedCoolingOff = 3,
+
+    /// <summary>The store could not be reached or the record could not be moved. Fail closed.</summary>
+    Unavailable = 4,
+}
+
+/// <summary>Outcome of <see cref="PendingEnrollmentStore.UpsertReEnrollRequestAsync"/>.</summary>
+public sealed record ReEnrollAttemptOutcome(ReEnrollAttemptState State, PendingEnrollment? Record)
+{
+    public static ReEnrollAttemptOutcome Approved(PendingEnrollment record) =>
+        new(ReEnrollAttemptState.Approved, record);
+
+    public static ReEnrollAttemptOutcome PendingCreated(PendingEnrollment record) =>
+        new(ReEnrollAttemptState.PendingCreated, record);
+
+    public static ReEnrollAttemptOutcome PendingRefreshed(PendingEnrollment record) =>
+        new(ReEnrollAttemptState.PendingRefreshed, record);
+
+    public static ReEnrollAttemptOutcome RejectedCoolingOff(PendingEnrollment record) =>
+        new(ReEnrollAttemptState.RejectedCoolingOff, record);
+
+    public static ReEnrollAttemptOutcome Unavailable() => new(ReEnrollAttemptState.Unavailable, null);
 }
 
 /// <summary>What a claim attempt found.</summary>

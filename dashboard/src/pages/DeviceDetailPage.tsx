@@ -62,6 +62,7 @@ import {
 import { Icon, type IconName } from '../components/Icon'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { EditDeviceNameDialog } from './EditDeviceNameDialog'
+import { ReleaseStepUpDialog } from './ReleaseStepUpDialog'
 
 /** One navigation card in the device feature grid. */
 interface FeatureSpec {
@@ -155,6 +156,10 @@ export function DeviceDetailPage() {
   const [latestAgent, setLatestAgent] = useState<LatestAgentRelease | null>(null)
   const [releases, setReleases] = useState<AgentReleaseRow[]>([])
   const [targetReleaseId, setTargetReleaseId] = useState<string>('')
+  // Queueing an agent update runs an installer as SYSTEM on this machine, so
+  // the server demands step-up: the button opens a dialog where the operator
+  // re-types their password and records a reason, like a recovery-key reveal.
+  const [confirmAgentUpdate, setConfirmAgentUpdate] = useState(false)
   const [softwareSearch, setSoftwareSearch] = useState('')
   // Frameworks, inbox apps and system components are reported and categorised
   // by the endpoint, and hidden here by default: the count in the tab is the
@@ -485,20 +490,19 @@ export function DeviceDetailPage() {
   // reachable targets just avoids inviting a guaranteed refusal.
   const agentOutdated = targets.length > 0
 
-  async function onUpdateAgent() {
+  /**
+   * The update itself, from the step-up dialog. A rejection stays in the dialog
+   * with the server's reason verbatim -- "That password is not correct.", the
+   * rate limit, or a 409 naming why the release cannot go on this device.
+   */
+  async function onUpdateAgentConfirmed(stepUp: { currentPassword: string; justification: string }) {
     if (!deviceId || !chosen) return
+    const { taskId } = await updateDeviceAgent(
+      deviceId, chosen.id, stepUp.currentPassword, stepUp.justification)
+    setConfirmAgentUpdate(false)
     setActionMsg(null)
-    try {
-      const { taskId } = await updateDeviceAgent(deviceId, chosen.id)
-      track(taskId, `Update agent to ${chosen.version}`)
-      await load()
-    } catch (e) {
-      setActionMsg(
-        e instanceof ApiError && e.status === 409
-          ? 'The update was refused — the release is not newer than the installed agent, or is no longer published.'
-          : 'The agent update could not be queued.',
-      )
-    }
+    track(taskId, `Update agent to ${chosen.version}`)
+    await load()
   }
   const visibleSession = sessionActions.filter((a) => hasPermission(a.perm))
   const visiblePower = powerActions.filter((a) => hasPermission(a.perm))
@@ -604,6 +608,23 @@ export function DeviceDetailPage() {
             next check-in. This action is audited.
           </>
         </ConfirmDialog>
+      )}
+
+      {confirmAgentUpdate && chosen && (
+        <ReleaseStepUpDialog
+          title={`Update agent on ${deviceName(device)} to ${chosen.version}?`}
+          confirmLabel="Queue update"
+          busyLabel="Queueing…"
+          fallbackError="The agent update could not be queued."
+          onCancel={() => setConfirmAgentUpdate(false)}
+          onConfirm={onUpdateAgentConfirmed}
+        >
+          <>
+            {device.hostname} downloads the {chosen.version} installer, verifies its SHA-256 against
+            the hash the server recorded — and its signature when the release carries one — then
+            runs it as SYSTEM and restarts its own service.
+          </>
+        </ReleaseStepUpDialog>
       )}
 
       <div className="detail-header">
@@ -1277,7 +1298,7 @@ export function DeviceDetailPage() {
               </div>
 
               <div className="btn-row">
-                <button type="button" className="btn-primary" onClick={() => void onUpdateAgent()}>
+                <button type="button" className="btn-primary" onClick={() => setConfirmAgentUpdate(true)}>
                   Update agent to {chosen.version}
                 </button>
               </div>

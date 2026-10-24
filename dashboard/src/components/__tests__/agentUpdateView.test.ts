@@ -7,15 +7,17 @@ import {
   ineligibilityReason,
   isEligible,
   isNewer,
+  isOperatorRefusal,
   isSigned,
   publishedReleases,
+  refusalText,
   signingLabel,
   summariseResults,
   toCandidate,
   upgradeTargets,
   type DeviceUpdateCandidate,
 } from '../../pages/agentUpdateView'
-import type { AgentReleaseRow } from '../../api/client'
+import { ApiError, type AgentReleaseRow } from '../../api/client'
 
 /**
  * Which devices an agent update may touch.
@@ -345,5 +347,57 @@ describe('reporting a bulk run', () => {
 
   it('says plainly when there was nothing to do', () => {
     expect(summariseResults([])).toBe('Nothing was queued.')
+  })
+})
+
+describe('stopping a bulk run on an operator refusal', () => {
+  /**
+   * A 403 is the step-up gate and a 429 the rate limiter. Neither says anything
+   * about the device the call named, and both would refuse every remaining
+   * device identically -- while each wrong-password attempt counts towards the
+   * operator's own sign-in lockout. The run must stop on one rather than replay
+   * it down the list.
+   */
+  it('treats the step-up gate and the rate limit as operator refusals', () => {
+    expect(isOperatorRefusal(new ApiError(403, 'HTTP 403', null, 'That password is not correct.'))).toBe(true)
+    expect(isOperatorRefusal(new ApiError(429, 'HTTP 429', null, 'Too many agent-release actions. Try again later.'))).toBe(true)
+  })
+
+  /** A device-level refusal is about that device alone; the rest still get their turn. */
+  it('lets device-level refusals continue the run', () => {
+    expect(isOperatorRefusal(new ApiError(409, 'HTTP 409', null, 'Release 1.5.0 is not newer.'))).toBe(false)
+    expect(isOperatorRefusal(new ApiError(404, 'HTTP 404', null))).toBe(false)
+    expect(isOperatorRefusal(new ApiError(500, 'HTTP 500', null))).toBe(false)
+  })
+
+  it('does not mistake a network failure for an operator refusal', () => {
+    expect(isOperatorRefusal(new TypeError('Failed to fetch'))).toBe(false)
+    expect(isOperatorRefusal(undefined)).toBe(false)
+  })
+})
+
+describe('what a refused device is reported with', () => {
+  /** The server's own reason, verbatim, when it gave one. It never quotes what was typed. */
+  it('prefers the problem detail', () => {
+    const error = new ApiError(
+      409,
+      'Request to /x failed with HTTP 409',
+      null,
+      'Release 1.5.0 is not newer than the installed agent 1.5.0. Downgrades and same-version reinstalls are not offered.',
+    )
+
+    expect(refusalText(error)).toContain('not newer than the installed agent')
+    expect(refusalText(error)).not.toContain('Request to /x')
+  })
+
+  it('falls back to the error message when the server gave no reason', () => {
+    expect(refusalText(new ApiError(500, 'Request failed with HTTP 500', null))).toBe('Request failed with HTTP 500')
+    expect(refusalText(new ApiError(502, 'Request failed with HTTP 502', null, '  '))).toBe('Request failed with HTTP 502')
+    expect(refusalText(new TypeError('Failed to fetch'))).toBe('Failed to fetch')
+  })
+
+  it('says Refused for anything that is not an error at all', () => {
+    expect(refusalText(undefined)).toBe('Refused')
+    expect(refusalText('boom')).toBe('Refused')
   })
 })

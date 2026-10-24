@@ -32,6 +32,10 @@ public sealed class AgentApiPostgresFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
+        // Read before the database is created, so a missing Redis variable fails the
+        // fixture without leaving a throwaway database behind.
+        var redisConnectionString = TestRedis.ConnectionString;
+
         _database = await TestDatabase.CreateAsync("agentapi");
 
         // Migrate + seed before the host starts.
@@ -46,7 +50,7 @@ public sealed class AgentApiPostgresFixture : IAsyncLifetime
             await seeder.SeedAsync();
         }
 
-        _factory = new AgentApiTestFactory(DatabaseConnectionString);
+        _factory = new AgentApiTestFactory(DatabaseConnectionString, redisConnectionString);
     }
 
     public async Task DisposeAsync()
@@ -95,15 +99,20 @@ public sealed class AgentApiPostgresFixture : IAsyncLifetime
     public static string SealingFingerprint { get; } =
         Convert.ToHexString(SHA256.HashData(SealingKey.ExportSubjectPublicKeyInfo())).ToLowerInvariant();
 
-    private sealed class AgentApiTestFactory(string connectionString) : WebApplicationFactory<Program>
+    private sealed class AgentApiTestFactory(string connectionString, string redisConnectionString)
+        : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment(Environments.Development);
             builder.UseSetting("Database:ConnectionString", connectionString);
-            // Redis stays unreachable: nothing in enrollment/heartbeat needs it,
-            // and the tests must prove that.
-            builder.UseSetting("Redis:ConnectionString", "127.0.0.1:1,abortConnect=false,connectTimeout=100");
+            // The real, locally installed Redis (TestRedis.ConnectionString). It used
+            // to be deliberately unreachable here, because nothing in enrollment or
+            // heartbeat needed it; the re-enrollment approval gate changed that —
+            // its pending records live in Redis, and the enrollment suite now
+            // exercises the gate end to end. With Redis down, the gate fails CLOSED
+            // (refuses re-enrollment), which EnrollmentEndpointTests pins.
+            builder.UseSetting("Redis:ConnectionString", redisConnectionString);
             builder.UseSetting("Redis:InstanceName", "endpointplatform:agentapitest:");
 
             // The enrolment endpoints are rate-limited per source address (120 a

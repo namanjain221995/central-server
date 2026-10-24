@@ -41,8 +41,19 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
     private static readonly Uri Releases = new("/admin/v1/agent-releases", UriKind.Relative);
     private static Uri Release(Guid id, string action) => new($"/admin/v1/agent-releases/{id}/{action}", UriKind.Relative);
 
-    private async Task<HttpClient> AdminAsync() =>
-        _fixture.CreateClientFor(await _fixture.SignInAsync(AdminApiPostgresFixture.ItAdminEmail));
+    /// <summary>
+    /// A fresh deploy-capable administrator per test. Publish and artifact
+    /// replacement are step-up gated behind a shared per-user rate limit (five
+    /// actions per fifteen-minute window), so a fixture account reused across
+    /// tests would exhaust the budget; see <see cref="ReleaseStepUpTestSupport"/>.
+    /// </summary>
+    private Task<(HttpClient Client, string Email)> AdminWithEmailAsync() =>
+        _fixture.MintDeployAdminAsync("gate");
+
+    private async Task<HttpClient> AdminAsync() => (await AdminWithEmailAsync()).Client;
+
+    private static Task<HttpResponseMessage> PublishAsync(HttpClient client, Guid id) =>
+        client.PostAsync(Release(id, "publish"), ReleaseStepUpTestSupport.PublishBody());
 
     private static string Seed(string version) => $"{version}-{Guid.CreateVersion7():N}";
 
@@ -157,7 +168,7 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
         using var client = await AdminAsync();
         var id = await IdOf(await client.PostAsync(Releases, Form(TestArtifacts.UnsignedMsi(Seed("7.65.0"), "7.65.0"), "7.65.0")));
 
-        var response = await client.PostAsync(Release(id, "publish"), null);
+        var response = await PublishAsync(client, id);
 
         response.StatusCode.ShouldBe(HttpStatusCode.NoContent);
         var row = await RowAsync(id);
@@ -178,7 +189,7 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
 
         var id = await IdOf(await client.PostAsync(Releases, Form(bytes, "7.66.0")));
 
-        (await client.PostAsync(Release(id, "publish"), null)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await PublishAsync(client, id)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
         (await RowAsync(id)).SignerSubject.ShouldBeNull();
     }
 
@@ -208,7 +219,7 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
         var directory = _fixture.Factory.Services.GetRequiredService<IOptions<PackageStorageOptions>>().Value.Directory;
         await File.WriteAllBytesAsync(Path.Combine(directory, row.Sha256 + ".bin"), exe);
 
-        var response = await client.PostAsync(Release(id, "publish"), null);
+        var response = await PublishAsync(client, id);
         response.StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
         (await response.Content.ReadAsStringAsync()).ShouldContain("Windows Installer");
         (await RowAsync(id)).Status.ShouldBe(AgentReleaseStatus.Draft);
@@ -234,7 +245,7 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
         stored[^1] ^= 0x01;
         await File.WriteAllBytesAsync(path, stored);
 
-        var response = await client.PostAsync(Release(id, "publish"), null);
+        var response = await PublishAsync(client, id);
 
         response.StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
         (await RowAsync(id)).Status.ShouldBe(AgentReleaseStatus.Draft);
@@ -244,16 +255,17 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
     [Fact]
     public async Task Publishing_is_audited()
     {
-        using var client = await AdminAsync();
+        var (client, email) = await AdminWithEmailAsync();
+        using var _1 = client;
         var id = await IdOf(await client.PostAsync(Releases, Form(TestArtifacts.UnsignedMsi(Seed("7.69.0"), "7.69.0"), "7.69.0")));
 
-        (await client.PostAsync(Release(id, "publish"), null)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await PublishAsync(client, id)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
 
         await using var db = _fixture.CreateDbContext();
         var entry = await db.AuditLogEntries.AsNoTracking()
             .Where(e => e.TargetId == id.ToString() && e.Action == "agent_release.published")
             .SingleAsync();
-        entry.ActorDisplay.ShouldBe(AdminApiPostgresFixture.ItAdminEmail);
+        entry.ActorDisplay.ShouldBe(email);
     }
 
     /// <summary>The refusal explains itself without leaking anything about the bytes.</summary>
@@ -271,7 +283,7 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
         stored[^1] ^= 0x01;
         await File.WriteAllBytesAsync(path, stored);
 
-        var body = await (await client.PostAsync(Release(id, "publish"), null)).Content.ReadAsStringAsync();
+        var body = await (await PublishAsync(client, id)).Content.ReadAsStringAsync();
 
         body.ShouldContain("SHA-256");
         body.Contains("Authenticode", StringComparison.Ordinal)
@@ -296,7 +308,7 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
         before.SignerSubject.ShouldBeNull();
 
         var signed = TestArtifacts.SignedMsi(AdminApiPostgresFixture.SigningAuthority, seed: Seed("7.71.0-signed"), productVersion: "7.71.0");
-        var replace = await client.PutAsync(Release(id, "artifact"), Form(signed, "7.71.0"));
+        var replace = await client.PutAsync(Release(id, "artifact"), Form(signed, "7.71.0").WithStepUp());
         replace.StatusCode.ShouldBe(HttpStatusCode.OK);
 
         var after = await RowAsync(id);
@@ -308,7 +320,7 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
         after.SignerSubject.ShouldBeNull("Internal reads no signature");
 
         // And now it publishes.
-        (await client.PostAsync(Release(id, "publish"), null)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await PublishAsync(client, id)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
     }
 
     /// <summary>A published release is immutable; its artifact cannot be swapped.</summary>
@@ -318,11 +330,12 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
         using var client = await AdminAsync();
         var id = await IdOf(await client.PostAsync(
             Releases, Form(TestArtifacts.SignedMsi(AdminApiPostgresFixture.SigningAuthority, seed: Seed("7.72.0"), productVersion: "7.72.0"), "7.72.0")));
-        (await client.PostAsync(Release(id, "publish"), null)).EnsureSuccessStatusCode();
+        (await PublishAsync(client, id)).EnsureSuccessStatusCode();
         var published = await RowAsync(id);
 
         var response = await client.PutAsync(
-            Release(id, "artifact"), Form(TestArtifacts.SignedMsi(AdminApiPostgresFixture.SigningAuthority, seed: Seed("7.72.0-other"), productVersion: "7.72.0"), "7.72.0"));
+            Release(id, "artifact"),
+            Form(TestArtifacts.SignedMsi(AdminApiPostgresFixture.SigningAuthority, seed: Seed("7.72.0-other"), productVersion: "7.72.0"), "7.72.0").WithStepUp());
 
         response.StatusCode.ShouldBe(HttpStatusCode.Conflict);
         (await RowAsync(id)).Sha256.ShouldBe(published.Sha256, "the published bytes are frozen");
@@ -333,9 +346,11 @@ public sealed class PublishGateTests(AdminApiPostgresFixture fixture)
     {
         using var client = await AdminAsync();
 
+        // Valid step-up fields, so the 404 is about the release and nothing else:
+        // the unknown id is answered before any budget is consumed.
         (await client.PutAsync(
             Release(Guid.CreateVersion7(), "artifact"),
-            Form(TestArtifacts.UnsignedMsi(Seed("7.73.0"), "7.73.0"), "7.73.0")))
+            Form(TestArtifacts.UnsignedMsi(Seed("7.73.0"), "7.73.0"), "7.73.0").WithStepUp()))
             .StatusCode.ShouldBe(HttpStatusCode.NotFound);
     }
 
