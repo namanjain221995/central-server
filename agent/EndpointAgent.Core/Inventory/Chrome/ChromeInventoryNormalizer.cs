@@ -227,7 +227,11 @@ public static class ChromeInventoryNormalizer
                 profile.Info.IsManaged,
                 profile.Info.LastActiveAt,
                 NormalizeExtensions(profile.SecurePreferences, profile.Preferences),
-                Clamp(profile.Info.AccountEmail, InventoryChromeProfile.MaxAccountEmail)));
+                Clamp(profile.Info.AccountEmail, InventoryChromeProfile.MaxAccountEmail),
+                // Tristate flags pass through whole, like IsManaged above: null is
+                // "unrecorded" and there is nothing to clamp on a bool.
+                profile.Info.SignedIn,
+                profile.Info.SignInBroken));
 
             if (kept.Count >= InventoryChrome.MaxProfiles)
             {

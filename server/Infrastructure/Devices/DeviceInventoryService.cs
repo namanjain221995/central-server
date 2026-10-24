@@ -611,7 +611,12 @@ public sealed class DeviceInventoryService(
                 profile.IsManaged,
                 profile.LastActiveAt?.ToUniversalTime(),
                 now,
-                Truncate(profile.AccountEmail, InventoryChromeProfile.MaxAccountEmail));
+                Truncate(profile.AccountEmail, InventoryChromeProfile.MaxAccountEmail),
+                // Booleans need no bounding; null is kept as null, because an
+                // agent that did not say (or predates the fields) reported
+                // unknown, not false.
+                profile.SignedIn,
+                profile.SignInBroken);
             _dbContext.ChromeProfiles.Add(row);
 
             // The id is the extension's identity within a profile; first wins,

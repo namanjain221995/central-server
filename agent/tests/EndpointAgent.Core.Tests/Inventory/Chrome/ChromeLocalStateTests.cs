@@ -204,6 +204,60 @@ public sealed class ChromeLocalStateTests
     }
 
     /// <summary>
+    /// Signed-in comes from two keys together: the consent flag alone
+    /// under-reports (Chrome writes it false for a browser sign-in without sync
+    /// consent -- a common state), and the account id covers that case because
+    /// Chrome keeps it non-empty exactly while an account is attached and empties
+    /// it on sign-out. The id's value is only tested for emptiness; the test that
+    /// it is never carried is elsewhere. Neither key present is a Chrome too old
+    /// to say: null, never a guess -- and Chrome's Tribool -1 decides nothing,
+    /// exactly as it decides nothing for is_managed.
+    /// </summary>
+    [Theory]
+    // The consent flag decides first, in either of Chrome's encodings.
+    [InlineData(""" "is_consented_primary_account": true """, true)]
+    [InlineData(""" "is_consented_primary_account": 1 """, true)]
+    // Signed in to the browser without sync consent: the id says so.
+    [InlineData(""" "is_consented_primary_account": false, "gaia_id": "100000000000000000001" """, true)]
+    [InlineData(""" "gaia_id": "100000000000000000001" """, true)]
+    // An empty id is Chrome's own record of a signed-out profile.
+    [InlineData(""" "gaia_id": "" """, false)]
+    [InlineData(""" "gaia_id": "   " """, false)]
+    [InlineData(""" "is_consented_primary_account": false, "gaia_id": "" """, false)]
+    [InlineData(""" "is_consented_primary_account": false """, false)]
+    [InlineData(""" "is_consented_primary_account": 0 """, false)]
+    // Entries that cannot say either way.
+    [InlineData(""" "is_managed": 0 """, null)]
+    [InlineData(""" "is_consented_primary_account": -1 """, null)]
+    [InlineData(""" "is_consented_primary_account": "true" """, null)]
+    [InlineData(""" "gaia_id": 42 """, null)]
+    public void Signed_in_is_read_from_the_consent_flag_and_the_account_id_presence(string fields, bool? expected)
+    {
+        var state = Parse(Document($$"""
+            "Default": { "name": "Solo", {{fields}} }
+            """)).ShouldNotBeNull();
+
+        state.Profiles.ShouldHaveSingleItem().SignedIn.ShouldBe(expected);
+    }
+
+    /// <summary>
+    /// Pins the empirical finding the field rests on: current Chrome persists its
+    /// "Sign-in paused" state in the encrypted token store, not in any file this
+    /// reader may open, so the parser never derives SignInBroken -- null is
+    /// "unknown", and inventing it from a weaker signal would be a guess the
+    /// server would then act on.
+    /// </summary>
+    [Fact]
+    public void Sign_in_broken_is_never_derived_because_chrome_persists_no_signal()
+    {
+        var state = Parse(TwoProfiles).ShouldNotBeNull();
+
+        state.Profiles.Count.ShouldBe(2);
+        state.Profiles.ShouldAllBe(p => p.SignInBroken == null);
+        state.Profiles.ShouldAllBe(p => p.SignedIn == true);
+    }
+
+    /// <summary>
     /// The number is Chrome's <c>signin::Tribool</c>: -1 is "not yet determined",
     /// which must never come out as managed, and anything else outside 0/1 is
     /// unrecorded rather than a guess.

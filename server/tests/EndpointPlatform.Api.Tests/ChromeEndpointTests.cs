@@ -61,7 +61,9 @@ public sealed class ChromeEndpointTests(AdminApiPostgresFixture fixture)
     // ---------------------------------------------------------------- seeding
 
     /// <summary>One profile to seed, with the extensions Chrome would record for it.</summary>
-    private sealed class ProfileSeed(string sid, string key, string account = DefaultAccount, string? name = null)
+    private sealed class ProfileSeed(
+        string sid, string key, string account = DefaultAccount, string? name = null,
+        string? email = null, bool? signedIn = null, bool? signInBroken = null)
     {
         public string Sid { get; } = sid;
 
@@ -70,6 +72,15 @@ public sealed class ChromeEndpointTests(AdminApiPostgresFixture fixture)
         public string Account { get; } = account;
 
         public string? Name { get; } = name;
+
+        public string? Email { get; } = email;
+
+        public bool? SignedIn { get; } = signedIn;
+
+        public bool? SignInBroken { get; } = signInBroken;
+
+        /// <summary>How long before "now" the profile was last used; null means Chrome never recorded a use.</summary>
+        public TimeSpan? LastActiveAgo { get; set; } = TimeSpan.FromMinutes(30);
 
         public List<(string Id, InstallType Type, bool Managed, string? Name)> Extensions { get; } = [];
 
@@ -112,7 +123,8 @@ public sealed class ChromeEndpointTests(AdminApiPostgresFixture fixture)
             var profile = new ChromeProfile(
                 deviceId, installation.Id, seed.Sid, seed.Account, seed.Key, seed.Name,
                 @"C:\Users\user\AppData\Local\Google\Chrome\User Data\" + seed.Key,
-                isManaged: false, now.AddMinutes(-30), now);
+                isManaged: false, seed.LastActiveAgo is { } ago ? now - ago : null, now,
+                seed.Email, seed.SignedIn, seed.SignInBroken);
             db.ChromeProfiles.Add(profile);
             ids[seed.Key] = profile.Id;
 
@@ -441,6 +453,55 @@ public sealed class ChromeEndpointTests(AdminApiPostgresFixture fixture)
         zed.GetProperty("isManaged").GetBoolean().ShouldBeFalse();
         zed.GetProperty("lastActiveAt").ValueKind.ShouldBe(JsonValueKind.String);
         zed.GetProperty("collectedAt").ValueKind.ShouldBe(JsonValueKind.String);
+    }
+
+    /// <summary>
+    /// The profile lifecycle wire shape: every row carries the stored sign-in
+    /// facts, the row guid under <c>id</c> (what the remove action takes) beside
+    /// the <c>profileId</c> older readers use, and a <c>status</c> derived at
+    /// read time -- one of the four exact strings the dashboard switches on.
+    /// </summary>
+    [Fact]
+    public async Task Device_profiles_carry_sign_in_facts_and_a_read_time_status()
+    {
+        using var client = await ItAdminAsync();
+        var device = await _support.SeedDeviceAsync();
+        await SeedChromeAsync(device, ChromeReportStatus.Available,
+            new ProfileSeed(Sid, "Profile 1", email: "amy@example.com", signedIn: true, signInBroken: false),
+            new ProfileSeed(Sid, "Profile 2", email: "amy@example.com", signedIn: true, signInBroken: true),
+            new ProfileSeed(Sid, "Profile 3", email: "amy@example.com", signedIn: true)
+                { LastActiveAgo = TimeSpan.FromDays(8) },
+            new ProfileSeed(Sid, "Profile 4"),
+            new ProfileSeed(Sid, "Profile 5", email: "amy@example.com") { LastActiveAgo = null });
+
+        var detail = await ReadAsync(await client.GetAsync(DeviceChrome(device)));
+        var profiles = detail.GetProperty("profiles").EnumerateArray()
+            .ToDictionary(p => p.GetProperty("profileKey").GetString()!);
+
+        var active = profiles["Profile 1"];
+        active.GetProperty("status").GetString().ShouldBe("active");
+        active.GetProperty("signedIn").GetBoolean().ShouldBeTrue();
+        active.GetProperty("signInBroken").GetBoolean().ShouldBeFalse();
+        active.GetProperty("lastActiveAt").ValueKind.ShouldBe(JsonValueKind.String);
+        active.GetProperty("id").GetGuid().ShouldBe(active.GetProperty("profileId").GetGuid(),
+            "one row guid under both names: the actions contract takes id, the extensions route profileId");
+
+        profiles["Profile 2"].GetProperty("status").GetString().ShouldBe("signInBroken",
+            "a broken sign-in needs a person even on a profile in daily use");
+
+        profiles["Profile 3"].GetProperty("status").GetString().ShouldBe("dormant",
+            "eight days without use beats a healthy sign-in");
+
+        var notSignedIn = profiles["Profile 4"];
+        notSignedIn.GetProperty("status").GetString().ShouldBe("notSignedIn",
+            "freshly used, but nothing says an account is there");
+        notSignedIn.GetProperty("signedIn").ValueKind.ShouldBe(JsonValueKind.Null, "unknown is not false");
+        notSignedIn.GetProperty("signInBroken").ValueKind.ShouldBe(JsonValueKind.Null);
+
+        var neverUsed = profiles["Profile 5"];
+        neverUsed.GetProperty("status").GetString().ShouldBe("dormant",
+            "a last use Chrome never recorded reads as none, not as fresh");
+        neverUsed.GetProperty("lastActiveAt").ValueKind.ShouldBe(JsonValueKind.Null);
     }
 
     [Fact]

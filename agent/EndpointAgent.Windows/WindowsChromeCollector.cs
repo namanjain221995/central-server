@@ -389,56 +389,17 @@ public sealed class WindowsChromeCollector(ILogger<WindowsChromeCollector> logge
     /// planter's SID, or any directory on the machine holding a file by the
     /// right name. The service reads on a user's behalf only inside that user's
     /// own profile. Internal so a test can plant a junction and prove it is refused.
+    /// The walk itself lives in <see cref="RealDirectories"/>, shared with the
+    /// profile remover so the two resolve <c>User Data</c> by one rule.
     /// </remarks>
-    internal string? RealDirectoryChain(string root, params string[] segments)
-    {
-        var path = root;
-        foreach (var segment in segments)
-        {
-            path = Path.Combine(path, segment);
-            if (!IsRealDirectory(path))
-            {
-                return null;
-            }
-        }
-
-        return path;
-    }
+    internal string? RealDirectoryChain(string root, params string[] segments) =>
+        RealDirectories.Chain(_logger, root, segments);
 
     /// <summary>
     /// Whether a directory exists and is a real directory rather than a junction
-    /// or symbolic link.
+    /// or symbolic link (see <see cref="RealDirectories.IsReal"/>).
     /// </summary>
-    /// <remarks>
-    /// A reparse point where a directory should be is not followed. The service
-    /// reads as LocalSystem, so a link a user planted under their own profile
-    /// would let it read files elsewhere on the machine on that user's behalf.
-    /// Nothing under a profile may lead the service outside the profile.
-    /// </remarks>
-    private bool IsRealDirectory(string path)
-    {
-        try
-        {
-            var directory = new DirectoryInfo(path);
-            if (!directory.Exists)
-            {
-                return false;
-            }
-
-            if ((directory.Attributes & FileAttributes.ReparsePoint) != 0)
-            {
-                _logger.LogDebug("{Path} is a reparse point and is not read.", path);
-                return false;
-            }
-
-            return true;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SecurityException)
-        {
-            _logger.LogDebug(ex, "Could not inspect directory {Path}.", path);
-            return false;
-        }
-    }
+    private bool IsRealDirectory(string path) => RealDirectories.IsReal(_logger, path);
 
     /// <summary>
     /// Opens one of Chrome's files for reading and hands it to a parser, or null

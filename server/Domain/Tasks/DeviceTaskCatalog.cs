@@ -214,6 +214,20 @@ public static class DeviceTaskCatalog
             // agent gate as the scan that produced the update ids.
             new(DeviceTaskType.InstallSecurityUpdate, Permissions.Update.Manage, HighRisk: true, 7200,
                 MinimumAgentVersion: "1.24.0"),
+
+            // High-risk because it irreversibly deletes a person's browsing
+            // identity -- bookmarks, history, sign-in state -- and chrome.manage
+            // because deciding what Chrome holds on a device is the same authority
+            // as deciding what it runs. An hour of lifetime, like the extension
+            // policy: the agent refuses while Chrome is running for the profile's
+            // user, so the removal often lands on the next poll after the person
+            // closes Chrome rather than the first -- but a removal decided on
+            // yesterday's view of the machine should be re-decided, not fired
+            // late. Gated on the agent that has the removal executor: an older one
+            // would fail the task as unknown, which reads exactly like the
+            // removal failing.
+            new(DeviceTaskType.RemoveChromeProfile, Permissions.Chrome.Manage, HighRisk: true, 3600,
+                MinimumAgentVersion: "1.25.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

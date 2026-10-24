@@ -20,13 +20,31 @@ namespace EndpointAgent.Core.Inventory.Chrome;
 /// Each cache entry also records the Google account the profile is signed in to.
 /// The account's id (<c>gaia_id</c>) and its picture are never carried, and
 /// because the reader looks up the few fields it needs by name rather than
-/// walking the entry, they are never even visited. Nothing here enumerates an
-/// entry's properties, and that is deliberate. What is read: the person's name
+/// walking the entry, the picture is never even visited. Nothing here enumerates
+/// an entry's properties, and that is deliberate. What is read: the person's name
 /// (<c>gaia_given_name</c>, <c>gaia_name</c>) and the account's domain
 /// (<c>hosted_domain</c>), because the profile label Chrome shows is made from
-/// them -- see <see cref="ReadDisplayName"/> -- and the account's e-mail address
+/// them -- see <see cref="ReadDisplayName"/> -- the account's e-mail address
 /// (<c>user_name</c>), reported in its own field because it is what an
-/// administrator needs to trace a profile to a person.
+/// administrator needs to trace a profile to a person, and the sign-in flags
+/// (<c>is_consented_primary_account</c>, and <c>gaia_id</c> solely for whether it
+/// is present and non-empty -- its value goes no further; see
+/// <see cref="ReadSignedIn"/>).
+/// </para>
+/// <para>
+/// <b>What is deliberately not derived: a "sign-in broken" flag.</b> Chrome's
+/// "Sign-in paused" state (the account needs to re-authenticate, typically after
+/// a password change) is kept in its encrypted token store, not in
+/// <c>Local State</c> -- whose entries carry no <c>signin_required</c>,
+/// <c>is_signin_paused</c> or auth-error key (verified empirically;
+/// <c>force_signin_profile_locked</c> is the ForceSignin policy lock and
+/// <c>signin.with_credential_provider</c> the Windows credential-provider marker,
+/// neither a pause signal) -- and not in a profile's <c>Preferences</c> either,
+/// whose <c>google.services.signin</c> object is the chrome://signin-internals
+/// debug surface and whose <c>account_info</c> entries carry identity fields
+/// only. So <see cref="ChromeProfileInfo.SignInBroken"/> stays null -- unknown,
+/// never a guess -- and the server derives profile status from
+/// <see cref="ChromeProfileInfo.SignedIn"/> and activity age alone.
 /// </para>
 /// <para>
 /// Pure and platform-neutral: it reads a stream and returns records, so every
@@ -128,10 +146,55 @@ public static class ChromeLocalState
                 ReadDisplayName(entry.Value),
                 ReadFlag(entry.Value, "is_managed"),
                 ReadUnixSeconds(entry.Value, "active_time"),
-                ReadString(entry.Value, "user_name")));
+                ReadString(entry.Value, "user_name"),
+                ReadSignedIn(entry.Value)));
+            // SignInBroken is left null on purpose: no file this reader may open
+            // records Chrome's "Sign-in paused" state (see the class remarks).
         }
 
         return new ChromeLocalStateInfo(profiles, ReadString(profile, "last_used"));
+    }
+
+    /// <summary>
+    /// Whether a Google account is signed in to the profile, or null when the
+    /// entry predates the keys that would say.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two keys carry the answer, and both are needed.
+    /// <c>is_consented_primary_account</c> is Chrome's flag for the primary
+    /// account, but Chrome writes it false for a profile signed in to the browser
+    /// without sync consent -- a common state -- so alone it under-reports.
+    /// <c>gaia_id</c> is the account's id, written non-empty exactly while an
+    /// account is attached and emptied on sign-out, so its presence is the
+    /// broader signal; its value is tested for emptiness and goes no further
+    /// (the class remarks pin that it is never carried).
+    /// </para>
+    /// <para>
+    /// Either key recorded without indicating an account reads as signed out --
+    /// Chrome said so, one way or the other. Neither key present is an entry from
+    /// a Chrome too old to say, which is null: unrecorded, never a guess. The
+    /// consent flag goes through <see cref="ReadFlag"/>, so Chrome's Tribool -1
+    /// ("not yet determined") decides nothing, exactly as it decides nothing for
+    /// <c>is_managed</c>.
+    /// </para>
+    /// </remarks>
+    private static bool? ReadSignedIn(JsonElement entry)
+    {
+        var consented = ReadFlag(entry, "is_consented_primary_account");
+        if (consented == true)
+        {
+            return true;
+        }
+
+        if (entry.TryGetProperty("gaia_id", out var gaiaId) && gaiaId.ValueKind == JsonValueKind.String)
+        {
+            return !string.IsNullOrWhiteSpace(gaiaId.GetString());
+        }
+
+        // No usable account id. A consent flag Chrome wrote as false still
+        // answers; one that is absent or outside the encoding answers nothing.
+        return consented == false ? false : null;
     }
 
     /// <summary>
@@ -140,6 +203,9 @@ public static class ChromeLocalState
     /// else -- a separator, a drive, a parent reference, a control character --
     /// is not a profile, whatever Chrome would have made of it. The collector
     /// only reads, but it must never be steered to read outside <c>User Data</c>.
+    /// Internal rather than private because the <c>RemoveChromeProfile</c>
+    /// executor applies the very same rule to the key a task payload names, so
+    /// the two cannot drift.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -155,7 +221,7 @@ public static class ChromeLocalState
     /// user-writable file; loosening either must not loosen the other.
     /// </para>
     /// </remarks>
-    private static bool IsProfileKey(string key)
+    internal static bool IsProfileKey(string key)
     {
         if (string.IsNullOrWhiteSpace(key) || key.Length > InventoryChromeProfile.MaxProfileKey)
         {

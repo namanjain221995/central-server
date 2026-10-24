@@ -13,12 +13,25 @@ namespace EndpointAgent.Core.Inventory.Chrome;
 /// <param name="IsManaged">Chrome's enterprise-managed flag, or null when unrecorded.</param>
 /// <param name="LastActiveAt">When the profile was last used, or null when unrecorded.</param>
 /// <param name="AccountEmail">The Google account signed in to the profile, as Chrome records it; null when none is.</param>
+/// <param name="SignedIn">
+/// Whether a Google account is signed in to the profile, from
+/// <c>is_consented_primary_account</c> and the presence of a non-empty
+/// <c>gaia_id</c>; null when the entry records neither (an old Chrome).
+/// </param>
+/// <param name="SignInBroken">
+/// Whether the profile's sign-in is broken (Chrome's "Sign-in paused"). Always
+/// null today: current Chrome persists no such signal in a file this agent may
+/// read (see the remarks on <see cref="ChromeLocalState"/>), and null means
+/// unknown, never "healthy".
+/// </param>
 public sealed record ChromeProfileInfo(
     string ProfileKey,
     string? Name,
     bool? IsManaged,
     DateTimeOffset? LastActiveAt,
-    string? AccountEmail = null);
+    string? AccountEmail = null,
+    bool? SignedIn = null,
+    bool? SignInBroken = null);
 
 /// <summary>What <c>Local State</c> says about the profiles of one Chrome installation.</summary>
 /// <param name="Profiles">Every profile in the info cache, in file order.</param>
