@@ -94,6 +94,13 @@ in `AgentEnrollmentService`. So long as the production device row is still
 `Device.ReEnroll` updates it in place, every prior credential is revoked, a fresh
 one is issued, and the audit records `device.re_enroll`.
 
+Re-enrolling an **active** device requires administrator approval (it revokes
+the device's current credential and hands its identity to the requester, so the
+token alone is deliberately not enough). The agent's first enrollment attempt is
+refused and parks a **re-enrollment request on the Pending Enrollments page**;
+while it waits, the agent retries the same token every 5 minutes without
+consuming token uses.
+
 This makes recovery a normal, supported operation. Do not edit the production
 database, mint credentials or tokens by hand, or bypass enrollment. Do not
 retire or delete the production device to tidy the incident away: retiring it
@@ -105,11 +112,17 @@ losing its history for no reason.
 2. Remove the pilot override, or it will win over the baked URL:
    `Remove-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Services\EndpointPlatformAgent -Name Environment`
 3. Supply a production enrollment token issued through the console.
-4. Restart the service and confirm production shows the **original** device ID
-   with a fresh `last_seen_at` and the new agent version.
+4. **Approve the re-enrollment in Pending Enrollments** (dashboard → Pending
+   Enrollments; the row is badged "Re-enrollment" and names the matched
+   production device). Approving needs device scope over that device. The agent
+   completes on its own next retry, within about 5 minutes of approval — nothing
+   needs to be pushed.
+5. Confirm production shows the **original** device ID with a fresh
+   `last_seen_at` and the new agent version.
 
 If the production row has already been retired, accept the new device ID; do not
-try to graft the old one back on.
+try to graft the old one back on. (A retired row does not match, so that path
+needs no approval — the machine enrolls immediately as a new device.)
 
 ## Keeping the safeguard out of production's way
 

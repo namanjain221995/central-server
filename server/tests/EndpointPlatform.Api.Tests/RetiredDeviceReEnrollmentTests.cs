@@ -199,6 +199,13 @@ public sealed class RetiredDeviceReEnrollmentTests(AdminApiPostgresFixture fixtu
     /// ordinary reinstall/upgrade path and must not have been turned into a
     /// device-duplicating one by the change above.
     /// </summary>
+    /// <remarks>
+    /// The helper below enrols the way the CLAIM path does — an administrator has
+    /// already approved, so it passes <c>alreadyApproved</c>. The unapproved token
+    /// path no longer re-enrols an active device at all (it parks a pending
+    /// re-enrollment instead), which the AgentApi enrollment suite pins; what this
+    /// test pins is that the approved path still lands on the SAME device row.
+    /// </remarks>
     [Fact]
     public async Task An_active_machine_enrolling_again_re_enrolls_in_place()
     {
@@ -281,7 +288,10 @@ public sealed class RetiredDeviceReEnrollmentTests(AdminApiPostgresFixture fixtu
     // ---- helper -------------------------------------------------------------
 
     /// <summary>
-    /// Enrols through the real service, minting a token the way an approval does.
+    /// Enrols through the real service the way the CLAIM path does: with a token
+    /// minted the way an approval mints one, and <c>alreadyApproved</c> set — the
+    /// claim runs after an administrator's decision, so it bypasses the
+    /// re-enrollment approval gate exactly as production's claim handler does.
     /// </summary>
     private async Task<Guid> EnrollAsync(string machineIdentifier, string hostname, string agentVersion)
     {
@@ -303,7 +313,8 @@ public sealed class RetiredDeviceReEnrollmentTests(AdminApiPostgresFixture fixtu
         }
 
         var outcome = await enrollment.EnrollAsync(
-            secret, hostname, machineIdentifier, agentVersion, "Windows 11 Pro", CancellationToken.None);
+            secret, hostname, machineIdentifier, agentVersion, "Windows 11 Pro",
+            alreadyApproved: true, CancellationToken.None);
 
         outcome.Success.ShouldBeTrue("enrollment should succeed for this machine");
 

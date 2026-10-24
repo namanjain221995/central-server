@@ -75,8 +75,15 @@ system trust store, carries the Code Signing EKU, and whose subject contains
 `ExpectedSignerSubject`. Public mode refuses to start without a configured
 publisher. What the server does *not* reproduce even in Public mode is
 Authenticode's binding of the signature to the exact bytes under Windows
-Installer's stream-hashing rules — that, and revocation, are enforced on the
-endpoint by `WinVerifyTrust` before anything installs.
+Installer's stream-hashing rules — that is enforced on the endpoint by
+`WinVerifyTrust` before anything installs. Revocation is checked **nowhere**:
+the server skips it by design (it may have no CRL/OCSP route), and the agent's
+`WinVerifyTrust` call runs with revocation checking deliberately disabled
+(`WTD_REVOKE_NONE` plus `WTD_REVOCATION_CHECK_NONE` in
+`agent/EndpointAgent.Windows/WinTrust.cs`), so installs never depend on
+revocation-infrastructure reachability. A revoked publisher certificate is
+handled operationally — rotate `ExpectedSignerSubject` and revoke the affected
+releases — not by a certificate status lookup.
 
 Two values are server-derived in every mode and never accepted from an upload.
 The **SHA-256** is computed over the bytes the server stores; a hash sent by the

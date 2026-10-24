@@ -213,6 +213,14 @@ MFA_TOTP_KEY=$(gen_key)
 # Internal: integrity is the server-computed SHA-256 over HTTPS, no
 # Authenticode signature required.
 AGENT_RELEASE_TRUST_MODE=Internal
+# Required only for Public mode, ignored (and fine left empty) under Internal.
+# When TrustMode=Public, every published release must be Authenticode-signed by
+# a certificate whose subject CONTAINS this value, compared case-insensitively
+# against the subject as .NET on Linux renders it (RFC-style, e.g.
+# "CN=Techsara Solutions Pvt Ltd, O=Techsara Solutions") -- check the exact
+# rendering from the real certificate before flipping the mode, because the API
+# refuses to start in Public mode with this empty.
+AGENT_RELEASE_EXPECTED_SIGNER=
 
 # --- pgAdmin -----------------------------------------------------------------
 PGADMIN_EMAIL=admin@endpoint.local

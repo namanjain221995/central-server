@@ -121,7 +121,7 @@ Redis**, configured by two environment variables:
 | Variable | Example | Used by |
 |---|---|---|
 | `ENDPOINTPLATFORM_TEST_POSTGRES` | `Host=127.0.0.1;Port=5432;Username=postgres;Password=...` | Infrastructure, Api, AgentApi suites |
-| `ENDPOINTPLATFORM_TEST_REDIS` | `127.0.0.1:6379,password=...` | Api suite only |
+| `ENDPOINTPLATFORM_TEST_REDIS` | `127.0.0.1:6379,password=...` | Api and AgentApi suites, and the Infrastructure device-lifecycle tests (the re-enrollment approval gate keeps its pending records in Redis) |
 
 ```powershell
 $env:ENDPOINTPLATFORM_TEST_POSTGRES = 'Host=127.0.0.1;Port=5432;Username=postgres;Password=<superuser password>'

@@ -391,6 +391,114 @@ public sealed class BulkLocalAccountEndpointTests(AdminApiPostgresFixture fixtur
     }
 
     [Fact]
+    public async Task Enabling_the_built_in_administrator_is_refused_without_queueing_anywhere()
+    {
+        // Enable used to be deliberately exempt from the protected-account guard;
+        // enable + reset composes into a silent RID-500 takeover, so the hands-off
+        // rule is now symmetric and the whole request refuses up front.
+        using var client = await SuperAdminAsync();
+        var device = await _support.SeedDeviceAsync();
+        await ReportAccountAsync(device, "S-1-5-21-7-7-7-500", "dormantroot", administrator: true);
+
+        var response = await client.PostAsJsonAsync(Enable, new
+        {
+            username = "dormantroot",
+            deviceIds = new[] { device },
+        });
+
+        response.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).ShouldContain("cannot be enabled");
+        (await TaskCountAsync(device, DeviceTaskType.EnableLocalUser)).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Resetting_the_built_in_administrators_password_is_refused_without_queueing_anywhere()
+    {
+        // Even a caller holding user.change_type is refused: RID 500 is off limits in
+        // every direction. One protected match refuses the WHOLE request, so the
+        // device where the same name is ordinary gets nothing either.
+        using var client = await SuperAdminAsync();
+        var protectedDevice = await _support.SeedDeviceAsync();
+        var ordinaryDevice = await _support.SeedDeviceAsync();
+        await ReportAccountAsync(protectedDevice, "S-1-5-21-7-7-7-500", "rootalias", administrator: true);
+        await ReportAccountAsync(ordinaryDevice, "S-1-5-21-8-8-8-1067", "rootalias");
+
+        var response = await client.PostAsJsonAsync(Reset, new
+        {
+            username = "rootalias",
+            password = "a-new-strong-password",
+            deviceIds = new[] { protectedDevice, ordinaryDevice },
+        });
+
+        response.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).ShouldContain("protected");
+        (await TaskCountAsync(protectedDevice, DeviceTaskType.ResetLocalUserPassword)).ShouldBe(0);
+        (await TaskCountAsync(ordinaryDevice, DeviceTaskType.ResetLocalUserPassword)).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task A_bulk_reset_naming_an_administrator_anywhere_requires_change_type()
+    {
+        // Resetting an administrator's password is the same grant as promoting one.
+        // Helpdesk holds user.reset_password but not user.change_type, and one
+        // admin-flagged match refuses the WHOLE request — a half-run against the
+        // devices where the name is ordinary would still escalate machine by machine.
+        using var client = await _support.ClientAsAsync(AdminApiPostgresFixture.HelpdeskEmail);
+        var adminDevice = await _support.SeedDeviceAsync();
+        var plainDevice = await _support.SeedDeviceAsync();
+        await ReportAccountAsync(adminDevice, "S-1-5-21-7-7-7-1068", "deskadmin", administrator: true);
+        await ReportAccountAsync(plainDevice, "S-1-5-21-8-8-8-1068", "deskadmin");
+
+        var response = await client.PostAsJsonAsync(Reset, new
+        {
+            username = "deskadmin",
+            password = "a-new-strong-password",
+            deviceIds = new[] { adminDevice, plainDevice },
+        });
+
+        response.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await response.Content.ReadAsStringAsync()).ShouldContain("user.change_type");
+        (await TaskCountAsync(adminDevice, DeviceTaskType.ResetLocalUserPassword)).ShouldBe(0);
+        (await TaskCountAsync(plainDevice, DeviceTaskType.ResetLocalUserPassword)).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Helpdesk_can_still_bulk_reset_a_standard_accounts_password()
+    {
+        using var client = await _support.ClientAsAsync(AdminApiPostgresFixture.HelpdeskEmail);
+        var device = await _support.SeedDeviceAsync();
+        await ReportAccountAsync(device, "S-1-5-21-7-7-7-1069", "frontcounter");
+
+        var result = await OkAsync(await client.PostAsJsonAsync(Reset, new
+        {
+            username = "frontcounter",
+            password = "a-new-strong-password",
+            deviceIds = new[] { device },
+        }));
+
+        result.Queued.ShouldBe(1);
+        (await TaskCountAsync(device, DeviceTaskType.ResetLocalUserPassword)).ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task An_operator_with_change_type_can_bulk_reset_an_ordinary_administrators_password()
+    {
+        using var client = await SuperAdminAsync();
+        var device = await _support.SeedDeviceAsync();
+        await ReportAccountAsync(device, "S-1-5-21-7-7-7-1070", "opsadmin", administrator: true);
+
+        var result = await OkAsync(await client.PostAsJsonAsync(Reset, new
+        {
+            username = "opsadmin",
+            password = "a-new-strong-password",
+            deviceIds = new[] { device },
+        }));
+
+        result.Queued.ShouldBe(1);
+        (await TaskCountAsync(device, DeviceTaskType.ResetLocalUserPassword)).ShouldBe(1);
+    }
+
+    [Fact]
     public async Task Disabling_the_last_enabled_administrator_is_rejected_per_device_not_queued()
     {
         using var client = await SuperAdminAsync();

@@ -3,8 +3,13 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using EndpointPlatform.Domain.Authorization;
+using EndpointPlatform.Domain.Devices;
 using EndpointPlatform.Domain.Enrollment;
+using EndpointPlatform.Domain.Identity;
 using EndpointPlatform.Infrastructure.Enrollment;
+using EndpointPlatform.Infrastructure.Security;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace EndpointPlatform.Api.Tests;
@@ -260,6 +265,295 @@ public sealed class EnrollmentApprovalEndpointTests(AdminApiPostgresFixture fixt
         (await client.PostAsync(RejectUri(requestId), null)).StatusCode.ShouldBe(HttpStatusCode.Conflict);
 
         (await ReadAsync(requestId))!.Status.ShouldBe(PendingEnrollmentStatus.Approved);
+    }
+
+    // ---------------------------------------------------- re-enrollment rows
+    //
+    // A re-enrollment is the same decision surface with a different stake: the
+    // requester holds a valid token and asks to BECOME an existing active device,
+    // which revokes that device's working credential. The rows are tenant-scoped,
+    // carry the matched device and its liveness, and approving one additionally
+    // demands device scope — plain device.enroll admits unknown machines; it must
+    // not also hand over devices its holder cannot act on.
+
+    /// <summary>Seeds an active device with a used credential, and its parked re-enrollment.</summary>
+    private async Task<(string RequestId, Guid DeviceId, Guid OrganizationId)> SeedReEnrollmentAsync(
+        string hostname, DateTimeOffset? credentialLastUsedAt = null)
+    {
+        Guid organizationId;
+        Device device;
+
+        await using (var db = _fixture.CreateDbContext())
+        {
+            organizationId = await db.Organizations.OrderBy(o => o.CreatedAt).Select(o => o.Id).FirstAsync();
+
+            var token = new EnrollmentToken(
+                organizationId, $"reenroll-{Guid.CreateVersion7():N}",
+                SecretGenerator.HashSecret(SecretGenerator.GenerateSecret()),
+                Guid.CreateVersion7(), "reenroll-tests", DateTimeOffset.UtcNow.AddHours(1), 5);
+            db.EnrollmentTokens.Add(token);
+
+            device = Device.Enroll(
+                organizationId, hostname, $"smbios-{Guid.CreateVersion7()}", "1.16.2", "Windows 11 Pro",
+                token.Id, DateTimeOffset.UtcNow);
+            db.Devices.Add(device);
+
+            var credential = new AgentCredential(
+                device.Id, SecretGenerator.GenerateKeyId(),
+                SecretGenerator.HashSecret(SecretGenerator.GenerateSecret()), DateTimeOffset.UtcNow);
+            if (credentialLastUsedAt is { } used)
+            {
+                credential.RecordUse(used);
+            }
+
+            db.AgentCredentials.Add(credential);
+            await db.SaveChangesAsync();
+        }
+
+        var requestId = PendingEnrollmentStore.DeriveReEnrollRequestId(organizationId, device.MachineIdentifier);
+
+        using var scope = _fixture.Factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<PendingEnrollmentStore>();
+
+        var outcome = await store.UpsertReEnrollRequestAsync(
+            requestId,
+            new PendingEnrollment(
+                device.MachineIdentifier,
+                hostname + "-REQUESTER",
+                "Windows 11 Pro",
+                "1.24.0",
+                DateTimeOffset.UtcNow,
+                PendingEnrollmentStatus.Pending,
+                OrganizationId: organizationId,
+                Kind: PendingEnrollmentKind.ReEnrollment,
+                ExistingDeviceId: device.Id,
+                ExistingDeviceHostname: hostname,
+                TokenId: Guid.CreateVersion7()),
+            CancellationToken.None);
+
+        outcome.State.ShouldBe(ReEnrollAttemptState.PendingCreated);
+        return (requestId, device.Id, organizationId);
+    }
+
+    /// <summary>A parked re-enrollment whose record claims another organization.</summary>
+    private async Task<string> SeedForeignReEnrollmentAsync(string hostname)
+    {
+        var foreignOrganizationId = Guid.CreateVersion7();
+        var machineIdentifier = $"smbios-{Guid.CreateVersion7()}";
+        var requestId = PendingEnrollmentStore.DeriveReEnrollRequestId(foreignOrganizationId, machineIdentifier);
+
+        using var scope = _fixture.Factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<PendingEnrollmentStore>();
+
+        (await store.UpsertReEnrollRequestAsync(
+                requestId,
+                new PendingEnrollment(
+                    machineIdentifier, hostname, "Windows 11 Pro", "1.24.0",
+                    DateTimeOffset.UtcNow, PendingEnrollmentStatus.Pending,
+                    OrganizationId: foreignOrganizationId,
+                    Kind: PendingEnrollmentKind.ReEnrollment,
+                    ExistingDeviceId: Guid.CreateVersion7(),
+                    ExistingDeviceHostname: hostname,
+                    TokenId: Guid.CreateVersion7()),
+                CancellationToken.None))
+            .State.ShouldBe(ReEnrollAttemptState.PendingCreated);
+
+        return requestId;
+    }
+
+    /// <summary>An administrator holding device.enroll but NO device scope.</summary>
+    private async Task<HttpClient> UnscopedAdminAsync()
+    {
+        var email = $"unscoped-{Guid.CreateVersion7():N}@test.local";
+
+        await using (var db = _fixture.CreateDbContext())
+        {
+            var org = await db.Organizations.OrderBy(o => o.CreatedAt).FirstAsync();
+            var role = await db.Roles.SingleAsync(r => r.Key == SystemRoles.SuperAdministrator);
+
+            var user = new PlatformUser(org.Id, email, "Unscoped Approver");
+            user.SetPasswordHash(PasswordHasher.Hash(AdminApiPostgresFixture.Password), DateTimeOffset.UtcNow);
+            AdminApiPostgresFixture.EnrolMfa(user);
+            user.AssignRole(role.Id);
+            // Deliberately no GrantAllDeviceScope and no scope rows: deny-by-default.
+            db.PlatformUsers.Add(user);
+            await db.SaveChangesAsync();
+        }
+
+        return _fixture.CreateClientFor(await _fixture.SignInAsync(email));
+    }
+
+    [Fact]
+    public async Task The_list_marks_a_re_enrollment_with_its_matched_device_and_liveness()
+    {
+        var lastUsed = DateTimeOffset.UtcNow;
+        var (requestId, deviceId, _) = await SeedReEnrollmentAsync("LIST-REENROLL", lastUsed);
+
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.SuperAdminEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var response = await client.GetAsync(PendingUri);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var row = doc.RootElement.EnumerateArray()
+            .Single(e => e.GetProperty("requestId").GetString() == requestId);
+
+        row.GetProperty("kind").GetString().ShouldBe("re-enrollment");
+        row.GetProperty("matchedDeviceId").GetGuid().ShouldBe(deviceId);
+        row.GetProperty("matchedDeviceHostname").GetString().ShouldBe("LIST-REENROLL");
+        row.GetProperty("hostname").GetString().ShouldBe("LIST-REENROLL-REQUESTER");
+
+        // The device's credential authenticated seconds ago: visibly ONLINE, which
+        // is the signal that separates a takeover attempt from a reinstall.
+        row.GetProperty("credentialLastUsedAt").GetDateTimeOffset()
+            .ShouldBe(lastUsed, tolerance: TimeSpan.FromSeconds(1));
+        row.GetProperty("online").GetBoolean().ShouldBeTrue();
+
+        // A re-enrollment waits for a human much longer than a 15-minute request.
+        row.GetProperty("expiresAt").GetDateTimeOffset()
+            .ShouldBeGreaterThan(DateTimeOffset.UtcNow.AddHours(12));
+
+        // Plain rows say so too, and carry no device fields.
+        var (_, plainId) = await SeedPendingAsync("LIST-PLAIN");
+        using var second = JsonDocument.Parse(await (await client.GetAsync(PendingUri)).Content.ReadAsStringAsync());
+        var plain = second.RootElement.EnumerateArray()
+            .Single(e => e.GetProperty("requestId").GetString() == plainId);
+        plain.GetProperty("kind").GetString().ShouldBe("enrollment");
+        plain.GetProperty("matchedDeviceId").ValueKind.ShouldBe(JsonValueKind.Null);
+        plain.GetProperty("online").ValueKind.ShouldBe(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task A_device_with_no_recent_credential_use_reads_as_offline()
+    {
+        var (requestId, _, _) = await SeedReEnrollmentAsync(
+            "LIST-OFFLINE", DateTimeOffset.UtcNow.AddHours(-2));
+
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.SuperAdminEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        using var doc = JsonDocument.Parse(await (await client.GetAsync(PendingUri)).Content.ReadAsStringAsync());
+        var row = doc.RootElement.EnumerateArray()
+            .Single(e => e.GetProperty("requestId").GetString() == requestId);
+
+        row.GetProperty("online").GetBoolean().ShouldBeFalse(
+            "two hours without an authenticated call is far past the offline window");
+    }
+
+    [Fact]
+    public async Task A_re_enrollment_from_another_organization_is_not_listed()
+    {
+        var requestId = await SeedForeignReEnrollmentAsync("FOREIGN-REENROLL");
+
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.SuperAdminEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var body = await (await client.GetAsync(PendingUri)).Content.ReadAsStringAsync();
+        body.ShouldNotContain(requestId, customMessage:
+            "a re-enrollment names a device in its own tenant and must not cross tenants");
+    }
+
+    [Fact]
+    public async Task A_re_enrollment_from_another_organization_cannot_be_approved_or_rejected()
+    {
+        var requestId = await SeedForeignReEnrollmentAsync("FOREIGN-DECIDE");
+
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.SuperAdminEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        // Indistinguishable from "expired or never existed" — a request id must not
+        // be probeable across tenants.
+        (await client.PostAsync(ApproveUri(requestId), null)).StatusCode.ShouldBe(HttpStatusCode.Conflict);
+        (await client.PostAsync(RejectUri(requestId), null)).StatusCode.ShouldBe(HttpStatusCode.Conflict);
+
+        (await ReadAsync(requestId))!.Status.ShouldBe(PendingEnrollmentStatus.Pending);
+    }
+
+    [Fact]
+    public async Task Approving_a_re_enrollment_requires_scope_over_the_matched_device()
+    {
+        var (requestId, _, _) = await SeedReEnrollmentAsync("SCOPE-REENROLL");
+
+        using var unscoped = await UnscopedAdminAsync();
+
+        // device.enroll alone admits unknown machines; handing over an EXISTING
+        // device additionally needs authority over that device.
+        var refused = await unscoped.PostAsync(ApproveUri(requestId), null);
+        refused.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+
+        (await ReadAsync(requestId))!.Status.ShouldBe(
+            PendingEnrollmentStatus.Pending, "a scope refusal must not have decided anything");
+
+        // The same administrator can still approve a PLAIN enrollment: admitting an
+        // unknown machine was never scope-gated, and must not have become so.
+        var (_, plainId) = await SeedPendingAsync("SCOPE-PLAIN");
+        (await unscoped.PostAsync(ApproveUri(plainId), null)).StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task A_scoped_administrator_approves_a_re_enrollment_without_minting_a_token()
+    {
+        var (requestId, deviceId, organizationId) = await SeedReEnrollmentAsync("APPROVE-REENROLL");
+
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.SuperAdminEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var response = await client.PostAsync(ApproveUri(requestId), null);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        body.GetProperty("kind").GetString().ShouldBe("re-enrollment");
+        // The success copy must set the expectation that nothing is pushed: the
+        // agent's own retry completes the hand-over.
+        body.GetProperty("message").GetString()!.ShouldContain("5 minutes");
+
+        var stored = (await ReadAsync(requestId)).ShouldNotBeNull();
+        stored.Status.ShouldBe(PendingEnrollmentStatus.Approved);
+        stored.ApprovedBy.ShouldBe(AdminApiPostgresFixture.SuperAdminEmail);
+        stored.OrganizationId.ShouldBe(organizationId, "approval must not move the record between tenants");
+        stored.SealedTokenSecret.ShouldBeNull(
+            "the re-enrolling agent already holds its token; approval must not mint another");
+
+        // No minted approved-enrollment token either — the plain-approval mechanism
+        // must not fire for re-enrollments.
+        await using var db = _fixture.CreateDbContext();
+        (await db.EnrollmentTokens.AnyAsync(t => t.Name == "approved-enrollment-APPROVE-REENROLL-REQUESTER"))
+            .ShouldBeFalse();
+
+        // Audited with the device it hands over.
+        var audit = db.AuditLogEntries
+            .Where(e => e.Action == "enrollment.approved" && e.TargetId == requestId)
+            .OrderByDescending(e => e.OccurredAt)
+            .First();
+        audit.DeviceId.ShouldBe(deviceId);
+        (audit.NewState ?? "").ShouldContain("re-enrollment");
+    }
+
+    [Fact]
+    public async Task Rejecting_a_re_enrollment_keeps_the_cooling_off_record()
+    {
+        var (requestId, deviceId, _) = await SeedReEnrollmentAsync("REJECT-REENROLL");
+
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.SuperAdminEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var response = await client.PostAsync(RejectUri(requestId), null);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await response.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("kind").GetString().ShouldBe("re-enrollment");
+
+        // The record stays, Rejected, so the still-knocking agent is refused
+        // without re-pending; and the decision is terminal as ever.
+        var stored = (await ReadAsync(requestId)).ShouldNotBeNull();
+        stored.Status.ShouldBe(PendingEnrollmentStatus.Rejected);
+
+        (await client.PostAsync(ApproveUri(requestId), null)).StatusCode.ShouldBe(HttpStatusCode.Conflict);
+
+        await using var db = _fixture.CreateDbContext();
+        db.AuditLogEntries
+            .Any(e => e.Action == "enrollment.rejected" && e.TargetId == requestId && e.DeviceId == deviceId)
+            .ShouldBeTrue();
     }
 
     // --------------------------------------------------------------- audit

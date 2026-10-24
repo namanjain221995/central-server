@@ -155,9 +155,25 @@ public sealed class BulkLocalAccountService(
     /// SID is resolved per device from the last reported inventory; a device that has
     /// not reported the account is skipped rather than guessed at.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Protected accounts refuse the whole request</b>, exactly as a bulk delete or
+    /// disable does: if the username resolves, on any targeted device, to the built-in
+    /// Administrator (RID 500), nothing is queued anywhere.
+    /// </para>
+    /// <para>
+    /// <b>Administrator targets demand <c>user.change_type</c>.</b> Resetting an
+    /// administrator's password is the same grant as promoting the caller, so when
+    /// <paramref name="callerMayTargetAdministrators"/> is false and the username is an
+    /// administrator on ANY targeted device, the whole request is refused — a half-run
+    /// against only the devices where the name is ordinary would still be the
+    /// escalation, one machine at a time. The per-device engine re-checks the same rule
+    /// (and fails closed on unreported accounts) for each queued task.
+    /// </para>
+    /// </remarks>
     public Task<BulkLocalAccountResult> ResetPasswordsAsync(
         Guid organizationId,
-        string username, string password,
+        string username, string password, bool callerMayTargetAdministrators,
         bool allDevices, Guid? groupId, IReadOnlyCollection<Guid>? deviceIds,
         IReadOnlyCollection<Guid>? scopedDeviceIds,
         Guid actorId, string actorDisplay,
@@ -165,13 +181,13 @@ public sealed class BulkLocalAccountService(
     {
         var strategy = _dbContext.Database.CreateExecutionStrategy();
         return strategy.ExecuteAsync(() => ResetInTransactionAsync(
-            organizationId, username, password,
+            organizationId, username, password, callerMayTargetAdministrators,
             allDevices, groupId, deviceIds, scopedDeviceIds, actorId, actorDisplay, cancellationToken));
     }
 
     private async Task<BulkLocalAccountResult> ResetInTransactionAsync(
         Guid organizationId,
-        string username, string password,
+        string username, string password, bool callerMayTargetAdministrators,
         bool allDevices, Guid? groupId, IReadOnlyCollection<Guid>? deviceIds,
         IReadOnlyCollection<Guid>? scopedDeviceIds,
         Guid actorId, string actorDisplay,
@@ -188,23 +204,47 @@ public sealed class BulkLocalAccountService(
         }
 
         // Windows local usernames are case-insensitive; match the last-reported name
-        // that way and map each device to the SID the reset task needs.
+        // that way and map each device to the SID (and administrator flag) the reset
+        // needs.
         var targetIds = targets.Select(t => t.Id).ToHashSet();
         var lowered = username.Trim().ToLowerInvariant();
         var reported = await _dbContext.DeviceLocalUsers.AsNoTracking()
             .Where(u => targetIds.Contains(u.DeviceId) && u.Name.ToLower() == lowered)
-            .Select(u => new { u.DeviceId, u.Sid })
+            .Select(u => new { u.DeviceId, u.Sid, u.IsLocalAdministrator })
             .ToListAsync(cancellationToken);
-        var sidByDevice = reported
+        var accountByDevice = reported
             .GroupBy(x => x.DeviceId)
-            .ToDictionary(g => g.Key, g => g.First().Sid);
+            .ToDictionary(g => g.Key, g => g.First());
+
+        // The protected-account guard, fleet-wide and up front, mirroring bulk
+        // disable/delete: the platform never resets the built-in Administrator's
+        // (RID 500) password. One match refuses the WHOLE request so no sibling device
+        // gets the task either. The message comes from the domain rule so the
+        // per-device and fleet-wide refusals can never drift apart.
+        var protectedRefusal = accountByDevice.Values
+            .Select(a => LocalAccountSafetyRules.ValidateResetPassword(a.Sid))
+            .FirstOrDefault(r => r is not null);
+        if (protectedRefusal is not null)
+        {
+            return BulkLocalAccountResult.Refused(protectedRefusal);
+        }
+
+        // Administrator password equivalence, fleet-wide: without user.change_type the
+        // caller may not aim a reset at a name that is an administrator anywhere in the
+        // target set. Refused whole rather than skipped per device, so the operator
+        // learns why instead of reading a silent skip as success.
+        if (!callerMayTargetAdministrators && accountByDevice.Values.Any(a => a.IsLocalAdministrator))
+        {
+            return BulkLocalAccountResult.Refused(
+                LocalAccountManagementService.AdministratorTargetRequiresChangeType);
+        }
 
         var now = _timeProvider.GetUtcNow();
         var tally = new Tally();
 
         foreach (var target in targets)
         {
-            if (target.Status == DeviceStatus.Retired || !sidByDevice.TryGetValue(target.Id, out var sid))
+            if (target.Status == DeviceStatus.Retired || !accountByDevice.TryGetValue(target.Id, out var account))
             {
                 // Retired, or the account has never been reported on this device, so
                 // there is no SID to reset. Recorded as skipped, not a failure.
@@ -213,7 +253,8 @@ public sealed class BulkLocalAccountService(
             }
 
             var context = new LocalAccountRequestContext(organizationId, target.Id, actorId, actorDisplay);
-            var result = await _localAccounts.ResetPasswordAsync(context, sid, password, cancellationToken);
+            var result = await _localAccounts.ResetPasswordAsync(
+                context, account.Sid, password, callerMayTargetAdministrators, cancellationToken);
             tally.Record(result, target, now, _staleAfter);
         }
 
@@ -282,8 +323,8 @@ public sealed class BulkLocalAccountService(
     /// <para>
     /// <b>Protected accounts refuse the whole request.</b> If the username resolves,
     /// on any targeted device, to the built-in Administrator (RID 500) — the account
-    /// <see cref="LocalAccountSafetyRules"/> protects from delete and disable — the
-    /// request returns <see cref="BulkLocalAccountLifecycleOutcome.ProtectedAccount"/>
+    /// <see cref="LocalAccountSafetyRules"/> protects from delete, disable AND enable —
+    /// the request returns <see cref="BulkLocalAccountLifecycleOutcome.ProtectedAccount"/>
     /// before anything is queued anywhere. The per-device engine would refuse it one
     /// machine at a time anyway; refusing up front keeps a protected fleet-wide delete
     /// from half-running against the devices where the name happens to be ordinary.
@@ -356,17 +397,22 @@ public sealed class BulkLocalAccountService(
             .GroupBy(x => x.DeviceId)
             .ToDictionary(g => g.Key, g => g.First().Sid);
 
-        // The protected-account guard, applied fleet-wide and up front: the built-in
-        // Administrator (RID 500) may never be deleted or disabled. One match refuses
-        // the WHOLE request so no sibling device gets the task either. Enable is not
-        // covered, mirroring LocalAccountSafetyRules exactly: re-enabling the built-in
-        // Administrator is a deliberate, permitted administrative act.
-        if (operation is not LifecycleOperation.Enable
-            && sidByDevice.Values.Any(LocalAccountSafetyRules.IsBuiltInAdministrator))
+        // The protected-account guard, applied fleet-wide and up front: the platform
+        // never touches the built-in Administrator (RID 500) — not delete, not disable,
+        // and since the 2026-10 security audit not ENABLE either. Enable used to be
+        // exempt ("re-enabling the built-in Administrator is a deliberate, permitted
+        // administrative act"), but enable + password reset composes into a silent
+        // takeover of RID 500, so the hands-off rule is now symmetric and mirrors
+        // LocalAccountSafetyRules exactly. One match refuses the WHOLE request so no
+        // sibling device gets the task either.
+        if (sidByDevice.Values.Any(LocalAccountSafetyRules.IsBuiltInAdministrator))
         {
-            return BulkLocalAccountLifecycleResult.Protected(operation == LifecycleOperation.Delete
-                ? "The built-in Administrator account is protected and cannot be deleted."
-                : "The built-in Administrator account is protected and cannot be disabled.");
+            return BulkLocalAccountLifecycleResult.Protected(operation switch
+            {
+                LifecycleOperation.Delete => "The built-in Administrator account is protected and cannot be deleted.",
+                LifecycleOperation.Enable => "The built-in Administrator account is protected and cannot be enabled.",
+                _ => "The built-in Administrator account is protected and cannot be disabled.",
+            });
         }
 
         var now = _timeProvider.GetUtcNow();
@@ -587,23 +633,36 @@ public enum BulkLocalAccountOutcome
 
     /// <summary>Nothing resolved: an unknown or foreign group, or a selection all out of org/scope.</summary>
     NotFound,
+
+    /// <summary>
+    /// A fleet-wide guard refused the whole request before anything was queued: the
+    /// username resolved to the protected built-in Administrator (RID 500) somewhere,
+    /// or an administrator account was targeted by a caller without
+    /// <c>user.change_type</c>.
+    /// </summary>
+    Refused,
 }
 
 /// <summary>
 /// The outcome of a bulk create or reset. Counts are meaningful only when
-/// <see cref="Outcome"/> is <see cref="BulkLocalAccountOutcome.Completed"/>.
+/// <see cref="Outcome"/> is <see cref="BulkLocalAccountOutcome.Completed"/>;
+/// <see cref="Error"/> only when it is <see cref="BulkLocalAccountOutcome.Refused"/>.
 /// </summary>
 /// <param name="Offline">Of <paramref name="Queued"/>, those offline now — the task waits for reconnect.</param>
 /// <param name="Rejected">Devices a per-device validation refused (e.g. the secret store was unavailable).</param>
 /// <param name="Skipped">Retired devices, and — for a reset — devices that never reported the account.</param>
 public sealed record BulkLocalAccountResult(
-    BulkLocalAccountOutcome Outcome, int Targeted, int Queued, int Rejected, int Offline, int Skipped)
+    BulkLocalAccountOutcome Outcome, int Targeted, int Queued, int Rejected, int Offline, int Skipped,
+    string? Error = null)
 {
     public static BulkLocalAccountResult Completed(int targeted, int queued, int rejected, int offline, int skipped) =>
         new(BulkLocalAccountOutcome.Completed, targeted, queued, rejected, offline, skipped);
 
     public static BulkLocalAccountResult NotFound() =>
         new(BulkLocalAccountOutcome.NotFound, 0, 0, 0, 0, 0);
+
+    public static BulkLocalAccountResult Refused(string error) =>
+        new(BulkLocalAccountOutcome.Refused, 0, 0, 0, 0, 0, error);
 }
 
 /// <summary>What a bulk lifecycle operation (disable, enable or delete) came to.</summary>

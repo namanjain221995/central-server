@@ -118,8 +118,15 @@ privileged boundary:
 - **(Implemented, Phase 1)** Device credential stored DPAPI-protected at
   machine scope with extra entropy; directory ACL'd to SYSTEM/Administrators
   when elevated; corrupt blobs degrade to re-enrollment, never crash.
-- **(Implemented, Phase 1)** Re-enrollment revokes prior credentials; retired
-  devices fail closed on both heartbeat and re-enrollment.
+- **(Implemented, Phase 1; approval-gated 2026-10-24)** Re-enrollment of an
+  ACTIVE device requires administrator approval: a valid token plus the
+  machine's SMBIOS UUID (not a secret) is no longer enough to revoke the real
+  device's credentials and take over its identity. The attempt parks a pending
+  request (fail-closed when the store is unreachable), approval demands device
+  scope over the matched device, and the console flags a matched device that is
+  still ONLINE — the takeover shape. Completion then revokes prior credentials
+  as before; retired devices fail closed on heartbeat and enroll again only as
+  new devices.
 - *(Phase 10)* Only typed tasks; scripts require hash + signature + recorded
   approval. No arbitrary command endpoint will exist.
 - The agent refuses to disable TLS certificate validation outside Debug builds

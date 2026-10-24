@@ -53,6 +53,34 @@ public sealed class LocalAccountEndpointTests(AdminApiPostgresFixture fixture)
     private static Uri ChangeType(Guid deviceId, string sid) =>
         new($"/admin/v1/devices/{deviceId}/local-users/{sid}/change-account-type", UriKind.Relative);
 
+    private static Uri ResetPassword(Guid deviceId, string sid) =>
+        new($"/admin/v1/devices/{deviceId}/local-users/{sid}/reset-password", UriKind.Relative);
+
+    private static Uri ForcePasswordChange(Guid deviceId, string sid) =>
+        new($"/admin/v1/devices/{deviceId}/local-users/{sid}/force-password-change", UriKind.Relative);
+
+    private static Uri Enable(Guid deviceId, string sid) =>
+        new($"/admin/v1/devices/{deviceId}/local-users/{sid}/enable", UriKind.Relative);
+
+    /// <summary>The built-in Administrator (RID 500), reported disabled as Windows ships it.</summary>
+    private async Task<string> SeedBuiltInAdministratorAsync(Guid deviceId)
+    {
+        const string builtInSid = "S-1-5-21-1-2-3-500";
+        await using var db = _fixture.CreateDbContext();
+        var now = DateTimeOffset.UtcNow;
+        db.DeviceLocalUsers.Add(new DeviceLocalUser(
+            deviceId, builtInSid, "Administrator", "Built-in Administrator", null,
+            false, true, true, now, true, now));
+        await db.SaveChangesAsync();
+        return builtInSid;
+    }
+
+    private async Task<int> TaskCountAsync(Guid deviceId, DeviceTaskType type)
+    {
+        await using var db = _fixture.CreateDbContext();
+        return await db.DeviceTasks.CountAsync(t => t.DeviceId == deviceId && t.Type == type);
+    }
+
     // ------------------------------------------------------------- happy path
 
     [Fact]
@@ -296,6 +324,146 @@ public sealed class LocalAccountEndpointTests(AdminApiPostgresFixture fixture)
             new { username = "ShortPw", password = "abc", enabled = true });
 
         response.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+    }
+
+    // ----------------------------------- password reset / force-change escalation
+    //
+    // Resetting an administrator's password to a value the caller chose is the same
+    // grant as promoting the caller, so reset/force-change of an administrator demands
+    // user.change_type on top of the reset permission — and the built-in Administrator
+    // (RID 500) is off limits in every direction, for everyone.
+
+    [Fact]
+    public async Task Helpdesk_cannot_reset_an_administrators_password()
+    {
+        var deviceId = await SeedDeviceWithAccountsAsync();
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.HelpdeskEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var response = await client.PostAsJsonAsync(
+            ResetPassword(deviceId, AdminSid), new { password = "ChosenByHelpdesk1!" });
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Conflict,
+            "helpdesk holds user.reset_password but not user.change_type");
+        (await response.Content.ReadAsStringAsync()).ShouldContain("user.change_type");
+        (await TaskCountAsync(deviceId, DeviceTaskType.ResetLocalUserPassword))
+            .ShouldBe(0, "a refused reset must not reach the device");
+    }
+
+    [Fact]
+    public async Task Helpdesk_can_still_reset_a_standard_users_password()
+    {
+        // The guard must not break Helpdesk's legitimate job: resetting the password
+        // of an ordinary, inventory-known standard user.
+        var deviceId = await SeedDeviceWithAccountsAsync();
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.HelpdeskEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var response = await client.PostAsJsonAsync(
+            ResetPassword(deviceId, StandardSid), new { password = "NewUserPassword1!" });
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        (await TaskCountAsync(deviceId, DeviceTaskType.ResetLocalUserPassword)).ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task Helpdesk_cannot_force_an_administrator_to_change_password_but_can_a_standard_user()
+    {
+        var deviceId = await SeedDeviceWithAccountsAsync();
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.HelpdeskEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var refused = await client.PostAsync(ForcePasswordChange(deviceId, AdminSid), null);
+        refused.StatusCode.ShouldBe(HttpStatusCode.Conflict);
+        (await refused.Content.ReadAsStringAsync()).ShouldContain("user.change_type");
+
+        (await client.PostAsync(ForcePasswordChange(deviceId, StandardSid), null))
+            .StatusCode.ShouldBe(HttpStatusCode.Accepted);
+
+        (await TaskCountAsync(deviceId, DeviceTaskType.ForceLocalUserPasswordChange))
+            .ShouldBe(1, "only the standard-user request may queue");
+    }
+
+    [Fact]
+    public async Task An_operator_with_change_type_can_reset_an_ordinary_administrators_password()
+    {
+        var deviceId = await SeedDeviceWithAccountsAsync();
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.SuperAdminEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var response = await client.PostAsJsonAsync(
+            ResetPassword(deviceId, AdminSid), new { password = "RotatedByAdmin1!" });
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Accepted);
+        (await TaskCountAsync(deviceId, DeviceTaskType.ResetLocalUserPassword)).ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task The_built_in_administrator_is_never_reset_enabled_or_force_changed()
+    {
+        // Even a caller holding EVERY permission is refused: the platform never
+        // touches RID 500 in any direction — enable + reset would otherwise compose
+        // into a silent takeover of the one account Windows cannot lose.
+        var deviceId = await SeedDeviceWithAccountsAsync();
+        var builtInSid = await SeedBuiltInAdministratorAsync(deviceId);
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.SuperAdminEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        var reset = await client.PostAsJsonAsync(
+            ResetPassword(deviceId, builtInSid), new { password = "WouldOwnTheBox1!" });
+        reset.StatusCode.ShouldBe(HttpStatusCode.Conflict);
+        (await reset.Content.ReadAsStringAsync()).ShouldContain("protected");
+
+        (await client.PostAsync(Enable(deviceId, builtInSid), null))
+            .StatusCode.ShouldBe(HttpStatusCode.Conflict, "enable was the other half of the takeover");
+
+        (await client.PostAsync(ForcePasswordChange(deviceId, builtInSid), null))
+            .StatusCode.ShouldBe(HttpStatusCode.Conflict);
+
+        (await TaskCountAsync(deviceId, DeviceTaskType.ResetLocalUserPassword)).ShouldBe(0);
+        (await TaskCountAsync(deviceId, DeviceTaskType.EnableLocalUser)).ShouldBe(0);
+        (await TaskCountAsync(deviceId, DeviceTaskType.ForceLocalUserPasswordChange)).ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task Resetting_an_account_unknown_to_inventory_fails_closed_without_change_type()
+    {
+        // The escalation guard must not be ridden around on stale inventory: a SID the
+        // device has not reported might be an administrator, so without
+        // user.change_type it is refused rather than assumed harmless.
+        var deviceId = await SeedDeviceWithAccountsAsync();
+        const string unknownSid = "S-1-5-21-1-2-3-9999";
+
+        using var helpdesk = _fixture.CreateClientFor(
+            await _fixture.SignInAsync(AdminApiPostgresFixture.HelpdeskEmail));
+        var refused = await helpdesk.PostAsJsonAsync(
+            ResetPassword(deviceId, unknownSid), new { password = "NotKnowable123!" });
+        refused.StatusCode.ShouldBe(HttpStatusCode.Conflict);
+        (await refused.Content.ReadAsStringAsync()).ShouldContain("reported inventory");
+
+        // With user.change_type the caller may target administrators anyway, so the
+        // unknown target may proceed to the agent, which resolves live state.
+        using var superAdmin = _fixture.CreateClientFor(
+            await _fixture.SignInAsync(AdminApiPostgresFixture.SuperAdminEmail));
+        (await superAdmin.PostAsJsonAsync(
+                ResetPassword(deviceId, unknownSid), new { password = "RotatedByAdmin1!" }))
+            .StatusCode.ShouldBe(HttpStatusCode.Accepted);
+
+        (await TaskCountAsync(deviceId, DeviceTaskType.ResetLocalUserPassword))
+            .ShouldBe(1, "only the change-type holder's request may queue");
+    }
+
+    [Fact]
+    public async Task Helpdesk_can_still_enable_an_ordinary_account()
+    {
+        // The enable guard is RID-500 only; re-enabling an ordinary account stays an
+        // everyday support action.
+        var deviceId = await SeedDeviceWithAccountsAsync();
+        var token = await _fixture.SignInAsync(AdminApiPostgresFixture.HelpdeskEmail);
+        using var client = _fixture.CreateClientFor(token);
+
+        (await client.PostAsync(Enable(deviceId, StandardSid), null))
+            .StatusCode.ShouldBe(HttpStatusCode.Accepted);
     }
 
     // ------------------------------------------------------- password secrecy

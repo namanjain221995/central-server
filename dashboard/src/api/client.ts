@@ -2850,12 +2850,31 @@ export interface PendingEnrollment {
   status: 'Pending' | 'Approved' | 'Rejected'
   /** Display name of the deciding administrator, once decided. */
   approvedBy: string | null
+  /**
+   * What approval would do. 'enrollment' admits a new machine; 're-enrollment'
+   * hands an EXISTING active device's identity to the requester and revokes the
+   * credential the real machine currently holds.
+   */
+  kind: 'enrollment' | 're-enrollment'
+  /** Re-enrollment only: the active device whose identity would be handed over. */
+  matchedDeviceId: string | null
+  matchedDeviceHostname: string | null
+  /** Last successful authenticated call by the matched device's own credential. */
+  credentialLastUsedAt: string | null
+  /**
+   * Re-enrollment only: whether the matched device authenticated within the
+   * fleet's offline window. Computed server-side from the credential's use,
+   * which the request being listed cannot bump — an ONLINE device being
+   * re-enrolled is the suspicious case.
+   */
+  online: boolean | null
 }
 
 export interface EnrollmentDecision {
   requestId: string
   status: string
   hostname: string
+  kind: 'enrollment' | 're-enrollment'
   message: string
 }
 
@@ -2983,10 +3002,60 @@ export async function createAgentRelease(
   }
 }
 
-export async function publishAgentRelease(releaseId: string): Promise<void> {
-  await request<void>(`/admin/v1/agent-releases/${encodeURIComponent(releaseId)}/publish`, { method: 'POST' })
+/**
+ * Publishes a draft, making it installable fleet-wide, after step-up
+ * authentication: the caller re-types their own password and records a
+ * justification, exactly like a BitLocker recovery-key reveal. The password is
+ * sent once and held nowhere -- never in storage, a URL or router state.
+ */
+export async function publishAgentRelease(
+  releaseId: string,
+  currentPassword: string,
+  justification: string,
+): Promise<void> {
+  await request<void>(`/admin/v1/agent-releases/${encodeURIComponent(releaseId)}/publish`, {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, justification }),
+  })
 }
 
+/** What the server recorded after an artifact replacement. */
+export interface ReplacedArtifact {
+  releaseId: string
+  sha256: string
+  sizeBytes: number
+  signerSubject: string | null
+}
+
+/**
+ * Replaces a draft release's MSI with another build of the same version --
+ * typically the signed counterpart of an unsigned upload. Changing the bytes a
+ * publish will point at is as consequential as publishing, so the same step-up
+ * rides along as form fields beside the file. The SHA-256 is computed here and
+ * re-computed by the server as it stores the bytes.
+ */
+export async function replaceAgentReleaseArtifact(
+  releaseId: string,
+  file: File,
+  currentPassword: string,
+  justification: string,
+): Promise<ReplacedArtifact> {
+  const sha256 = await sha256Hex(file)
+  const form = new FormData()
+  form.append('file', file, file.name)
+  form.append('sha256', sha256)
+  form.append('currentPassword', currentPassword)
+  form.append('justification', justification)
+
+  // Through request(): the helper leaves a FormData body's content type to the
+  // browser, which has to set the multipart boundary.
+  return request<ReplacedArtifact>(
+    `/admin/v1/agent-releases/${encodeURIComponent(releaseId)}/artifact`,
+    { method: 'PUT', body: form },
+  )
+}
+
+/** Revoke stays step-up-free on purpose: withdrawing a build is the safe direction. */
 export async function revokeAgentRelease(releaseId: string): Promise<void> {
   await request<void>(`/admin/v1/agent-releases/${encodeURIComponent(releaseId)}/revoke`, { method: 'POST' })
 }
@@ -3115,17 +3184,24 @@ export function downloadAgentRelease(releaseId: string, _fileName: string): void
   anchor.remove()
 }
 
-/** Queues a device's agent self-update to a published release. */
+/**
+ * Queues a device's agent self-update to a published release, after step-up:
+ * the installer runs as SYSTEM on the target machine, so the caller proves the
+ * session is still theirs with their own password and records a justification,
+ * like a recovery-key reveal. The password is sent once and held nowhere.
+ */
 export async function updateDeviceAgent(
   deviceId: string,
   releaseId: string,
+  currentPassword: string,
+  justification: string,
 ): Promise<{ taskId: string }> {
   return request<{ taskId: string }>(
     `/admin/v1/devices/${encodeURIComponent(deviceId)}/actions/update-agent`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ releaseId }),
+      body: JSON.stringify({ releaseId, currentPassword, justification }),
     },
   )
 }

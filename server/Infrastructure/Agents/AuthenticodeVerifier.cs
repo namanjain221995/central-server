@@ -124,8 +124,13 @@ public sealed class SystemTrustChainPolicy : IAuthenticodeChainPolicy
 /// <para>
 /// Revocation is not checked here. The server may have no route to a CRL or OCSP
 /// responder, and refusing every publish over that would make the gate a
-/// liability rather than a control. Revocation is checked by the endpoint's
-/// <c>WinVerifyTrust</c> at install time.
+/// liability rather than a control. Nor is it checked on the endpoint: the
+/// agent's <c>WinVerifyTrust</c> call runs with revocation checks deliberately
+/// disabled (<c>WTD_REVOKE_NONE</c> + <c>WTD_REVOCATION_CHECK_NONE</c>,
+/// agent/EndpointAgent.Windows/WinTrust.cs) so installs never depend on
+/// revocation-network reachability. A revoked publisher certificate is handled
+/// by rotating <c>ExpectedSignerSubject</c> and revoking the affected releases,
+/// not by a CRL lookup.
 /// </para>
 /// </remarks>
 public sealed class AuthenticodeVerifier(
@@ -133,8 +138,24 @@ public sealed class AuthenticodeVerifier(
     IAuthenticodeChainPolicy chainPolicy,
     ILogger<AuthenticodeVerifier> logger) : IAuthenticodeVerifier
 {
-    /// <summary>The stream Windows Installer stores its signature in.</summary>
-    public const string SignatureStreamName = "DigitalSignature";
+    /// <summary>
+    /// The stream Windows Installer stores its signature in:
+    /// <c>\u0005DigitalSignature</c>, with the U+0005 control character first.
+    /// </summary>
+    /// <remarks>
+    /// The prefix is part of the literal stream name: compound files reserve a
+    /// leading U+0005 for metadata streams, and signtool writes the signature
+    /// under exactly this name -- a stream named plain <c>DigitalSignature</c>,
+    /// which no real Windows Installer package carries, is not a signature and
+    /// is deliberately not read. The prefix used to be embedded here as a RAW
+    /// control byte, which every editor and diff rendered as plain
+    /// <c>"DigitalSignature"</c> -- invisible, one well-meaning cleanup away
+    /// from being stripped (silently breaking Public mode against every signed
+    /// MSI), and already misread once in review as the wrong name. It is an
+    /// explicit escape now, and a regression test pins the literal value so it
+    /// cannot quietly change in either direction.
+    /// </remarks>
+    public const string SignatureStreamName = "\u0005DigitalSignature";
 
     /// <summary>Authenticode's content type: SpcIndirectDataContent.</summary>
     private static readonly Oid SpcIndirectData = new("1.3.6.1.4.1.311.2.1.4");

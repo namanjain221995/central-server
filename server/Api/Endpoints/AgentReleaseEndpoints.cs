@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using EndpointPlatform.Api.Security;
 using EndpointPlatform.Domain.Agents;
 using EndpointPlatform.Domain.Auditing;
@@ -17,12 +18,22 @@ namespace EndpointPlatform.Api.Endpoints;
 /// queueing a device's self-update to a published release.
 /// </summary>
 /// <remarks>
+/// <para>
 /// RBAC reuses the software permissions deliberately: publishing an agent build
 /// that every endpoint may install IS deploying software fleet-wide, so the
 /// roles trusted with <see cref="Permissions.Software.Deploy"/> are exactly the
 /// roles trusted here, and viewing/downloading follows
 /// <see cref="Permissions.Software.View"/>. The MSI itself is a universal,
 /// secret-free binary — Auditor being able to download it discloses nothing.
+/// </para>
+/// <para>
+/// The three actions that put SYSTEM-level code on the path to machines —
+/// publish, artifact replacement, and queueing a device self-update — require
+/// step-up on top of the permission: the caller re-types their own password and
+/// records a justification, exactly like a BitLocker recovery-key reveal, behind
+/// the same rate-limit-then-verify order (<see cref="AgentReleaseStepUpService"/>).
+/// Revoke deliberately does not: withdrawing a build is the safe direction.
+/// </para>
 /// </remarks>
 public static class AgentReleaseEndpoints
 {
@@ -57,18 +68,17 @@ public static class AgentReleaseEndpoints
             .DisableAntiforgery(); // multipart upload; CSRF is covered by the X-Requested-With gate.
 
         // The same build, signed. Draft only, hash recomputed by the server.
+        // Step-up: the form carries currentPassword and justification.
         group.MapPut("/{releaseId:guid}/artifact", ReplaceArtifactAsync)
             .WithName("ReplaceAgentReleaseArtifact")
             .RequirePermission(Permissions.Software.Deploy)
             .DisableAntiforgery(); // multipart upload; CSRF is covered by the X-Requested-With gate.
 
-        group.MapPost("/{releaseId:guid}/publish", (Guid releaseId, HttpContext ctx, AgentReleaseService svc, CancellationToken ct)
-                => TransitionAsync(releaseId, ctx, svc, publish: true, ct))
+        group.MapPost("/{releaseId:guid}/publish", PublishAsync)
             .WithName("PublishAgentRelease")
             .RequirePermission(Permissions.Software.Deploy);
 
-        group.MapPost("/{releaseId:guid}/revoke", (Guid releaseId, HttpContext ctx, AgentReleaseService svc, CancellationToken ct)
-                => TransitionAsync(releaseId, ctx, svc, publish: false, ct))
+        group.MapPost("/{releaseId:guid}/revoke", RevokeAsync)
             .WithName("RevokeAgentRelease")
             .RequirePermission(Permissions.Software.Deploy);
 
@@ -211,12 +221,132 @@ public static class AgentReleaseEndpoints
             : Results.Created($"/admin/v1/agent-releases/{release.Id}", new { releaseId = release.Id, release.Version });
     }
 
+    // ----------------------------------------------------------------- step-up
 
-    /// <summary>Replaces a draft's MSI with its signed counterpart.</summary>
+    /// <param name="CurrentPassword">
+    /// The caller's own password, re-verified here. Holding the permission proves
+    /// what the account may do; this proves the account is still being driven by
+    /// the person who signed in.
+    /// </param>
+    /// <param name="Justification">Recorded in the audit trail. Not optional.</param>
+    public sealed record ReleaseStepUpRequest(
+        [property: Required, StringLength(256, MinimumLength = 1)] string? CurrentPassword,
+        [property: Required, StringLength(500, MinimumLength = 3)] string? Justification);
+
+    /// <summary>Maps a refused step-up gate to its response, mirroring the reveal route.</summary>
+    private static IResult? Refusal(ReleaseActionGateResult gate, HttpContext httpContext)
+    {
+        switch (gate.Outcome)
+        {
+            case ReleaseActionGateOutcome.RateLimited:
+                httpContext.Response.Headers.RetryAfter = gate.RetryAfterSeconds.ToString();
+                return Results.Problem(gate.Error, statusCode: StatusCodes.Status429TooManyRequests);
+
+            // Same status and shape as a wrong password on the sign-in path, and
+            // for the same reason: the caller learns that it failed, not which
+            // check failed.
+            case ReleaseActionGateOutcome.StepUpFailed:
+                return Results.Problem(gate.Error, statusCode: StatusCodes.Status403Forbidden);
+
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// Publishes a draft, after step-up. Publishing makes the build installable
+    /// fleet-wide, so it is gated like a recovery-key reveal: rate limit, the
+    /// caller's own password, and a recorded justification.
+    /// </summary>
+    private static async Task<IResult> PublishAsync(
+        Guid releaseId,
+        ReleaseStepUpRequest request,
+        HttpContext httpContext,
+        AgentReleaseService releaseService,
+        AgentReleaseStepUpService stepUp,
+        EndpointPlatformDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (Validate(request) is { } invalid)
+        {
+            return invalid;
+        }
+
+        var actor = AdminActor.Required(httpContext.User);
+
+        // Looked up before the gate, like an escrow before a reveal: a caller who
+        // names a release that does not exist gets 404 without consuming budget,
+        // and the denial audit below can name the version it refused.
+        var release = await dbContext.AgentReleases
+            .AsNoTracking()
+            .SingleOrDefaultAsync(r => r.Id == releaseId, cancellationToken);
+        if (release is null)
+        {
+            return Results.NotFound();
+        }
+
+        var gate = await stepUp.AuthorizeAsync(
+            "agent_release.publish_denied", release.Id, $"windows/x64 {release.Version}",
+            actor.UserId, actor.Email, actor.OrganizationId,
+            request.CurrentPassword!, device: null, cancellationToken);
+
+        if (Refusal(gate, httpContext) is { } refused)
+        {
+            return refused;
+        }
+
+        var outcome = await releaseService.PublishAsync(
+            releaseId, actor.UserId, actor.Email, actor.OrganizationId,
+            request.Justification!, cancellationToken);
+
+        return ToTransitionResult(outcome);
+    }
+
+    /// <summary>Revokes a release. No step-up: withdrawing a build is the safe direction.</summary>
+    private static async Task<IResult> RevokeAsync(
+        Guid releaseId,
+        HttpContext httpContext,
+        AgentReleaseService releaseService,
+        CancellationToken cancellationToken)
+    {
+        var actor = AdminActor.Required(httpContext.User);
+        var outcome = await releaseService.RevokeAsync(
+            releaseId, actor.UserId, actor.Email, actor.OrganizationId, cancellationToken);
+
+        return ToTransitionResult(outcome);
+    }
+
+    private static IResult ToTransitionResult(AgentReleaseActionOutcome outcome) => outcome.Result switch
+    {
+        AgentReleaseActionResult.Success => Results.NoContent(),
+        AgentReleaseActionResult.NotFound => Results.NotFound(),
+
+        // The publish gate. 422 rather than 409: the release is in a state that
+        // allows publishing, but the artifact itself is not acceptable. The
+        // reason is the verifier's own -- it names the check that failed under
+        // the configured trust mode, and never the bytes.
+        AgentReleaseActionResult.NotVerified => Results.Problem(
+            "The release cannot be published: " + (outcome.Reason ?? "its artifact did not pass verification."),
+            statusCode: StatusCodes.Status422UnprocessableEntity),
+        _ => Results.Problem(
+            "The release is not in a state that allows this action.",
+            statusCode: StatusCodes.Status409Conflict),
+    };
+
+    /// <summary>
+    /// Replaces a draft's MSI with its signed counterpart, after step-up. The
+    /// bytes a published row will point at change here, which is exactly as
+    /// consequential as publishing — same gate, carried as form fields
+    /// (<c>currentPassword</c>, <c>justification</c>) beside the file.
+    /// </summary>
     private static async Task<IResult> ReplaceArtifactAsync(
         Guid releaseId,
         HttpContext httpContext,
         AgentReleaseService releaseService,
+        AgentReleaseStepUpService stepUp,
+        EndpointPlatformDbContext dbContext,
         CancellationToken cancellationToken)
     {
         if (!httpContext.Request.HasFormContentType)
@@ -232,76 +362,89 @@ public static class AgentReleaseEndpoints
         }
 
         string? Field(string key) => form.TryGetValue(key, out var v) ? v.ToString() : null;
+
+        var request = new ReleaseStepUpRequest(Field("currentPassword"), Field("justification"));
+        if (Validate(request) is { } invalid)
+        {
+            return invalid;
+        }
+
         var actor = AdminActor.Required(httpContext.User);
 
-        await using var content = file.OpenReadStream();
-        var (release, error) = await releaseService.ReplaceArtifactAsync(
-            releaseId, file.FileName, Field("sha256"), content,
-            actor.UserId, actor.Email, actor.OrganizationId, cancellationToken);
-
-        if (release is null && error is null)
+        var release = await dbContext.AgentReleases
+            .AsNoTracking()
+            .SingleOrDefaultAsync(r => r.Id == releaseId, cancellationToken);
+        if (release is null)
         {
             return Results.NotFound();
         }
 
-        if (release is null)
+        var gate = await stepUp.AuthorizeAsync(
+            "agent_release.artifact_replace_denied", release.Id, $"windows/x64 {release.Version}",
+            actor.UserId, actor.Email, actor.OrganizationId,
+            request.CurrentPassword!, device: null, cancellationToken);
+
+        if (Refusal(gate, httpContext) is { } refused)
+        {
+            return refused;
+        }
+
+        await using var content = file.OpenReadStream();
+        var (replaced, error) = await releaseService.ReplaceArtifactAsync(
+            releaseId, file.FileName, Field("sha256"), content,
+            actor.UserId, actor.Email, actor.OrganizationId, request.Justification!, cancellationToken);
+
+        if (replaced is null && error is null)
+        {
+            return Results.NotFound();
+        }
+
+        if (replaced is null)
         {
             return Results.Problem(error, statusCode: StatusCodes.Status409Conflict);
         }
 
         return Results.Ok(new
         {
-            releaseId = release.Id,
-            sha256 = release.Sha256,
-            sizeBytes = release.ContentSizeBytes,
-            signerSubject = release.SignerSubject,
+            releaseId = replaced.Id,
+            sha256 = replaced.Sha256,
+            sizeBytes = replaced.ContentSizeBytes,
+            signerSubject = replaced.SignerSubject,
         });
     }
 
-    private static async Task<IResult> TransitionAsync(
-        Guid releaseId, HttpContext httpContext, AgentReleaseService releaseService, bool publish,
-        CancellationToken cancellationToken)
-    {
-        var actor = AdminActor.Required(httpContext.User);
-        var outcome = publish
-            ? await releaseService.PublishAsync(releaseId, actor.UserId, actor.Email, actor.OrganizationId, cancellationToken)
-            : await releaseService.RevokeAsync(releaseId, actor.UserId, actor.Email, actor.OrganizationId, cancellationToken);
-
-        return outcome.Result switch
-        {
-            AgentReleaseActionResult.Success => Results.NoContent(),
-            AgentReleaseActionResult.NotFound => Results.NotFound(),
-
-            // The publish gate. 422 rather than 409: the release is in a state that
-            // allows publishing, but the artifact itself is not acceptable. The
-            // reason is the verifier's own -- it names the check that failed under
-            // the configured trust mode, and never the bytes.
-            AgentReleaseActionResult.NotVerified => Results.Problem(
-                "The release cannot be published: " + (outcome.Reason ?? "its artifact did not pass verification."),
-                statusCode: StatusCodes.Status422UnprocessableEntity),
-            _ => Results.Problem(
-                "The release is not in a state that allows this action.",
-                statusCode: StatusCodes.Status409Conflict),
-        };
-    }
-
-    public sealed record UpdateAgentRequest(Guid ReleaseId);
+    /// <param name="CurrentPassword">Step-up; see <see cref="ReleaseStepUpRequest"/>.</param>
+    /// <param name="Justification">Recorded in the audit trail. Not optional.</param>
+    public sealed record UpdateAgentRequest(
+        Guid ReleaseId,
+        [property: Required, StringLength(256, MinimumLength = 1)] string? CurrentPassword,
+        [property: Required, StringLength(500, MinimumLength = 3)] string? Justification);
 
     /// <summary>
-    /// Queues a device's self-update to a published release. The server refuses
-    /// downgrades and same-version updates here, and the agent independently
-    /// enforces the same rule — neither side trusts the other to have checked.
+    /// Queues a device's self-update to a published release, after step-up. The
+    /// server refuses downgrades and same-version updates here, and the agent
+    /// independently enforces the same rule — neither side trusts the other to
+    /// have checked.
     /// </summary>
     private static async Task<IResult> QueueUpdateAsync(
         Guid deviceId,
         UpdateAgentRequest request,
         HttpContext httpContext,
         AgentReleaseService releaseService,
+        AgentReleaseStepUpService stepUp,
         EndpointPlatformDbContext dbContext,
         DeviceTaskService taskService,
         DeviceScopeAuthorizer scope,
+        AuditWriter auditWriter,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (Validate(request) is { } invalid)
+        {
+            return invalid;
+        }
+
         var actor = AdminActor.Required(httpContext.User);
 
         // Device scope, checked first and on its own.
@@ -319,6 +462,27 @@ public static class AgentReleaseEndpoints
             return Results.NotFound();
         }
 
+        var device = await dbContext.Devices
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                d => d.Id == deviceId && d.OrganizationId == actor.OrganizationId, cancellationToken);
+        if (device is null)
+        {
+            return Results.NotFound();
+        }
+
+        // Step-up, before any statement about the release: in-scope callers only
+        // get this far, and the attempt is counted whatever comes of it.
+        var gate = await stepUp.AuthorizeAsync(
+            "agent_release.update_agent_denied", request.ReleaseId, device.Hostname,
+            actor.UserId, actor.Email, actor.OrganizationId,
+            request.CurrentPassword!, device, cancellationToken);
+
+        if (Refusal(gate, httpContext) is { } refused)
+        {
+            return refused;
+        }
+
         var release = await dbContext.AgentReleases
             .AsNoTracking()
             .SingleOrDefaultAsync(r => r.Id == request.ReleaseId, cancellationToken);
@@ -327,15 +491,6 @@ public static class AgentReleaseEndpoints
             return Results.Problem(
                 "The release does not exist or is not published.",
                 statusCode: StatusCodes.Status409Conflict);
-        }
-
-        var device = await dbContext.Devices
-            .AsNoTracking()
-            .SingleOrDefaultAsync(
-                d => d.Id == deviceId && d.OrganizationId == actor.OrganizationId, cancellationToken);
-        if (device is null)
-        {
-            return Results.NotFound();
         }
 
         if (!AgentVersionNumber.IsNewer(release.Version, device.AgentVersion))
@@ -351,8 +506,48 @@ public static class AgentReleaseEndpoints
             new TaskPayloads.UpdateAgent(release.Id, release.Version, release.Sha256),
             actor.UserId, actor.Email, cancellationToken);
 
-        return task is null
-            ? Results.NotFound()
-            : Results.Accepted($"/admin/v1/devices/{deviceId}/tasks", new { taskId = task.Id });
+        if (task is null)
+        {
+            return Results.NotFound();
+        }
+
+        // The step-up's own success entry, beside the generic task.queue audit:
+        // it is the one that carries the justification, like a reveal's does.
+        // Through the redactor, because the justification is operator free text
+        // and the trail is append-only.
+        auditWriter.Stage(
+            actor.OrganizationId, AuditActorType.PlatformUser, actor.UserId, actor.Email,
+            action: "agent_release.update_agent", AuditResult.Success,
+            audit => audit
+                .OnDevice(device.Id, device.Hostname)
+                .OnTarget("agent_release", release.Id.ToString(), $"windows/x64 {release.Version}")
+                .Requiring(Permissions.Software.Deploy)
+                .WithStateChange(null, AuditStateRedactor.Redact(new Dictionary<string, object?>
+                {
+                    ["releaseId"] = release.Id,
+                    ["version"] = release.Version,
+                    ["taskId"] = task.Id,
+                    ["justification"] = request.Justification,
+                })));
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        return Results.Accepted($"/admin/v1/devices/{deviceId}/tasks", new { taskId = task.Id });
+    }
+
+    // ------------------------------------------------------------------ shared
+
+    private static IResult? Validate<T>(T request) where T : notnull
+    {
+        var results = new List<ValidationResult>();
+        if (Validator.TryValidateObject(request, new ValidationContext(request), results, validateAllProperties: true))
+        {
+            return null;
+        }
+
+        // Reports which member failed, never the value it carried -- one of these
+        // members is the caller's own password.
+        return Results.ValidationProblem(results.ToDictionary(
+            v => v.MemberNames.FirstOrDefault() ?? "request",
+            v => new[] { v.ErrorMessage ?? "Invalid." }));
     }
 }

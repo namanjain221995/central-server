@@ -151,6 +151,14 @@ public sealed class Program
             builder.Services.AddSingleton<RevealRateLimiter>();
             builder.Services.AddScoped<RecoveryEscrowService>();
             builder.Services.AddScoped<Infrastructure.BitLocker.EscrowAttemptAdminService>();
+
+            // Step-up on the dangerous agent-release actions (publish, artifact
+            // replace, update-agent). Registered in the Admin API, not the shared
+            // infrastructure, like the escrow services: the gate re-verifies the
+            // administrator's password through AdminAuthService, which the Agent
+            // API neither registers nor has any business holding.
+            builder.Services.AddSingleton<Infrastructure.Agents.ReleaseActionRateLimiter>();
+            builder.Services.AddScoped<Infrastructure.Agents.AgentReleaseStepUpService>();
             // Registered in the Admin API, not the shared infrastructure, for the same
             // reason as the escrow services above: it unseals the RustDesk unattended
             // password with the escrow key, which the Agent API must never hold.

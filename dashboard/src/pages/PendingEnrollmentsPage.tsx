@@ -8,6 +8,13 @@ import {
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { Icon } from '../components/Icon'
+import {
+  approveConfirmation,
+  isReEnrollment,
+  matchLine,
+  rejectConfirmation,
+  showOnlineWarning,
+} from './enrollmentsView'
 
 /** How often the list refreshes while the page is open. */
 const POLL_INTERVAL_MS = 12_000
@@ -18,6 +25,12 @@ const POLL_INTERVAL_MS = 12_000
  * A PC that has installed the MSI carries no credential and no token — it asks
  * to be managed and waits here. Approving is what admits it, so this page is the
  * human half of the enrollment authorization boundary.
+ *
+ * Re-enrollments wait here too: a machine presenting a valid token whose
+ * identifier matches an ACTIVE device. Those rows carry a badge, the matched
+ * device and its liveness, because approving one revokes that device's working
+ * credential and hands its identity to the requester — which is also why
+ * approval asks for confirmation there and nowhere else.
  *
  * Everything shown is identity and state. The proof secret, the sealed
  * enrollment token and the issued device credential never leave the server, so
@@ -65,14 +78,12 @@ export function PendingEnrollmentsPage() {
   }, [load])
 
   async function decide(request: PendingEnrollment, approve: boolean) {
-    if (!approve) {
-      const confirmed = window.confirm(
-        `Reject the enrollment request from "${request.hostname}"?\n\n` +
-          'No credential will be issued and the agent will stop asking. ' +
-          'The machine can request enrollment again later.',
-      )
-      if (!confirmed) return
-    }
+    // Approving a plain enrollment stays one click (it takes nothing from
+    // anyone); approving a RE-enrollment asks, because it revokes the matched
+    // device's credential and hands its identity to the requester. Rejection
+    // always asks, with kind-specific consequences.
+    const confirmation = approve ? approveConfirmation(request) : rejectConfirmation(request)
+    if (confirmation !== null && !window.confirm(confirmation)) return
 
     setBusy(request.requestId)
     setError(null)
@@ -177,7 +188,35 @@ export function PendingEnrollmentsPage() {
                   return (
                     <tr key={r.requestId}>
                       <td>
-                        <div>{r.hostname}</div>
+                        <div>
+                          {r.hostname}
+                          {isReEnrollment(r) && (
+                            <>
+                              {' '}
+                              <span className="badge warn">Re-enrollment</span>
+                              {showOnlineWarning(r) && (
+                                <>
+                                  {' '}
+                                  {/* The matched device authenticated within the offline
+                                      window: it is alive while someone asks to become it.
+                                      That is the takeover shape, so it shouts. */}
+                                  <span
+                                    className="badge crit"
+                                    title="The matched device is still reporting. A live machine does not normally need re-enrolling."
+                                  >
+                                    Device online
+                                  </span>
+                                </>
+                              )}
+                            </>
+                          )}
+                        </div>
+                        {/* Which active device this request would take over, and whether
+                            that device looks alive. Approval copy repeats it; this is the
+                            at-a-glance version. */}
+                        {matchLine(r, Date.now()) && (
+                          <div className="row-sub">{matchLine(r, Date.now())}</div>
+                        )}
                         {/* Not a secret: the SMBIOS UUID is how a re-enrolling machine
                             resolves to its existing device record instead of a duplicate. */}
                         <div className="row-sub mono-sub">{r.machineIdentifier}</div>
@@ -229,8 +268,11 @@ export function PendingEnrollmentsPage() {
 
       <p className="muted" style={{ fontSize: 12.5, marginTop: 12 }}>
         After approval the agent collects its credential on its next poll, then appears under
-        Devices and becomes Active once it starts reporting. Requests expire 15 minutes after
-        they are made; an agent that is still waiting simply asks again.
+        Devices and becomes Active once it starts reporting. New-machine requests expire 15
+        minutes after they are made; an agent that is still waiting simply asks again.
+        Re-enrollment requests stay up to 24 hours while the agent keeps retrying; after
+        approval the agent completes on its own next retry, within about 5 minutes, and the
+        matched device&apos;s old credential is revoked at that moment.
       </p>
     </>
   )
@@ -272,12 +314,13 @@ function formatTime(iso: string): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleTimeString()
 }
 
-/** "in 12m 30s", or "Expired" once it has passed. */
+/** "in 12m 30s" (or "in 23h 54m" for the long-lived re-enrollment requests), or "Expired". */
 function relativeTo(iso: string): string {
   const ms = new Date(iso).getTime() - Date.now()
   if (Number.isNaN(ms) || ms <= 0) return 'Expired'
   const total = Math.floor(ms / 1000)
   const minutes = Math.floor(total / 60)
   const seconds = total % 60
+  if (minutes >= 60) return `in ${Math.floor(minutes / 60)}h ${minutes % 60}m`
   return minutes > 0 ? `in ${minutes}m ${seconds}s` : `in ${seconds}s`
 }

@@ -24,7 +24,8 @@ needed recording:
   `build/Tests.props`.
 - **Shouldly** (BSD-3-Clause) for assertions; NSubstitute for mocking.
 - Integration tests run against a **real, locally installed PostgreSQL** (and
-  Redis for the Admin API suite), reached through
+  Redis for the Admin API and Agent API suites, plus the enrollment-gate
+  tests), reached through
   `ENDPOINTPLATFORM_TEST_POSTGRES` / `ENDPOINTPLATFORM_TEST_REDIS`. Each
   fixture creates a throwaway database and drops it afterwards.
 

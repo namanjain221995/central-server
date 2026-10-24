@@ -197,19 +197,29 @@ public sealed class AgentReleaseService(
         return (release, null);
     }
 
+    /// <param name="justification">
+    /// Why this build is going to the fleet, re-collected with the caller's step-up
+    /// password at the endpoint. Recorded in the success audit entry; never used
+    /// for anything else.
+    /// </param>
     public Task<AgentReleaseActionOutcome> PublishAsync(
         Guid releaseId, Guid actorId, string actorDisplay, Guid actorOrganizationId,
-        CancellationToken cancellationToken = default) =>
-        TransitionAsync(releaseId, actorId, actorDisplay, actorOrganizationId, publish: true, cancellationToken);
+        string justification, CancellationToken cancellationToken = default) =>
+        TransitionAsync(releaseId, actorId, actorDisplay, actorOrganizationId, publish: true, justification, cancellationToken);
 
+    /// <remarks>
+    /// Revoke carries no justification and no step-up: withdrawing a build from
+    /// the fleet is the safe direction, and friction there delays pulling a bad
+    /// release.
+    /// </remarks>
     public Task<AgentReleaseActionOutcome> RevokeAsync(
         Guid releaseId, Guid actorId, string actorDisplay, Guid actorOrganizationId,
         CancellationToken cancellationToken = default) =>
-        TransitionAsync(releaseId, actorId, actorDisplay, actorOrganizationId, publish: false, cancellationToken);
+        TransitionAsync(releaseId, actorId, actorDisplay, actorOrganizationId, publish: false, justification: null, cancellationToken);
 
     private async Task<AgentReleaseActionOutcome> TransitionAsync(
         Guid releaseId, Guid actorId, string actorDisplay, Guid actorOrganizationId, bool publish,
-        CancellationToken cancellationToken)
+        string? justification, CancellationToken cancellationToken)
     {
         var release = await _dbContext.AgentReleases
             .SingleOrDefaultAsync(r => r.Id == releaseId, cancellationToken);
@@ -276,6 +286,18 @@ public sealed class AgentReleaseService(
             return AgentReleaseActionOutcome.Of(AgentReleaseActionResult.Conflict);
         }
 
+        // The publish entry carries the operator's justification, like a recovery
+        // key reveal does, and goes through the redactor for the same reason: the
+        // justification is free text, the trail is append-only, and a password
+        // pasted there by accident must not become a permanent record.
+        var nextState = publish
+            ? AuditStateRedactor.Redact(new Dictionary<string, object?>
+            {
+                ["status"] = release.Status.ToString(),
+                ["justification"] = justification,
+            })
+            : System.Text.Json.JsonSerializer.Serialize(new { status = release.Status.ToString() });
+
         _auditWriter.Stage(
             actorOrganizationId, AuditActorType.PlatformUser, actorId, actorDisplay,
             action: publish ? "agent_release.published" : "agent_release.revoked",
@@ -285,7 +307,7 @@ public sealed class AgentReleaseService(
                 .Requiring(Permissions.Software.Deploy)
                 .WithStateChange(
                     System.Text.Json.JsonSerializer.Serialize(new { status = before }),
-                    System.Text.Json.JsonSerializer.Serialize(new { status = release.Status.ToString() })));
+                    nextState));
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         _logger.LogInformation(
@@ -422,6 +444,7 @@ public sealed class AgentReleaseService(
         Guid actorId,
         string actorDisplay,
         Guid actorOrganizationId,
+        string justification,
         CancellationToken cancellationToken = default)
     {
         var release = await _dbContext.AgentReleases.SingleOrDefaultAsync(r => r.Id == releaseId, cancellationToken);
@@ -489,12 +512,15 @@ public sealed class AgentReleaseService(
                 .Requiring(Permissions.Software.Deploy)
                 .WithStateChange(
                     System.Text.Json.JsonSerializer.Serialize(new { sha256 = previousSha256 }),
-                    System.Text.Json.JsonSerializer.Serialize(new
+                    // Through the redactor: the justification is operator free text
+                    // and the trail is append-only. See the publish audit above.
+                    AuditStateRedactor.Redact(new Dictionary<string, object?>
                     {
-                        sha256 = release.Sha256,
-                        sizeBytes = release.ContentSizeBytes,
-                        signerSubject = release.SignerSubject,
-                        verified = verification.IsTrusted,
+                        ["sha256"] = release.Sha256,
+                        ["sizeBytes"] = release.ContentSizeBytes,
+                        ["signerSubject"] = release.SignerSubject,
+                        ["verified"] = verification.IsTrusted,
+                        ["justification"] = justification,
                     })));
 
         await _dbContext.SaveChangesAsync(cancellationToken);

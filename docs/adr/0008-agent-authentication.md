@@ -19,10 +19,19 @@ secret. The spec offers "mTLS or equivalent device-specific asymmetric identity"
 - The server validates (hash lookup → expiry → revocation → remaining uses,
   with PostgreSQL `xmin` optimistic concurrency so two agents cannot both take
   the last use), then creates the device and issues its credential atomically.
-- **Re-enrollment**: a machine identifier already on file updates the existing
-  device and **revokes its previous credentials**. Retired devices refuse
-  re-enrollment until an administrator reactivates.
-- All refusals return an indistinguishable 403 (tested); reasons go to the
+- **Re-enrollment** (amended 2026-10-24): a machine identifier matching an
+  **active** device no longer re-enrolls on the token alone — that would let
+  one leaked-but-valid token plus a non-secret SMBIOS UUID revoke the real
+  device's credentials and hand its identity to the caller. The attempt parks a
+  pending re-enrollment for **administrator approval** (24 h, refreshed by the
+  agent's 5-minute retries, which consume no token uses); the retry after
+  approval updates the existing device and **revokes its previous
+  credentials**. Approving requires device scope over the matched device, not
+  just `device.enroll`. The rule is uniform — an honest reinstall waits exactly
+  like a hostile request, because the server cannot tell them apart. Retired
+  devices do not match; a retired machine enrolls again as a new device.
+- All refusals return an indistinguishable 403 (tested) — including "approval
+  pending", so active machine identifiers cannot be probed; reasons go to the
   audit trail, which records refused attempts as `Denied` security signals.
 
 ### Ongoing authentication

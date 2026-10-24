@@ -5,6 +5,7 @@ import {
   getAgentReleasePolicy,
   getAgentReleases,
   publishAgentRelease,
+  replaceAgentReleaseArtifact,
   revokeAgentRelease,
   type AgentReleaseRow,
   type AgentReleaseTrustMode,
@@ -12,6 +13,7 @@ import {
 import { useAuth } from '../auth/AuthContext'
 import { Icon } from '../components/Icon'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { ReleaseStepUpDialog } from './ReleaseStepUpDialog'
 import {
   apiFailureMessage,
   deploymentWarning,
@@ -50,6 +52,11 @@ export function AgentReleasesPage() {
   const [loading, setLoading] = useState(true)
   const [showUpload, setShowUpload] = useState(false)
   const [confirmRevoke, setConfirmRevoke] = useState<AgentReleaseRow | null>(null)
+  /** Release the publish step-up dialog is open for, or null. */
+  const [publishTarget, setPublishTarget] = useState<AgentReleaseRow | null>(null)
+  /** Draft whose MSI is being replaced, and the chosen replacement. */
+  const [replaceTarget, setReplaceTarget] = useState<AgentReleaseRow | null>(null)
+  const [replaceFile, setReplaceFile] = useState<File | null>(null)
   /** Release whose download just started; its buttons stay disabled briefly. */
   const [downloadingId, setDownloadingId] = useState<string | null>(null)
 
@@ -112,7 +119,7 @@ export function AgentReleasesPage() {
     }
   }
 
-  async function onPublish(release: AgentReleaseRow) {
+  function onPublish(release: AgentReleaseRow) {
     // The server is the gate; this is only a courtesy. Under the Public trust
     // model an unsigned build is refused server-side whatever is clicked here,
     // so the confirm explains that before the request rather than after it.
@@ -126,18 +133,52 @@ export function AgentReleasesPage() {
 
     setError(null)
     setNotice(null)
+    // Publishing now requires step-up, so the request is made from the dialog
+    // where the operator has re-typed their password and given a reason.
+    setPublishTarget(release)
+  }
+
+  /** The publish itself, from the step-up dialog. A rejection stays in the dialog. */
+  async function onPublishConfirmed(
+    release: AgentReleaseRow,
+    stepUp: { currentPassword: string; justification: string },
+  ) {
     try {
-      await publishAgentRelease(release.id)
-      setNotice(`Release ${release.version} is now published and available to devices.`)
-      await load()
+      await publishAgentRelease(release.id, stepUp.currentPassword, stepUp.justification)
     } catch (e) {
-      // A 422 carries the server's reason; show it verbatim. It names the
-      // requirement that failed and nothing about the bytes. Then re-read the
-      // list: the row is whatever the server says it is, which after a refusal
-      // is still a Draft, and the page must show that rather than assume.
-      setError(apiFailureMessage(e, 'The release could not be published.'))
+      // A refusal carries the server's reason -- a 422 names the requirement
+      // that failed, a 403 the step-up, a 429 the rate limit -- and the dialog
+      // shows it verbatim. Re-read the list first: the row is whatever the
+      // server says it is, which after a refusal is still a Draft, and the page
+      // must show that rather than assume.
       await load()
+      throw e
     }
+    setPublishTarget(null)
+    setNotice(`Release ${release.version} is now published and available to devices.`)
+    await load()
+  }
+
+  /**
+   * Replaces a draft's MSI -- typically with the Authenticode-signed counterpart
+   * of an unsigned upload -- from the step-up dialog. Changing the bytes a
+   * publish would point at is as consequential as publishing, so the server
+   * demands the same step-up, and a refusal stays in the dialog verbatim.
+   */
+  async function onReplaceConfirmed(
+    release: AgentReleaseRow,
+    file: File,
+    stepUp: { currentPassword: string; justification: string },
+  ) {
+    const replaced = await replaceAgentReleaseArtifact(
+      release.id, file, stepUp.currentPassword, stepUp.justification)
+    setReplaceTarget(null)
+    setReplaceFile(null)
+    setNotice(
+      `Artifact for ${release.version} replaced — `
+      + `${replaced.signerSubject ? `signed by ${replaced.signerSubject}` : 'unsigned'}, `
+      + 'SHA-256 recomputed by the server.')
+    await load()
   }
 
   async function onRevoke(release: AgentReleaseRow) {
@@ -398,11 +439,25 @@ export function AgentReleasesPage() {
                             {downloadingId === r.id ? 'Started…' : 'Download'}
                           </button>
                         )}
+                        {/* Draft only, like Publish: the server refuses to swap
+                            the bytes of anything already published or revoked. */}
+                        {canManage && r.status === 'Draft' && (
+                          <button
+                            type="button"
+                            className="btn-sm"
+                            onClick={() => {
+                              setReplaceFile(null)
+                              setReplaceTarget(r)
+                            }}
+                          >
+                            Replace MSI
+                          </button>
+                        )}
                         {canManage && r.status === 'Draft' && (
                           <button
                             type="button"
                             className="btn-primary btn-sm"
-                            onClick={() => void onPublish(r)}
+                            onClick={() => onPublish(r)}
                           >
                             Publish
                           </button>
@@ -425,6 +480,64 @@ export function AgentReleasesPage() {
           </div>
         )}
       </div>
+
+      {publishTarget && (
+        <ReleaseStepUpDialog
+          title={`Publish agent release ${publishTarget.version}?`}
+          confirmLabel="Publish release"
+          busyLabel="Publishing…"
+          fallbackError="The release could not be published."
+          onCancel={() => setPublishTarget(null)}
+          onConfirm={(stepUp) => onPublishConfirmed(publishTarget, stepUp)}
+        >
+          <>
+            Publishing makes this MSI installable fleet-wide as SYSTEM — every managed device can
+            be updated to it, and it becomes the build offered for download and self-update.
+          </>
+        </ReleaseStepUpDialog>
+      )}
+
+      {replaceTarget && (
+        <ReleaseStepUpDialog
+          title={`Replace the MSI for ${replaceTarget.version}?`}
+          confirmLabel="Replace artifact"
+          busyLabel="Replacing…"
+          fallbackError="The artifact could not be replaced."
+          ready={replaceFile !== null}
+          onCancel={() => {
+            setReplaceTarget(null)
+            setReplaceFile(null)
+          }}
+          onConfirm={(stepUp) =>
+            replaceFile
+              ? onReplaceConfirmed(replaceTarget, replaceFile, stepUp)
+              : Promise.resolve()}
+          fields={
+            <div className="field">
+              <label className="field-label" htmlFor="replace-artifact-file">
+                Replacement MSI
+              </label>
+              <input
+                id="replace-artifact-file"
+                type="file"
+                accept=".msi"
+                onChange={(e) => setReplaceFile(e.target.files?.[0] ?? null)}
+              />
+              <div className="field-hint">
+                The same build, typically its Authenticode-signed counterpart. The server re-reads
+                the ProductVersion — it must still be {replaceTarget.version} — recomputes the
+                SHA-256 as it stores the bytes, and records the signer it finds.
+              </div>
+            </div>
+          }
+        >
+          <>
+            This swaps the stored bytes of draft {replaceTarget.version} — the file a later publish
+            would make installable fleet-wide as SYSTEM. Devices are untouched until the release is
+            published.
+          </>
+        </ReleaseStepUpDialog>
+      )}
 
       {confirmRevoke && (
         <ConfirmDialog

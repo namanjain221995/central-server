@@ -11,6 +11,7 @@ import {
   releaseGap,
   publishWillBeRefused,
   trustModeLabel,
+  validateStepUpForm,
 } from '../../pages/agentReleaseView'
 import {
   eligibleDevices,
@@ -357,5 +358,48 @@ describe('what the operator is told when the server refuses', () => {
     const error = new ApiError(422, 'Request to /x failed with HTTP 422', null, 'Named reason.')
 
     expect(apiFailureMessage(error, 'Fallback.')).toBe('Named reason.')
+  })
+})
+
+describe('the release-action step-up gate', () => {
+  /**
+   * Mirrors the recovery-key reveal gate, against the server's own rule
+   * (CurrentPassword 1..256, Justification 3..500). Client-side courtesy only:
+   * the server verifies and audits independently, so nothing here may be looser
+   * than the server -- a form this lets through must never be refused on shape.
+   */
+  it('accepts a password and a real justification', () => {
+    expect(validateStepUpForm({ currentPassword: 'pw', justification: 'rolling out the fix' })).toBe(true)
+  })
+
+  it('refuses an empty password', () => {
+    expect(validateStepUpForm({ currentPassword: '', justification: 'rolling out the fix' })).toBe(false)
+  })
+
+  /** A stray keystroke is not a reason; mirrors the recovery-key reveal gate. */
+  it('refuses a justification shorter than three characters after trimming', () => {
+    expect(validateStepUpForm({ currentPassword: 'pw', justification: 'ok' })).toBe(false)
+    expect(validateStepUpForm({ currentPassword: 'pw', justification: '  a  ' })).toBe(false)
+    expect(validateStepUpForm({ currentPassword: 'pw', justification: '      ' })).toBe(false)
+  })
+
+  it('accepts exactly three characters of justification, trimmed', () => {
+    expect(validateStepUpForm({ currentPassword: 'pw', justification: ' fix ' })).toBe(true)
+  })
+
+  /**
+   * The server's StringLength caps, mirrored so the form cannot submit a body
+   * the server will refuse as malformed. At the cap is valid; one over is not.
+   */
+  it('holds the server caps: justification 500, password 256', () => {
+    expect(validateStepUpForm({ currentPassword: 'pw', justification: 'j'.repeat(500) })).toBe(true)
+    expect(validateStepUpForm({ currentPassword: 'pw', justification: 'j'.repeat(501) })).toBe(false)
+    expect(validateStepUpForm({ currentPassword: 'p'.repeat(256), justification: 'fix' })).toBe(true)
+    expect(validateStepUpForm({ currentPassword: 'p'.repeat(257), justification: 'fix' })).toBe(false)
+  })
+
+  /** The password is never trimmed: whitespace can be part of a real password. */
+  it('does not trim the password', () => {
+    expect(validateStepUpForm({ currentPassword: ' ', justification: 'fix' })).toBe(true)
   })
 })

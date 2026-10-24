@@ -32,7 +32,8 @@ public sealed class EnrollmentApprovalService(
     AgentEnrollmentService enrollmentService,
     AuditWriter auditWriter,
     TimeProvider timeProvider,
-    ILogger<EnrollmentApprovalService> logger)
+    ILogger<EnrollmentApprovalService> logger,
+    Security.DeviceScopeAuthorizer deviceScope)
 {
     /// <summary>
     /// How long the internally-minted token stays valid. Only ever used within the
@@ -47,6 +48,7 @@ public sealed class EnrollmentApprovalService(
     private readonly AuditWriter _auditWriter = auditWriter;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<EnrollmentApprovalService> _logger = logger;
+    private readonly Security.DeviceScopeAuthorizer _deviceScope = deviceScope;
 
     /// <summary>
     /// Approves a pending machine into the approving administrator's organization.
@@ -71,6 +73,12 @@ public sealed class EnrollmentApprovalService(
         if (pending.Status != PendingEnrollmentStatus.Pending)
         {
             return ApprovalResult.Gone($"The enrollment request has already been {pending.Status.ToString().ToLowerInvariant()}.");
+        }
+
+        if (pending.Kind == PendingEnrollmentKind.ReEnrollment)
+        {
+            return await ApproveReEnrollmentAsync(
+                requestId, pending, organizationId, approverUserId, approverDisplay, cancellationToken);
         }
 
         // Single-use, short-lived, and scoped to the approver's organization. It is a
@@ -129,6 +137,92 @@ public sealed class EnrollmentApprovalService(
         return ApprovalResult.Ok(pending);
     }
 
+    /// <summary>
+    /// Approves handing an ACTIVE device's identity to the machine asking for it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// No token is minted here, which is the structural difference from a plain
+    /// approval: the re-enrolling agent already holds a valid enrollment token and
+    /// is retrying it every few minutes. Approval only flips the record; the
+    /// agent's own next retry passes the gate, consumes its token and completes
+    /// through the one enrollment path.
+    /// </para>
+    /// <para>
+    /// Carries two checks a plain approval does not. The record's organization
+    /// must be the approver's — re-enrollment records are born with the token's
+    /// organization, unlike plain requests which take the approver's — and the
+    /// matched device must be inside the approver's device scope. The
+    /// <c>device.enroll</c> permission alone admits unknown machines; it must not
+    /// also hand over devices its holder is not scoped to act on, because this
+    /// approval revokes a working credential on a specific, existing device.
+    /// </para>
+    /// </remarks>
+    private async Task<ApprovalResult> ApproveReEnrollmentAsync(
+        string requestId,
+        PendingEnrollment pending,
+        Guid organizationId,
+        Guid approverUserId,
+        string approverDisplay,
+        CancellationToken cancellationToken)
+    {
+        // Another tenant's request reads as nonexistent, exactly as its absence
+        // from this administrator's list promises.
+        if (pending.OrganizationId != organizationId || pending.ExistingDeviceId is null)
+        {
+            return ApprovalResult.Gone("The enrollment request has expired or does not exist.");
+        }
+
+        if (!await _deviceScope.CanActOnDeviceAsync(
+                approverUserId, organizationId, pending.ExistingDeviceId.Value, cancellationToken))
+        {
+            return ApprovalResult.Forbidden(
+                "Approving a re-enrollment requires device scope over the matched device.");
+        }
+
+        var decided = await _pendingStore.DecideAsync(
+            requestId,
+            PendingEnrollmentStatus.Approved,
+            pending.OrganizationId,
+            tokenSecret: null,
+            approverDisplay,
+            cancellationToken);
+
+        if (decided is null)
+        {
+            return ApprovalResult.Gone("The enrollment request was decided by someone else first.");
+        }
+
+        _auditWriter.Stage(
+            organizationId,
+            AuditActorType.PlatformUser,
+            approverUserId,
+            approverDisplay,
+            action: "enrollment.approved",
+            AuditResult.Success,
+            audit => audit
+                .OnTarget("enrollment_request", requestId, pending.Hostname)
+                .OnDevice(pending.ExistingDeviceId.Value, pending.ExistingDeviceHostname ?? pending.Hostname)
+                .WithStateChange(null, System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    kind = "re-enrollment",
+                    hostname = pending.Hostname,
+                    machineIdentifier = pending.MachineIdentifier,
+                    agentVersion = pending.AgentVersion,
+                    operatingSystem = pending.OperatingSystem,
+                    existingDeviceId = pending.ExistingDeviceId,
+                    existingDeviceHostname = pending.ExistingDeviceHostname,
+                })));
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        _logger.LogInformation(
+            "Re-enrollment of device {DeviceId} ({Hostname}) approved by {Approver}.",
+            pending.ExistingDeviceId, pending.ExistingDeviceHostname, approverDisplay);
+
+        return ApprovalResult.Ok(decided);
+    }
+
     /// <summary>Refuses a pending machine. No credential is ever issued for it.</summary>
     public async Task<ApprovalResult> RejectAsync(
         string requestId,
@@ -148,6 +242,16 @@ public sealed class EnrollmentApprovalService(
             return ApprovalResult.Gone($"The enrollment request has already been {pending.Status.ToString().ToLowerInvariant()}.");
         }
 
+        // Rejecting a re-enrollment is tenant-bound like approving one; no device
+        // scope check, because refusing a handover takes nothing from anyone.
+        // The decided record then serves its cooling-off: the still-knocking agent
+        // is refused without re-pending until the rejection expires.
+        if (pending.Kind == PendingEnrollmentKind.ReEnrollment
+            && pending.OrganizationId != organizationId)
+        {
+            return ApprovalResult.Gone("The enrollment request has expired or does not exist.");
+        }
+
         var decided = await _pendingStore.DecideAsync(
             requestId, PendingEnrollmentStatus.Rejected, organizationId, tokenSecret: null, approverDisplay, cancellationToken);
 
@@ -163,27 +267,54 @@ public sealed class EnrollmentApprovalService(
             approverDisplay,
             action: "enrollment.rejected",
             AuditResult.Success,
-            audit => audit
-                .OnTarget("enrollment_request", requestId, pending.Hostname));
+            audit =>
+            {
+                audit.OnTarget("enrollment_request", requestId, pending.Hostname);
+
+                if (pending is { Kind: PendingEnrollmentKind.ReEnrollment, ExistingDeviceId: { } deviceId })
+                {
+                    audit
+                        .OnDevice(deviceId, pending.ExistingDeviceHostname ?? pending.Hostname)
+                        .WithStateChange(null, System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            kind = "re-enrollment",
+                            hostname = pending.Hostname,
+                            machineIdentifier = pending.MachineIdentifier,
+                            existingDeviceId = deviceId,
+                            existingDeviceHostname = pending.ExistingDeviceHostname,
+                        }));
+                }
+            });
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation(
             "Enrollment request for {Hostname} rejected by {Approver}.", pending.Hostname, approverDisplay);
 
-        return ApprovalResult.Ok(pending);
+        return ApprovalResult.Ok(decided);
     }
 }
 
 /// <summary>Outcome of an approve/reject attempt.</summary>
-public sealed record ApprovalResult(bool Success, string? FailureReason, PendingEnrollment? Request)
+public sealed record ApprovalResult(
+    bool Success, string? FailureReason, PendingEnrollment? Request, bool IsForbidden = false)
 {
     public static ApprovalResult Ok(PendingEnrollment request) => new(true, null, request);
 
     /// <summary>
     /// Expired, already decided, or lost a race. Deliberately one shape: an
     /// administrator does not need these distinguished, and collapsing them keeps
-    /// double-approval from ever reading as partial success.
+    /// double-approval from ever reading as partial success. Cross-organization
+    /// requests collapse into it too, so a request id cannot be probed across
+    /// tenants.
     /// </summary>
     public static ApprovalResult Gone(string reason) => new(false, reason, null);
+
+    /// <summary>
+    /// The caller is authenticated and the request exists in their organization,
+    /// but they lack device scope over the matched device. Distinguished from
+    /// <see cref="Gone"/> because the administrator CAN see the row and needs to
+    /// know the refusal is about their scope, not about staleness.
+    /// </summary>
+    public static ApprovalResult Forbidden(string reason) => new(false, reason, null, IsForbidden: true);
 }

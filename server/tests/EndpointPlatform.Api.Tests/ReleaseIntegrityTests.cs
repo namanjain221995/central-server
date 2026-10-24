@@ -45,8 +45,19 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
     private static Uri Release(Guid id, string action) => new($"/admin/v1/agent-releases/{id}/{action}", UriKind.Relative);
     private static Uri UpdateAgent(Guid deviceId) => new($"/admin/v1/devices/{deviceId}/actions/update-agent", UriKind.Relative);
 
-    private async Task<HttpClient> AdminAsync() =>
-        _fixture.CreateClientFor(await _fixture.SignInAsync(AdminApiPostgresFixture.ItAdminEmail));
+    /// <summary>
+    /// A fresh deploy-capable administrator per test: publish, replace and
+    /// update-agent are step-up gated behind a shared per-user rate limit, so a
+    /// fixture account reused across tests would exhaust the window. Tests that
+    /// assert the audit actor destructure the tuple for the minted email.
+    /// </summary>
+    private Task<(HttpClient Client, string Email)> AdminWithEmailAsync() =>
+        _fixture.MintDeployAdminAsync("integrity");
+
+    private async Task<HttpClient> AdminAsync() => (await AdminWithEmailAsync()).Client;
+
+    private static Task<HttpResponseMessage> PublishAsync(HttpClient client, Guid id) =>
+        client.PostAsync(Release(id, "publish"), ReleaseStepUpTestSupport.PublishBody());
 
     private static string Seed(string tag) => $"{tag}-{Guid.CreateVersion7():N}";
 
@@ -149,7 +160,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
 
         var id = await IdOf(await client.PostAsync(Releases, Form(msi, "6.1.0")));
 
-        (await client.PostAsync(Release(id, "publish"), null)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await PublishAsync(client, id)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
         (await RowAsync(id)).Status.ShouldBe(AgentReleaseStatus.Published);
     }
 
@@ -199,14 +210,15 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
     [Fact]
     public async Task A_refused_registration_is_audited_with_its_category()
     {
-        using var client = await AdminAsync();
+        var (client, email) = await AdminWithEmailAsync();
+        using var _1 = client;
         var package = TestArtifacts.UnsignedMsi(Seed("6.5.0"), "6.5.0");
 
         (await client.PostAsync(Releases, Form(package, "6.5.1"))).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
 
         var refusals = await RefusalsAsync("agent_release.created", "windows/x64 6.5.1");
         var entry = refusals.ShouldHaveSingleItem();
-        entry.ActorDisplay.ShouldBe(AdminApiPostgresFixture.ItAdminEmail);
+        entry.ActorDisplay.ShouldBe(email);
         entry.FailureReason.ShouldStartWith("ProductVersionMismatch:");
         entry.FailureReason.ShouldContain("6.5.0");
     }
@@ -256,7 +268,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
             Path.Combine(ContentDirectory, row.Sha256 + ".bin"),
             TestArtifacts.UnsignedMsi(Seed("6.8.1"), "6.8.1"));
 
-        var response = await client.PostAsync(Release(id, "publish"), null);
+        var response = await PublishAsync(client, id);
 
         response.StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
         (await RowAsync(id)).Status.ShouldBe(AgentReleaseStatus.Draft);
@@ -272,7 +284,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
         using var client = await AdminAsync();
         var id = await SeedHistoricalAsync("6.9.1", TestArtifacts.UnsignedMsi(Seed("6.9.0"), "6.9.0"), AgentReleaseStatus.Draft);
 
-        var response = await client.PostAsync(Release(id, "publish"), null);
+        var response = await PublishAsync(client, id);
 
         response.StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
         var body = await response.Content.ReadAsStringAsync();
@@ -315,7 +327,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
         var published = await SeedHistoricalAsync("6.11.0", package, AgentReleaseStatus.Published);
         var draft = await SeedHistoricalAsync("6.11.1", package, AgentReleaseStatus.Draft);
 
-        var response = await client.PostAsync(Release(draft, "publish"), null);
+        var response = await PublishAsync(client, draft);
 
         response.StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
         var body = await response.Content.ReadAsStringAsync();
@@ -342,7 +354,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
         var mislabelled = await SeedHistoricalAsync("6.13.9", package, AgentReleaseStatus.Revoked);
         var draft = await SeedHistoricalAsync("6.13.0", package, AgentReleaseStatus.Draft);
 
-        var response = await client.PostAsync(Release(draft, "publish"), null);
+        var response = await PublishAsync(client, draft);
 
         response.StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
         var body = await response.Content.ReadAsStringAsync();
@@ -389,7 +401,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
         (await download.Content.ReadAsByteArrayAsync()).ShouldBe(package);
 
         var deviceId = await SeedDeviceAsync("1.0.0");
-        (await client.PostAsJsonAsync(UpdateAgent(deviceId), new { releaseId = id }))
+        (await client.PostAsync(UpdateAgent(deviceId), ReleaseStepUpTestSupport.UpdateAgentBody(id)))
             .StatusCode.ShouldBe(HttpStatusCode.Accepted, "a published release is still a fleet target");
     }
 
@@ -406,7 +418,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
         var published = await SeedHistoricalAsync("6.51.0", package, AgentReleaseStatus.Published);
         var revoked = await SeedHistoricalAsync("6.51.1", package, AgentReleaseStatus.Revoked);
 
-        (await client.PostAsync(Release(revoked, "publish"), null))
+        (await PublishAsync(client, revoked))
             .StatusCode.ShouldBe(HttpStatusCode.Conflict, "revoked is terminal; the gate is never even consulted");
         (await client.GetAsync(Release(revoked, "download"))).StatusCode.ShouldBe(HttpStatusCode.NotFound);
 
@@ -441,11 +453,12 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
     [Fact]
     public async Task A_refused_publish_leaves_the_draft_a_draft_and_records_the_refusal()
     {
-        using var client = await AdminAsync();
+        var (client, email) = await AdminWithEmailAsync();
+        using var _1 = client;
         var id = await SeedHistoricalAsync("6.61.1", TestArtifacts.UnsignedMsi(Seed("6.61.0"), "6.61.0"), AgentReleaseStatus.Draft);
         var before = await RowAsync(id);
 
-        (await client.PostAsync(Release(id, "publish"), null)).StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
+        (await PublishAsync(client, id)).StatusCode.ShouldBe(HttpStatusCode.UnprocessableEntity);
 
         var after = await RowAsync(id);
         after.Status.ShouldBe(AgentReleaseStatus.Draft);
@@ -455,7 +468,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
 
         var entry = (await RefusalsAsync("agent_release.published", "windows/x64 6.61.1")).ShouldHaveSingleItem();
         entry.TargetId.ShouldBe(id.ToString());
-        entry.ActorDisplay.ShouldBe(AdminApiPostgresFixture.ItAdminEmail);
+        entry.ActorDisplay.ShouldBe(email);
         entry.FailureReason.ShouldStartWith("ProductVersionMismatch:");
         entry.FailureReason.ShouldNotContain("0x");
         entry.FailureReason.ShouldNotContain(".bin");
@@ -473,7 +486,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
         using var client = await AdminAsync();
         var id = await IdOf(await client.PostAsync(Releases, Form(TestArtifacts.UnsignedMsi(Seed("6.70.0"), "6.70.0"), "6.70.0")));
 
-        (await client.PostAsync(Release(id, "publish"), null)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await PublishAsync(client, id)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
 
         var row = await RowAsync(id);
         row.Status.ShouldBe(AgentReleaseStatus.Published);
@@ -488,7 +501,9 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
         var id = await IdOf(await client.PostAsync(Releases, Form(TestArtifacts.UnsignedMsi(Seed("6.71.0"), "6.71.0"), "6.71.0")));
         var before = await RowAsync(id);
 
-        var response = await client.PutAsync(Release(id, "artifact"), Form(TestArtifacts.UnsignedMsi(Seed("6.71.9"), "6.71.9"), "6.71.0"));
+        var response = await client.PutAsync(
+            Release(id, "artifact"),
+            Form(TestArtifacts.UnsignedMsi(Seed("6.71.9"), "6.71.9"), "6.71.0").WithStepUp());
 
         response.StatusCode.ShouldBe(HttpStatusCode.Conflict);
         (await response.Content.ReadAsStringAsync()).ShouldContain("MSI ProductVersion: 6.71.9");
@@ -527,7 +542,7 @@ public sealed class ReleaseIntegrityTests(AdminApiPostgresFixture fixture)
 
         // Its own version: registered, and published under Internal.
         var id = await IdOf(await client.PostAsync(Releases, Form(bytes, version)));
-        (await client.PostAsync(Release(id, "publish"), null)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        (await PublishAsync(client, id)).StatusCode.ShouldBe(HttpStatusCode.NoContent);
         var row = await RowAsync(id);
         row.Status.ShouldBe(AgentReleaseStatus.Published);
         row.Version.ShouldBe(version);

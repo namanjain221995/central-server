@@ -32,12 +32,15 @@ import {
   describeSelection,
   eligibleDevices,
   ineligibilityReason,
+  isOperatorRefusal,
   publishedReleases,
+  refusalText,
   signingLabel,
   summariseResults,
   toCandidate,
   type UpdateOutcome,
 } from './agentUpdateView'
+import { ReleaseStepUpDialog } from './ReleaseStepUpDialog'
 
 const PAGE_SIZE = 25
 
@@ -147,38 +150,55 @@ export function DevicesPage() {
   }
 
   /**
-   * Queues the update one device at a time.
+   * Queues the update one device at a time, with the operator's step-up riding
+   * on every call.
    *
    * Sequential on purpose: each call is authorized, version-checked and audited
    * independently by the server, and a refusal on one device must not stop the
    * rest or be attributed to another. Every result is kept so the report can
    * name what was refused.
+   *
+   * The exception is a refusal about the operator rather than a device -- the
+   * step-up gate (403) or the rate limit (429). Replaying one of those down the
+   * list would refuse every remaining device for the same reason, and each
+   * wrong-password attempt counts towards the operator's own sign-in lockout.
+   * Before anything has been queued it is rethrown, so the dialog stays open
+   * with the reason inline and the retry covers the whole selection; mid-run it
+   * stops the loop, and the summary names exactly how far the run got.
    */
-  async function runUpdate() {
+  async function runUpdate(stepUp: { currentPassword: string; justification: string }) {
     if (!target) return
 
-    setConfirming(false)
     setUpdating(true)
     setOutcome(null)
 
     const results: UpdateOutcome[] = []
 
-    for (const candidate of eligibleDevices(selectedCandidates, target)) {
-      try {
-        await updateDeviceAgent(candidate.deviceId, target.id)
-        results.push({ hostname: candidate.hostname, error: null })
-      } catch (e) {
-        results.push({
-          hostname: candidate.hostname,
-          error: e instanceof Error ? e.message : 'Refused',
-        })
+    try {
+      for (const candidate of eligibleDevices(selectedCandidates, target)) {
+        try {
+          await updateDeviceAgent(
+            candidate.deviceId, target.id, stepUp.currentPassword, stepUp.justification)
+          results.push({ hostname: candidate.hostname, error: null })
+        } catch (e) {
+          results.push({ hostname: candidate.hostname, error: refusalText(e) })
+
+          if (isOperatorRefusal(e)) {
+            // Nothing queued yet: the whole selection is safe to retry once the
+            // password (or the wait) is fixed, so the dialog keeps the attempt.
+            if (!results.some((r) => r.error === null)) throw e
+            break
+          }
+        }
       }
+    } finally {
+      setUpdating(false)
     }
 
+    setConfirming(false)
     setOutcome(summariseResults(results))
     setRefusals(results.filter((r) => r.error !== null))
     setSelected([])
-    setUpdating(false)
     void load()
   }
 
@@ -515,18 +535,20 @@ export function DevicesPage() {
       </div>
 
       {confirming && target && (
-        <ConfirmDialog
+        <ReleaseStepUpDialog
           title="Update agent on selected devices"
           confirmLabel="Queue update"
+          busyLabel="Queueing…"
+          fallbackError="The update could not be queued."
           onCancel={() => setConfirming(false)}
-          onConfirm={() => void runUpdate()}
+          onConfirm={runUpdate}
         >
           {describeSelection(selectedCandidates, target)} Each device downloads the installer and
           runs it as SYSTEM, then restarts its own service.{' '}
           {eligibleDevices(selectedCandidates, target)
             .map((d) => d.hostname)
             .join(', ')}
-        </ConfirmDialog>
+        </ReleaseStepUpDialog>
       )}
 
       {lockTarget && (

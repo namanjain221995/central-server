@@ -239,7 +239,13 @@ is nothing to rotate out of source control.
   authorization and audit. `Public` additionally requires an Authenticode
   signature whose subject matches
   `ENDPOINTPLATFORM_AgentReleases__ExpectedSignerSubject`, and the API refuses
-  to start in that mode without one configured.
+  to start in that mode without one configured. Both variables are now actually
+  wired through the deployment: `deploy/docker/docker-compose.yml` passes
+  `ExpectedSignerSubject` from `AGENT_RELEASE_EXPECTED_SIGNER`, and
+  `generate-env.sh` writes that key (empty, with instructions) into
+  `secrets.env` — previously only the trust mode had a wire, so flipping to
+  `Public` crash-looped admin-api at startup validation with no way to supply
+  the publisher.
 - An Internal build is trusted by *this platform, for these machines* — not by
   Windows. SmartScreen, AppLocker and WDAC will treat the MSI as an unsigned
   installer, because it is one. That, not publishability, is what a code-signing

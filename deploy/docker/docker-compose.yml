@@ -129,6 +129,12 @@ services:
       ENDPOINTPLATFORM_Cors__AllowedOrigins__1: ${LAN_ORIGIN:-${PUBLIC_ORIGIN}}
       ENDPOINTPLATFORM_PackageStorage__Directory: /var/lib/endpoint-platform/packages
       ENDPOINTPLATFORM_AgentReleases__TrustMode: ${AGENT_RELEASE_TRUST_MODE:-Internal}
+      # Public mode's publisher pin. Ignored under Internal (the default) and
+      # empty is fine there — but the wire must exist: the API validates the
+      # pair at startup, so flipping AGENT_RELEASE_TRUST_MODE to Public with no
+      # way to pass the subject through compose would crash-loop admin-api at
+      # options validation rather than publish anything.
+      ENDPOINTPLATFORM_AgentReleases__ExpectedSignerSubject: ${AGENT_RELEASE_EXPECTED_SIGNER:-}
       ENDPOINTPLATFORM_RecoveryEscrow__Key: ${RECOVERY_ESCROW_KEY:?}
       ENDPOINTPLATFORM_RecoveryEscrow__KeyVersion: ${RECOVERY_ESCROW_KEY_VERSION:-1}
       # Automatic BitLocker escrow sealing pair. Both empty = automatic escrow
