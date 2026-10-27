@@ -258,13 +258,19 @@ public sealed record AgentApiResult<T>(T? Value, AgentApiStatus Status)
     public static AgentApiResult<T> Unauthorized() => new(default, AgentApiStatus.Unauthorized);
 
     public static AgentApiResult<T> Transient() => new(default, AgentApiStatus.TransientFailure);
+
+    public static AgentApiResult<T> NotFound() => new(default, AgentApiStatus.NotFound);
 }
 
 public enum AgentApiStatus
 {
     Success = 0,
 
-    /// <summary>4xx other than 401: the server understood and said no. Retrying the same request is pointless.</summary>
+    /// <summary>
+    /// 4xx other than 401 (and other than 404 on a call that distinguishes
+    /// <see cref="NotFound"/>): the server understood and said no. Retrying the same
+    /// request is pointless.
+    /// </summary>
     Rejected = 1,
 
     /// <summary>401: the credential is not accepted. Requires re-enrollment, not retry.</summary>
@@ -273,4 +279,12 @@ public enum AgentApiStatus
     /// <summary>Network failure, timeout or 5xx: retry with backoff.</summary>
     TransientFailure = 3,
 
+    /// <summary>
+    /// 404, reported ONLY by calls that need to tell it apart from other refusals --
+    /// today the task-result post, where it means the server no longer has this task
+    /// for this device (unknown, or cancelled before delivery), so a spooled result
+    /// for it is dropped rather than retried. Every other call keeps reporting a 404
+    /// as <see cref="Rejected"/>.
+    /// </summary>
+    NotFound = 4,
 }

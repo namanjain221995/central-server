@@ -843,8 +843,10 @@ public static class AgentEndpoints
         AgentAuthenticationService authenticationService,
         Infrastructure.Persistence.EndpointPlatformDbContext dbContext,
         Infrastructure.Policies.PolicyService policyService,
+        Infrastructure.Tasks.DeviceTaskService taskService,
         IOptions<AgentServerOptions> agentServerOptions,
         TimeProvider timeProvider,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (protocolVersion != AgentProtocol.Version)
@@ -894,6 +896,32 @@ public static class AgentEndpoints
         // one row per device per minute. Enrollment, task execution and mutations
         // are the audited operations.
         await dbContext.SaveChangesAsync(cancellationToken);
+
+        // If the device holds driver installs whose outcome only a scan can tell --
+        // a restart they were waiting for has happened, an install went silent, or
+        // an install is still unverified -- and nothing has scanned since, ask it now
+        // what Windows Update offers, so those installs get their final answer
+        // without anyone clicking. Level-triggered (every heartbeat re-asks, bounded
+        // to one scan per half hour per open question, and given up after a week)
+        // and one range-limited query on an ordinary heartbeat; queued before the
+        // pending check below so this tick's claim picks it up.
+        //
+        // Never allowed to fail the heartbeat: the heartbeat (last seen, boot time)
+        // is already saved, and a 500 here would only make the agent retry a
+        // heartbeat that succeeded. Being level-triggered, the next heartbeat simply
+        // asks again.
+        try
+        {
+            await taskService.QueueDriverFollowUpScanIfNeededAsync(device.OrganizationId, device.Id, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            // Nothing the probe half-staged may ride along on a later save.
+            dbContext.ChangeTracker.Clear();
+            loggerFactory.CreateLogger("EndpointPlatform.AgentApi.Heartbeat").LogWarning(ex,
+                "Driver-update follow-up probe failed for device {DeviceId}; the heartbeat is unaffected and the next one retries.",
+                device.Id);
+        }
 
         var tasksPending = await dbContext.DeviceTasks
             .AnyAsync(t => t.DeviceId == device.Id

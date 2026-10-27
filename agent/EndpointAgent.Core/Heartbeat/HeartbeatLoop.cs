@@ -173,6 +173,14 @@ public sealed class HeartbeatLoop(
 
                     LogClockSkew(request.AgentTimestamp, response.ServerTime);
 
+                    // Results that could not be delivered earlier, on EVERY successful
+                    // tick and BEFORE any new work is claimed. This cannot live behind
+                    // TasksPending: the server counts only Queued tasks there, so once
+                    // a task is Delivered and its result lost, a quiet device would
+                    // never enter the task path again and the result would never land.
+                    // Free when nothing is spooled (an in-memory flag, no I/O).
+                    await FlushSpooledResultsAsync(credential, stoppingToken);
+
                     if (response.InventoryRequested)
                     {
                         await UploadInventoryAsync(credential, stoppingToken);
@@ -274,6 +282,27 @@ public sealed class HeartbeatLoop(
         catch (Exception ex)
         {
             _logger.LogError(ex, "Task dispatch failed; queued tasks will be retried on the next heartbeat.");
+        }
+    }
+
+    /// <summary>
+    /// Re-posts spooled task results. Isolated like the other per-tick activities: a
+    /// spool failure must never stop heartbeats, and whatever is still spooled is
+    /// simply tried again on the next tick.
+    /// </summary>
+    private async Task FlushSpooledResultsAsync(DeviceCredential credential, CancellationToken stoppingToken)
+    {
+        try
+        {
+            await _taskDispatcher.FlushSpooledResultsAsync(credential, stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Delivering spooled task results failed; they will be retried on the next heartbeat.");
         }
     }
 

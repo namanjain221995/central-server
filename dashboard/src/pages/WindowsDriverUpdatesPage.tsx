@@ -11,8 +11,11 @@ import {
   restartDevice,
   scanAllDriverUpdates,
   scanDriverUpdates,
+  suppressDriverUpdate,
+  unsuppressDriverUpdate,
   type DeviceDriverUpdates,
   type DriverUpdateDeviceRow,
+  type DriverUpdateItem,
   type DriverUpdateOverview,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -21,10 +24,30 @@ import { Icon } from '../components/Icon'
 import { TaskProgress } from '../components/TaskProgress'
 import { useTaskTracker } from '../components/useTaskTracker'
 import {
+  activeInstallMessage,
+  chipBadgeClass,
+  detailNeedsFollowUp,
+  followUpHidden,
+  followUpPolled,
+  followUpSignature,
+  followUpTimerMs,
+  followUpVisible,
   formatUpdateSize,
+  hiddenUpdatesLabel,
   installRebootRequired,
+  needsRestartText,
   nonPreviewUpdateIds,
-  shouldAutoRescanAfterInstall,
+  overviewCounts,
+  pendingRebootCount,
+  RE_OFFERED_EXPLANATION,
+  recentInstallNote,
+  reOfferedSelection,
+  reOfferedWarning,
+  settlingSelectionNotes,
+  showRebootBanner,
+  startFollowUp,
+  statusChip,
+  type FollowUpStop,
 } from './driverUpdatesView'
 
 /**
@@ -38,8 +61,16 @@ import {
  * server accepted it. When an install leaves a reboot pending it offers a
  * restart there and then, and a route to Restart Management for a department.
  *
- * Reading the page needs `driver.view`; scanning and installing need
- * `driver.manage`. The gates hide controls; the server enforces each one.
+ * Every update carries the server's own verdict (Pending / Installing… /
+ * Verifying… / Needs restart to finish / Re-offered by Windows / Failed: why),
+ * built from install records the server keeps — so a reload, a closed tab or
+ * an old agent never leaves a dead "installing". The server also queues every
+ * follow-up rescan itself; this page only reads and words what it reports.
+ * Updates Windows keeps re-offering can be hidden per device (and unhidden).
+ *
+ * Reading the page needs `driver.view`; scanning, installing, hiding and
+ * unhiding need `driver.manage`. The gates hide controls; the server enforces
+ * each one.
  */
 export function WindowsDriverUpdatesPage() {
   const { hasPermission } = useAuth()
@@ -63,15 +94,19 @@ export function WindowsDriverUpdatesPage() {
   }, [])
 
   // Re-read on a short cadence while a device is expanded (an install may be in
-  // flight below) or any device is reboot-pending, so counts and states move
-  // without a manual refresh; slower when the fleet is quiet. Per-task progress
-  // is the 3s useTaskTracker inside each expanded panel, not this poll.
-  const lively = expanded !== null || (overview?.devices.some((d) => d.rebootPending) ?? false)
+  // flight below); slower otherwise. A pending reboot does NOT speed it up: a
+  // restart can be hours away and the server resolves the verdict on its own,
+  // so a 10s poll there would run for as long as the tab stays open. Nothing is
+  // fetched while the tab is hidden. Per-task progress is the 3s useTaskTracker
+  // inside each expanded panel, not this poll.
+  const lively = expanded !== null
   useEffect(() => {
     if (!canView) return
     void load()
     const interval = lively ? 10_000 : 30_000
-    const timer = setInterval(() => void load(), interval)
+    const timer = setInterval(() => {
+      if (!document.hidden) void load()
+    }, interval)
     return () => clearInterval(timer)
   }, [canView, lively, load])
 
@@ -125,6 +160,7 @@ export function WindowsDriverUpdatesPage() {
   }
 
   const summary = overview?.summary
+  const counts = overviewCounts(overview)
   const devices = overview?.devices ?? []
 
   return (
@@ -162,13 +198,24 @@ export function WindowsDriverUpdatesPage() {
           <div className="stat-label">Devices with pending</div>
           <div className="stat-value">{summary ? summary.devicesWithPending : '—'}</div>
         </div>
+        {/* Actionable vs cannot-complete: the number the operator steers by
+            excludes updates the platform cannot finish (re-offered or hidden). */}
         <div className="card stat-card">
-          <div className="stat-label">Pending updates</div>
-          <div className="stat-value">{summary ? summary.totalPending : '—'}</div>
+          <div className="stat-label">Actionable updates</div>
+          <div className="stat-value">{counts ? counts.actionable : '—'}</div>
+          <div className="stat-note">Pending updates the platform can install</div>
+        </div>
+        <div className={`card stat-card${counts && counts.cannotComplete > 0 ? ' tone-warn' : ''}`}>
+          <div className="stat-label">Cannot complete</div>
+          <div className="stat-value">{counts ? counts.cannotComplete : '—'}</div>
+          <div className="stat-note">Hidden or re-offered by Windows</div>
         </div>
         <div className={`card stat-card${summary && summary.devicesRebootPending > 0 ? ' tone-warn' : ''}`}>
           <div className="stat-label">Reboot pending</div>
           <div className="stat-value">{summary ? summary.devicesRebootPending : '—'}</div>
+          {counts && counts.needsRestart > 0 && (
+            <div className="stat-note">{needsRestartText(counts.needsRestart)}</div>
+          )}
         </div>
       </div>
 
@@ -219,8 +266,9 @@ export function WindowsDriverUpdatesPage() {
                   <th style={{ width: 32 }} aria-label="Expand" />
                   <th>Device</th>
                   <th>Status</th>
-                  <th>Pending</th>
+                  <th>Actionable</th>
                   <th>Preview</th>
+                  <th>Cannot complete</th>
                   <th>Last scan</th>
                   <th>Reboot pending</th>
                 </tr>
@@ -315,6 +363,11 @@ function DeviceRows({
         <td>
           <span className="badge plain neutral">{device.previewCount}</span>
         </td>
+        <td>
+          <span className={`badge plain ${(device.cannotCompleteCount ?? 0) > 0 ? 'warn' : 'neutral'}`}>
+            {device.cannotCompleteCount ?? 0}
+          </span>
+        </td>
         <td className="muted">{device.lastScanAt ? new Date(device.lastScanAt).toLocaleString() : 'never'}</td>
         <td>
           {device.rebootPending ? (
@@ -322,11 +375,14 @@ function DeviceRows({
           ) : (
             <span className="badge neutral">No</span>
           )}
+          {(device.needsRestartCount ?? 0) > 0 && (
+            <div className="row-sub">{needsRestartText(device.needsRestartCount ?? 0)}</div>
+          )}
         </td>
       </tr>
       {open && (
         <tr>
-          <td colSpan={7} style={{ background: 'transparent' }}>
+          <td colSpan={8} style={{ background: 'transparent' }}>
             <DeviceDriverUpdatesPanel device={device} canManage={canManage} onChanged={onChanged} />
           </td>
         </tr>
@@ -338,10 +394,108 @@ function DeviceRows({
 // ------------------------------------------------------------- device panel
 
 /**
- * One device's pending driver updates: the selectable list, the scan/install
- * actions, live task progress, and the reboot handoff. Loads its own detail and
- * refreshes it whenever a tracked task settles, so the list and the counts above
- * never disagree with what the device has actually done.
+ * Re-reads one device's detail while the server still has work in flight for it
+ * ({@link detailNeedsFollowUp}), on the schedule driverUpdatesView's FollowUpState describes:
+ * 10s, backing off to a 60s cap while nothing changes, paused while the page is
+ * hidden (and read straight away when it comes back), giving up after 15 minutes
+ * of no change. `onStopped` fires once when polling ends on its own -- the detail
+ * settled, or it gave up -- so the caller can refresh what sits above it.
+ * Changing `restartKey` starts the schedule afresh (a manual Refresh).
+ *
+ * The timers live here; every scheduling decision is the pure helpers', which
+ * is where they are tested.
+ */
+function useFollowUpPolling(
+  following: boolean,
+  restartKey: number,
+  details: DeviceDriverUpdates | null,
+  poll: () => Promise<DeviceDriverUpdates | null>,
+  onStopped: (reason: FollowUpStop) => void,
+) {
+  const detailsRef = useRef(details)
+  detailsRef.current = details
+  const pollRef = useRef(poll)
+  pollRef.current = poll
+  const onStoppedRef = useRef(onStopped)
+  onStoppedRef.current = onStopped
+
+  useEffect(() => {
+    if (!following) return
+
+    let state = startFollowUp(Date.now(), document.hidden)
+    let lastSignature = followUpSignature(detailsRef.current)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let cancelled = false
+    let inFlight = false
+
+    const schedule = () => {
+      clearTimeout(timer)
+      timer = undefined
+      const ms = followUpTimerMs(state, Date.now())
+      if (ms !== null) timer = setTimeout(() => void tick(), ms)
+    }
+
+    const tick = async () => {
+      if (cancelled || inFlight || state.stopped) return
+      inFlight = true
+      let fresh: DeviceDriverUpdates | null = null
+      try {
+        fresh = await pollRef.current()
+      } finally {
+        inFlight = false
+      }
+      const signature = fresh ? followUpSignature(fresh) : lastSignature
+      state = followUpPolled(state, {
+        changed: signature !== lastSignature,
+        // A failed read settles nothing.
+        needsFollowUp: fresh ? detailNeedsFollowUp(fresh) : true,
+        now: Date.now(),
+      })
+      lastSignature = signature
+      if (state.stopped) {
+        // Even when this very poll tore the effect down (the detail settled and
+        // `following` flipped), the overview row above still needs its refresh.
+        onStoppedRef.current(state.stopped)
+        return
+      }
+      if (!cancelled) schedule()
+    }
+
+    const onVisibility = () => {
+      if (cancelled) return
+      const now = Date.now()
+      if (document.hidden) {
+        state = followUpHidden(state, now)
+        clearTimeout(timer)
+        timer = undefined
+      } else {
+        state = followUpVisible(state, now)
+        // Back in view: read now rather than show a stale list for up to a minute.
+        void tick()
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
+    schedule()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [following, restartKey])
+}
+
+/**
+ * One device's pending driver updates: the selectable list with each update's
+ * install state, the scan/install actions, live task progress, the reboot
+ * handoff, recently confirmed installs, and the updates hidden on this device.
+ *
+ * Loads its own detail and refreshes it whenever a tracked task settles, and
+ * keeps re-reading it while the server still has work in flight for the device
+ * (an install, the verification scan after it) — that is how a rescan the server
+ * queued on its own reaches this list without anyone clicking. A restart still
+ * to happen is not polled for (it can be hours away); the panel's Refresh
+ * button reads the detail on demand.
  */
 function DeviceDriverUpdatesPanel({
   device,
@@ -357,54 +511,48 @@ function DeviceDriverUpdatesPanel({
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [busy, setBusy] = useState(false)
   // Whether the install we queued reported a reboot is now pending, read from
-  // the install task's own resultJson. The device detail's rebootPending is the
-  // durable source; this is the immediate one, before the detail catches up.
+  // the install task's own resultJson. The device detail's rebootPending (and
+  // any "Needs restart to finish" update) is the durable source; this is the
+  // immediate one, before the detail catches up.
   const [installReboot, setInstallReboot] = useState(false)
   const lastInstallTaskId = useRef<string | null>(null)
-  // The install task we have already queued an automatic re-scan for, so an
-  // install success triggers exactly one scan and that scan — which settles
-  // through onRefreshed like any other task — can never cascade into another.
-  const autoRescannedInstallTaskId = useRef<string | null>(null)
-  // track() comes from the hook below, which in turn takes onRefreshed, so the
-  // callback reaches it through a ref to avoid the declaration cycle (the same
-  // shape useTaskTracker itself uses for onRefreshed).
-  const trackRef = useRef<((taskId: string, label: string) => void) | null>(null)
+  // Follow-up polling gave up (15 minutes with no change); cleared by Refresh or
+  // once the detail no longer needs following. `followRun` restarts the schedule.
+  const [followGaveUp, setFollowGaveUp] = useState(false)
+  const [followRun, setFollowRun] = useState(0)
 
-  const load = useCallback(async () => {
+  /** Reads the detail; returns it, or null when the read failed (the error banner says so). */
+  const load = useCallback(async (): Promise<DeviceDriverUpdates | null> => {
     try {
       const d = await getDeviceDriverUpdates(device.deviceId)
       setDetails(d)
       setError(null)
-      // An update that is no longer pending leaves the selection too, so an
-      // install names only updates the device still offers.
+      if (!detailNeedsFollowUp(d)) setFollowGaveUp(false)
+      // An update that is no longer pending (installed, or hidden) leaves the
+      // selection too, so an install names only updates the device still offers.
       const ids = new Set(d.updates.map((u) => u.updateId))
       setSelected((cur) => new Set([...cur].filter((id) => ids.has(id))))
+      return d
     } catch {
       setError('Could not load this device’s driver updates.')
+      return null
     }
   }, [device.deviceId])
 
   const onRefreshed = useCallback(async () => {
     await load()
     await onChanged()
-    // The reboot handoff is driven by the install task's structured result; read
-    // it once the task has settled rather than polling it on every tick.
+    // The immediate reboot hint comes from the install task's structured result,
+    // read once the task has settled rather than on every tick. There is no
+    // browser-side re-scan: the server queues the verification scan itself (and
+    // a newer agent verifies on the device), so the list moves on its own even
+    // if this tab is closed.
     if (!lastInstallTaskId.current) return
     try {
       const tasks = await getDeviceTasks(device.deviceId)
       const t = tasks.find((x) => x.id === lastInstallTaskId.current)
       if (t && t.status === 'Succeeded') {
         setInstallReboot(installRebootRequired(t.resultJson ?? null))
-        // The pending list is rebuilt only by a scan, so a successful install
-        // would otherwise keep showing the just-installed updates as pending
-        // until someone clicks "Scan now". Re-scan once (guarded to fire once
-        // per install) so they drop off on their own; a scan never triggers an
-        // install, so this cannot loop.
-        if (shouldAutoRescanAfterInstall(t, autoRescannedInstallTaskId.current)) {
-          autoRescannedInstallTaskId.current = t.id
-          const { taskId } = await scanDriverUpdates(device.deviceId)
-          trackRef.current?.(taskId, 'Re-scan after install')
-        }
       }
     } catch {
       // The detail's rebootPending still covers this; a failed read is not fatal.
@@ -412,15 +560,36 @@ function DeviceDriverUpdatesPanel({
   }, [load, onChanged, device.deviceId])
 
   const { tracked, track, dismiss } = useTaskTracker(device.deviceId, !device.isOnline, onRefreshed)
-  trackRef.current = track
 
   useEffect(() => {
     void load()
   }, [load])
 
+  // Follow the server's own follow-up work until it settles (or goes quiet for
+  // 15 minutes); see detailNeedsFollowUp and useFollowUpPolling. When it stops
+  // on its own, the overview row above is re-read so its counts catch up.
+  const following = detailNeedsFollowUp(details)
+  useFollowUpPolling(following, followRun, details, load, (reason) => {
+    if (reason === 'gaveUp') setFollowGaveUp(true)
+    void onChanged()
+  })
+
+  async function onRefresh() {
+    setFollowGaveUp(false)
+    setFollowRun((n) => n + 1)
+    await load()
+    await onChanged()
+  }
+
   const updates = details?.updates ?? []
+  const hidden = details?.hidden ?? []
+  const recent = details?.recentInstalls ?? []
+  const activeInstall = details?.activeInstall ?? null
   const allSelected = updates.length > 0 && updates.every((u) => selected.has(u.updateId))
-  const rebootPending = (details?.rebootPending ?? device.rebootPending) || installReboot
+  const rebootPending = showRebootBanner(details, device, installReboot)
+  const restartCount = pendingRebootCount(updates)
+  const installWarning = reOfferedWarning(reOfferedSelection(updates, selected))
+  const settlingNotes = settlingSelectionNotes(updates, selected)
 
   function toggle(updateId: string) {
     setSelected((cur) => {
@@ -471,6 +640,35 @@ function DeviceDriverUpdatesPanel({
     }
   }
 
+  async function onHide(update: DriverUpdateItem, reason: string) {
+    setBusy(true)
+    setError(null)
+    try {
+      await suppressDriverUpdate(device.deviceId, update.updateId, reason)
+      // The reload moves it out of the list (and the selection) into Hidden.
+      await load()
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof ApiError && e.detail ? e.detail : 'Could not hide this update.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onUnhide(updateId: string) {
+    setBusy(true)
+    setError(null)
+    try {
+      await unsuppressDriverUpdate(device.deviceId, updateId)
+      await load()
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof ApiError && e.detail ? e.detail : 'Could not unhide this update.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function onRestart() {
     setBusy(true)
     setError(null)
@@ -503,12 +701,22 @@ function DeviceDriverUpdatesPanel({
         </div>
       )}
 
+      {/* Live progress for tasks queued from this tab. */}
       <TaskProgress tasks={tracked} onDismiss={dismiss} />
+
+      {/* The durable "installing": from the server, so it survives a reload. */}
+      {activeInstall && (
+        <div className="info-banner" role="status">
+          <strong>{activeInstallMessage(activeInstall, device.isOnline)}</strong> Queued{' '}
+          {new Date(activeInstall.queuedAt).toLocaleString()}.
+        </div>
+      )}
 
       {rebootPending && (
         <div className="warn-banner">
           <strong>Reboot pending.</strong> A driver install needs the device to restart before it
           takes effect.
+          {restartCount > 0 && ` ${needsRestartText(restartCount)}.`}
           {canManage && (
             <>
               {' '}
@@ -518,6 +726,25 @@ function DeviceDriverUpdatesPanel({
             </>
           )}{' '}
           Or restart a whole department from <Link to="/restart-management">Restart Management</Link>.
+          {restartCount > 0 &&
+            ' Once the device has restarted and checked in, the platform confirms the install on its own — use Refresh to see the result.'}
+        </div>
+      )}
+
+      {recent.length > 0 && (
+        <div className="notice-banner" role="status">
+          <Icon name="check" size={15} />
+          <div style={{ flex: 1 }}>
+            {recentInstallNote(recent.length)}
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {recent.map((r) => (
+                <li key={r.updateId}>
+                  {r.title}
+                  <span style={{ opacity: 0.8 }}> — confirmed {new Date(r.confirmedAt).toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 
@@ -526,6 +753,14 @@ function DeviceDriverUpdatesPanel({
           Last scan: {details?.lastScanAt ? new Date(details.lastScanAt).toLocaleString() : 'never'}
         </span>
         <span className="spacer" />
+        <button
+          type="button"
+          className="btn-ghost btn-sm"
+          aria-label={`Refresh ${deviceName(device)}’s driver updates`}
+          onClick={() => void onRefresh()}
+        >
+          <Icon name="refresh" size={14} /> Refresh
+        </button>
         {canManage && (
           <>
             <button type="button" className="btn-ghost btn-sm" disabled={busy} onClick={() => void onScan()}>
@@ -545,6 +780,27 @@ function DeviceDriverUpdatesPanel({
           </>
         )}
       </div>
+
+      {/* Warn before installing what Windows already re-offered; not a block —
+          an operator may be retrying deliberately. */}
+      {canManage && installWarning && (
+        <div className="warn-banner" role="alert">
+          <strong>Before you start:</strong> {installWarning}
+        </div>
+      )}
+      {/* Same pattern for a hand-ticked update that is still settling (waiting
+          for a restart, or being verified): auto-select leaves these unticked. */}
+      {canManage && settlingNotes.length > 0 && (
+        <div className="warn-banner" role="alert">
+          <strong>Before you start:</strong> {settlingNotes.join(' ')}
+        </div>
+      )}
+
+      {following && followGaveUp && (
+        <p className="muted" role="status" style={{ fontSize: 12.5, margin: '0 0 12px' }}>
+          Stopped checking automatically after 15 minutes without a change — use Refresh to check again.
+        </p>
+      )}
 
       {!details && <div className="loading">Loading pending updates…</div>}
 
@@ -574,6 +830,7 @@ function DeviceDriverUpdatesPanel({
                   />
                 </th>
                 <th>Driver update</th>
+                <th>Status</th>
                 <th>Class</th>
                 <th>Provider</th>
                 <th>Driver date</th>
@@ -600,6 +857,14 @@ function DeviceDriverUpdatesPanel({
                       </span>
                     )}
                   </td>
+                  <td>
+                    <UpdateStatusCell
+                      update={u}
+                      canManage={canManage}
+                      busy={busy}
+                      onHide={(update, reason) => void onHide(update, reason)}
+                    />
+                  </td>
                   <td>{u.driverClass ?? '—'}</td>
                   <td>{u.driverProvider ?? '—'}</td>
                   <td className="muted">{u.driverVerDate ? new Date(u.driverVerDate).toLocaleDateString() : '—'}</td>
@@ -610,6 +875,121 @@ function DeviceDriverUpdatesPanel({
           </table>
         </div>
       )}
+
+      {/* Hidden per device, platform-side only; collapsed so the list stays the list. */}
+      {hidden.length > 0 && (
+        <details className="evidence" style={{ fontSize: 'inherit', marginTop: 16 }}>
+          <summary className="muted">{hiddenUpdatesLabel(hidden)}</summary>
+          <p className="muted" style={{ fontSize: 12.5, margin: '6px 0 8px' }}>
+            Hidden on this device by the platform, so they no longer count as actionable. The laptop’s
+            own Windows Update settings are unchanged.
+          </p>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Driver update</th>
+                  <th>Reason</th>
+                  <th>Hidden by</th>
+                  <th>Hidden</th>
+                  {canManage && <th aria-label="Actions" />}
+                </tr>
+              </thead>
+              <tbody>
+                {hidden.map((h) => (
+                  <tr key={h.updateId}>
+                    <td>{h.title}</td>
+                    <td>{h.reason ?? '—'}</td>
+                    <td>{h.hiddenBy ?? '—'}</td>
+                    <td className="muted">{new Date(h.hiddenAt).toLocaleString()}</td>
+                    {canManage && (
+                      <td>
+                        <button
+                          type="button"
+                          className="btn-ghost btn-sm"
+                          disabled={busy}
+                          aria-label={`Unhide ${h.title}`}
+                          onClick={() => void onUnhide(h.updateId)}
+                        >
+                          Unhide
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
     </div>
+  )
+}
+
+// --------------------------------------------------------------- status cell
+
+/**
+ * One update's Status cell: the server's verdict as a chip, and the attempt
+ * count once the platform has tried it. A "Re-offered by Windows" chip expands
+ * to the plain-words explanation and, for `driver.manage`, a Hide action with an
+ * optional reason.
+ */
+function UpdateStatusCell({
+  update,
+  canManage,
+  busy,
+  onHide,
+}: {
+  update: DriverUpdateItem
+  canManage: boolean
+  busy: boolean
+  onHide: (update: DriverUpdateItem, reason: string) => void
+}) {
+  const [reason, setReason] = useState('')
+  const chip = statusChip(update)
+  const status = update.installStatus ?? 'none'
+  const attempts = update.attempts ?? 0
+  const badge = (
+    <span className={`badge ${chipBadgeClass(chip.tone)}`} style={{ whiteSpace: 'normal', maxWidth: 320 }}>
+      {chip.label}
+    </span>
+  )
+
+  return (
+    <>
+      {status === 'reOffered' ? (
+        <details className="evidence" style={{ fontSize: 'inherit', marginTop: 0 }}>
+          <summary aria-label={`${chip.label}: why, and what to do`}>{badge}</summary>
+          <div style={{ maxWidth: 460, whiteSpace: 'normal', padding: '6px 0 8px', fontSize: 12.5 }}>
+            <p style={{ margin: '0 0 8px' }}>{RE_OFFERED_EXPLANATION}</p>
+            {canManage && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  aria-label={`Reason for hiding ${update.title} (optional)`}
+                  placeholder="Reason (optional)"
+                  value={reason}
+                  maxLength={200}
+                  disabled={busy}
+                  onChange={(e) => setReason(e.target.value)}
+                  style={{ flex: '1 1 180px', minWidth: 0 }}
+                />
+                <button type="button" className="btn-sm" disabled={busy} onClick={() => onHide(update, reason)}>
+                  Hide this update
+                </button>
+              </div>
+            )}
+          </div>
+        </details>
+      ) : (
+        badge
+      )}
+      {attempts > 0 && status !== 'none' && (
+        <div className="row-sub">
+          Tried {attempts} time{attempts === 1 ? '' : 's'}
+          {update.lastAttemptAt ? ` · last ${new Date(update.lastAttemptAt).toLocaleString()}` : ''}
+        </div>
+      )}
+    </>
   )
 }

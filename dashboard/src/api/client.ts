@@ -2184,13 +2184,27 @@ export function getUpdateOverview(): Promise<UpdateOverview> {
 // useTaskTracker -- it never claims an install is done merely because the
 // server accepted the request.
 
+// The "driver-update truth" read model: the server remembers every install
+// attempt per update (records survive the scan that rebuilds the pending list),
+// derives a per-update installStatus from them, and owns every follow-up rescan.
+// The new fields below are ADDITIVE and typed optional so a page served against
+// a server from before that change still renders (absent = "none" / empty).
+
 export interface DriverUpdateOverviewSummary {
   /** Active devices whose last scan found at least one pending driver update. */
   devicesWithPending: number
-  /** Total pending driver updates across those devices. */
+  /**
+   * Total pending driver updates across those devices. Counts ACTIONABLE updates
+   * only: hidden (suppressed) and re-offered updates are excluded and counted in
+   * `cannotCompleteCount` instead.
+   */
   totalPending: number
   /** Devices whose last driver install left a reboot pending. */
   devicesRebootPending: number
+  /** Driver updates installed but waiting for a restart to finish (PendingReboot records). */
+  needsRestartCount?: number
+  /** Driver updates the platform cannot complete: re-offered by Windows after an install, or hidden. */
+  cannotCompleteCount?: number
 }
 
 /** One device's line in the driver-updates overview, as the server computes it. */
@@ -2200,18 +2214,40 @@ export interface DriverUpdateDeviceRow {
   displayName: string | null
   isOnline: boolean
   lastSeenAt: string | null
-  /** Pending driver updates the last scan found. */
+  /**
+   * Pending driver updates the last scan found -- ACTIONABLE only: hidden and
+   * re-offered updates are excluded (they are in `cannotCompleteCount`).
+   */
   pendingCount: number
   /** Of those, how many are preview/optional, so the UI can offer "non-preview only". */
   previewCount: number
   lastScanAt: string | null
+  /** Any driver update awaiting a restart, or (fallback) the inventory's reboot flag. */
   rebootPending: boolean
+  /** Driver updates installed but waiting for a restart to finish. */
+  needsRestartCount?: number
+  /** Re-offered by Windows after an install, plus hidden: the platform cannot complete these. */
+  cannotCompleteCount?: number
 }
 
 export interface DriverUpdateOverview {
   summary: DriverUpdateOverviewSummary
   devices: DriverUpdateDeviceRow[]
 }
+
+/**
+ * Where the platform stands on one pending update, derived server-side from its
+ * install records -- the server is the source of truth, so the UI renders an
+ * unrecognised value as-is rather than guessing.
+ *
+ * - `none`          never attempted (or nothing known): plain pending
+ * - `installing`    named by an install task still Queued/Delivered
+ * - `verifying`     Windows reported success; the follow-up scan has not confirmed it yet
+ * - `pendingReboot` installed, needs a restart to finish
+ * - `reOffered`     Windows accepted the install and then offered it again -- cannot be completed here
+ * - `failed`        Windows reported a failure (see `lastHresult`)
+ */
+export type DriverInstallStatus = 'none' | 'installing' | 'verifying' | 'pendingReboot' | 'reOffered' | 'failed'
 
 /** One pending driver update Windows Update is offering a device. */
 export interface DriverUpdateItem {
@@ -2224,12 +2260,48 @@ export interface DriverUpdateItem {
   /** A preview/optional driver; "auto-select non-preview" leaves these unchecked. */
   isPreview: boolean
   sizeBytes: number | null
+  /** The platform's install state for this update; absent on older servers (= "none"). */
+  installStatus?: DriverInstallStatus
+  /** How many times the platform has tried to install it. */
+  attempts?: number
+  lastAttemptAt?: string | null
+  /** The HRESULT of the last attempt, when Windows gave one. */
+  lastHresult?: number | null
+}
+
+/** The install task in flight for a device, so "installing" survives a page reload. */
+export interface DriverActiveInstall {
+  taskId: string
+  status: 'Queued' | 'Delivered'
+  updateIds: string[]
+  queuedAt: string
+}
+
+/** A driver update an administrator hid on this device; excluded from `updates`. */
+export interface HiddenDriverUpdate {
+  updateId: string
+  title: string
+  reason: string | null
+  hiddenBy: string | null
+  hiddenAt: string
+}
+
+/** An update confirmed installed (no longer offered) within the last 7 days. */
+export interface RecentDriverInstall {
+  updateId: string
+  title: string
+  confirmedAt: string
 }
 
 export interface DeviceDriverUpdates {
   lastScanAt: string | null
+  /** Any update awaiting a restart (PendingReboot), or (fallback) the inventory's reboot flag. */
   rebootPending: boolean
+  /** Pending updates, excluding hidden ones (those are in `hidden`). */
   updates: DriverUpdateItem[]
+  activeInstall?: DriverActiveInstall | null
+  hidden?: HiddenDriverUpdate[]
+  recentInstalls?: RecentDriverInstall[]
 }
 
 /** What the server accepted when a driver scan or install was queued. */
@@ -2274,6 +2346,28 @@ export function scanAllDriverUpdates(): Promise<{ queued: number }> {
 /** Queues a non-preview install on every device that has pending driver updates. */
 export function installAllDriverUpdates(): Promise<{ queued: number }> {
   return request<{ queued: number }>('/admin/v1/driver-updates/install-all', { method: 'POST' })
+}
+
+/**
+ * Hides one driver update on one device (per device: Windows Update offers are
+ * per device). Platform-side only -- the laptop's own Settings is untouched. 204;
+ * idempotent. A refusal's problem `detail` reaches the caller on ApiError.
+ * `reason` (at most 200 characters) is omitted from the body when blank.
+ */
+export async function suppressDriverUpdate(deviceId: string, updateId: string, reason?: string): Promise<void> {
+  const trimmed = reason?.trim()
+  await request<void>(`/admin/v1/devices/${encodeURIComponent(deviceId)}/driver-updates/suppress`, {
+    method: 'POST',
+    body: JSON.stringify(trimmed ? { updateId, reason: trimmed } : { updateId }),
+  })
+}
+
+/** Unhides one driver update on one device. 204; idempotent. */
+export async function unsuppressDriverUpdate(deviceId: string, updateId: string): Promise<void> {
+  await request<void>(`/admin/v1/devices/${encodeURIComponent(deviceId)}/driver-updates/unsuppress`, {
+    method: 'POST',
+    body: JSON.stringify({ updateId }),
+  })
 }
 
 // ---------------------------------------------------------------------------
