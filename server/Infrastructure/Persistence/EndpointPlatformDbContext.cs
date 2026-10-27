@@ -79,6 +79,21 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     public DbSet<DeviceDriverUpdate> DeviceDriverUpdates => Set<DeviceDriverUpdate>();
 
     /// <remarks>
+    /// The memory of each driver-update install attempt per device -- outcome,
+    /// attempts, codes, and what the scans after it showed. Survives the wholesale
+    /// replacement of <see cref="DeviceDriverUpdates"/> on purpose.
+    /// </remarks>
+    public DbSet<DeviceDriverUpdateInstallRecord> DeviceDriverUpdateInstallRecords =>
+        Set<DeviceDriverUpdateInstallRecord>();
+
+    /// <remarks>
+    /// Driver updates an operator hid on a device: out of the actionable list and
+    /// never queued by "install all". Platform-side only; nothing changes on Windows.
+    /// </remarks>
+    public DbSet<DeviceDriverUpdateSuppression> DeviceDriverUpdateSuppressions =>
+        Set<DeviceDriverUpdateSuppression>();
+
+    /// <remarks>
     /// The pending Windows Update security/quality updates per device, replaced
     /// wholesale by each <c>ScanSecurityUpdates</c> result. No rows for a device
     /// means it reported nothing pending, not that it was never scanned.

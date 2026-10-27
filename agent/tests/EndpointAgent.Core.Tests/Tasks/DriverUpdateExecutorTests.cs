@@ -164,13 +164,15 @@ public sealed class DriverUpdateExecutorTests
             InstallResult = new DriverUpdateInstallResult(
                 RebootRequired: false,
                 Installed: [new DriverUpdateInstallItem(IdA, "Intel Ethernet Adapter", 2, 0)],
-                Failed: []),
+                Failed: [],
+                Outcomes: [Outcome(IdA, "Intel Ethernet Adapter", DriverUpdateOutcomeStatus.Installed)],
+                PostScan: []),
         };
 
         var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA)));
 
         result.Succeeded.ShouldBeTrue();
-        result.Message.ShouldBe("Installed 1 driver update(s).");
+        result.Message.ShouldBe("Installed 1.");
 
         var root = JsonDocument.Parse(result.ResultJson!).RootElement;
         root.GetProperty("rebootRequired").GetBoolean().ShouldBeFalse();
@@ -198,7 +200,10 @@ public sealed class DriverUpdateExecutorTests
         var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA)));
 
         result.Succeeded.ShouldBeTrue("a pending reboot is a successful install, not a failure");
-        (result.Message ?? "").ShouldContain("restart is required");
+
+        // A service result with no outcomes (the pre-1.27.0 shape) is accounted for
+        // conservatively: installed + reboot is PendingReboot.
+        result.Message.ShouldBe("1 needs a restart to finish.");
 
         JsonDocument.Parse(result.ResultJson!).RootElement
             .GetProperty("rebootRequired").GetBoolean().ShouldBeTrue();
@@ -297,6 +302,259 @@ public sealed class DriverUpdateExecutorTests
     public void The_install_task_type_matches_the_server_enum_name()
     {
         Installer(new FakeDriverUpdateService()).TaskType.ShouldBe("InstallDriverUpdate");
+    }
+
+    // ==========================================  1.27.0: outcomes, verified, postScan
+
+    private const string IdC = "33333333-3333-3333-3333-333333333333";
+    private const string IdD = "44444444-4444-4444-4444-444444444444";
+
+    private static DriverUpdateOutcome Outcome(
+        string id, string title, DriverUpdateOutcomeStatus status, int? resultCode = 2, int? hresult = 0, bool reboot = false) =>
+        new(id, title, resultCode, hresult, reboot, status);
+
+    private static DriverUpdateInfo Info(string id, string title, bool preview = false) =>
+        new(id, 1, title, "Net", "Contoso", "2026-01-02", preview, 1_000);
+
+    private static IReadOnlyList<string> PropertyNames(JsonElement element) =>
+        element.EnumerateObject().Select(p => p.Name).ToList();
+
+    [Fact]
+    public async Task The_install_result_is_a_superset_with_every_old_key_unchanged_and_the_new_keys_exactly_named()
+    {
+        var service = new FakeDriverUpdateService
+        {
+            InstallResult = new DriverUpdateInstallResult(
+                RebootRequired: true,
+                Installed: [new DriverUpdateInstallItem(IdA, "Intel Ethernet Adapter", 2, 0)],
+                Failed: [new DriverUpdateInstallItem(IdB, "Realtek Audio", 4, unchecked((int)0x80240022))],
+                Outcomes:
+                [
+                    Outcome(IdA, "Intel Ethernet Adapter", DriverUpdateOutcomeStatus.PendingReboot, reboot: true),
+                    Outcome(IdB, "Realtek Audio", DriverUpdateOutcomeStatus.Failed, 4, unchecked((int)0x80240022)),
+                ],
+                PostScan: [Info(IdA, "Intel Ethernet Adapter")]),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB)));
+        var root = JsonDocument.Parse(result.ResultJson!).RootElement;
+
+        // The pre-1.27.0 keys first, then the three appended -- nothing renamed or removed.
+        PropertyNames(root).ShouldBe(["rebootRequired", "installed", "failed", "outcomes", "verified", "postScan"]);
+
+        // The old keys carry exactly what they always did.
+        root.GetProperty("rebootRequired").GetBoolean().ShouldBeTrue();
+        var installed = root.GetProperty("installed").EnumerateArray().ShouldHaveSingleItem();
+        PropertyNames(installed).ShouldBe(["updateId", "title", "resultCode", "hresult"]);
+        installed.GetProperty("updateId").GetString().ShouldBe(IdA);
+        var failed = root.GetProperty("failed").EnumerateArray().ShouldHaveSingleItem();
+        PropertyNames(failed).ShouldBe(["updateId", "title", "resultCode", "hresult"]);
+        failed.GetProperty("hresult").GetInt32().ShouldBe(unchecked((int)0x80240022));
+
+        // The new keys, exact names and values.
+        var outcomes = root.GetProperty("outcomes").EnumerateArray().ToList();
+        outcomes.Count.ShouldBe(2);
+        PropertyNames(outcomes[0]).ShouldBe(["updateId", "title", "resultCode", "hresult", "rebootRequired", "status"]);
+        outcomes[0].GetProperty("updateId").GetString().ShouldBe(IdA);
+        outcomes[0].GetProperty("title").GetString().ShouldBe("Intel Ethernet Adapter");
+        outcomes[0].GetProperty("resultCode").GetInt32().ShouldBe(2);
+        outcomes[0].GetProperty("hresult").GetInt32().ShouldBe(0);
+        outcomes[0].GetProperty("rebootRequired").GetBoolean().ShouldBeTrue();
+        outcomes[0].GetProperty("status").GetString().ShouldBe("PendingReboot");
+        outcomes[1].GetProperty("status").GetString().ShouldBe("Failed");
+
+        root.GetProperty("verified").GetBoolean().ShouldBeTrue();
+        root.GetProperty("postScan").ValueKind.ShouldBe(JsonValueKind.Object);
+    }
+
+    [Fact]
+    public async Task The_post_scan_is_byte_for_byte_the_document_a_scan_reports()
+    {
+        IReadOnlyList<DriverUpdateInfo> offered =
+        [
+            new DriverUpdateInfo(IdA, 3, "Intel Ethernet Adapter", "Net", "Intel", "2026-01-02", false, 1_048_576),
+            new DriverUpdateInfo(IdB, 1, "Realtek Audio", null, null, null, false, 0),
+            new DriverUpdateInfo(IdC, 2, "NVIDIA Display (Preview)", "Display", "NVIDIA", "2026-02-03", true, 2_000),
+        ];
+
+        var scan = await Scanner(new FakeDriverUpdateService { ScanResult = DriverUpdateScanResult.Ok(offered) })
+            .ExecuteAsync(ScanTask());
+
+        var installService = new FakeDriverUpdateService
+        {
+            InstallResult = new DriverUpdateInstallResult(
+                false, [new DriverUpdateInstallItem(IdD, "Some driver", 2, 0)], [],
+                Outcomes: [Outcome(IdD, "Some driver", DriverUpdateOutcomeStatus.Installed)],
+                PostScan: offered),
+        };
+        var install = await new InstallDriverUpdateExecutor(
+                installService, NullLogger<InstallDriverUpdateExecutor>.Instance, new FixedClock(Now))
+            .ExecuteAsync(InstallTask(InstallPayload(IdD)));
+
+        var postScan = JsonDocument.Parse(install.ResultJson!).RootElement.GetProperty("postScan");
+
+        // Same code path, same clock: the server can feed postScan to its scan parser unchanged.
+        postScan.GetRawText().ShouldBe(scan.ResultJson);
+
+        // Previews are excluded from postScan exactly as from a scan.
+        postScan.GetProperty("updates").EnumerateArray().Select(u => u.GetProperty("updateId").GetString())
+            .ToArray().ShouldBe([IdA, IdB]);
+    }
+
+    [Fact]
+    public async Task Both_the_scan_and_the_post_scan_are_capped_at_the_servers_500()
+    {
+        var many = Enumerable.Range(0, 600)
+            .Select(i => Info(new Guid(i, 0, 0, new byte[8]).ToString(), $"Driver {i}"))
+            .ToList();
+
+        var scan = await Scanner(new FakeDriverUpdateService { ScanResult = DriverUpdateScanResult.Ok(many) })
+            .ExecuteAsync(ScanTask());
+        JsonDocument.Parse(scan.ResultJson!).RootElement.GetProperty("updates").GetArrayLength().ShouldBe(500);
+
+        var install = await Installer(new FakeDriverUpdateService
+        {
+            InstallResult = new DriverUpdateInstallResult(
+                false, [new DriverUpdateInstallItem(IdA, "x", 2, 0)], [],
+                Outcomes: [Outcome(IdA, "x", DriverUpdateOutcomeStatus.Installed)],
+                PostScan: many),
+        }).ExecuteAsync(InstallTask(InstallPayload(IdA)));
+        JsonDocument.Parse(install.ResultJson!).RootElement
+            .GetProperty("postScan").GetProperty("updates").GetArrayLength().ShouldBe(500);
+    }
+
+    [Fact]
+    public async Task A_failed_verification_is_reported_unverified_with_no_post_scan_never_a_claim()
+    {
+        var service = new FakeDriverUpdateService
+        {
+            InstallResult = new DriverUpdateInstallResult(
+                false, [new DriverUpdateInstallItem(IdA, "Intel Ethernet Adapter", 2, 0)], [],
+                Outcomes: [Outcome(IdA, "Intel Ethernet Adapter", DriverUpdateOutcomeStatus.InstalledUnverified)],
+                PostScan: null),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA)));
+        var root = JsonDocument.Parse(result.ResultJson!).RootElement;
+
+        root.GetProperty("verified").GetBoolean().ShouldBeFalse();
+        root.TryGetProperty("postScan", out var postScan).ShouldBeTrue("the key is always present");
+        postScan.ValueKind.ShouldBe(JsonValueKind.Null);
+        root.GetProperty("outcomes").EnumerateArray().ShouldHaveSingleItem()
+            .GetProperty("status").GetString().ShouldBe("InstalledUnverified");
+        result.Message.ShouldBe("1 reported installed but could not be verified.");
+    }
+
+    [Fact]
+    public async Task The_message_is_honest_per_outcome_class()
+    {
+        var service = new FakeDriverUpdateService
+        {
+            InstallResult = new DriverUpdateInstallResult(
+                true,
+                [
+                    new DriverUpdateInstallItem(IdA, "A", 2, 0), new DriverUpdateInstallItem(IdB, "B", 2, 0),
+                    new DriverUpdateInstallItem(IdC, "C", 2, 0), new DriverUpdateInstallItem(IdD, "D", 2, 0),
+                ],
+                [],
+                Outcomes:
+                [
+                    Outcome(IdA, "A", DriverUpdateOutcomeStatus.Installed),
+                    Outcome(IdB, "B", DriverUpdateOutcomeStatus.PendingReboot, reboot: true),
+                    Outcome(IdC, "C", DriverUpdateOutcomeStatus.ReOffered),
+                    Outcome(IdD, "D", DriverUpdateOutcomeStatus.ReOffered),
+                ],
+                PostScan: [Info(IdC, "C"), Info(IdD, "D")]),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB, IdC, IdD)));
+
+        result.Succeeded.ShouldBeTrue();
+        result.Message.ShouldBe(
+            "Installed 1; 1 needs a restart to finish; 2 were re-offered by Windows Update and cannot be completed by the platform.");
+    }
+
+    [Fact]
+    public async Task A_requested_update_windows_no_longer_offers_is_itemized_even_when_others_install()
+    {
+        // Before 1.27.0 the operator selected two, the result said "Installed 1", and
+        // nothing accounted for the second.
+        var service = new FakeDriverUpdateService
+        {
+            InstallResult = new DriverUpdateInstallResult(
+                false, [new DriverUpdateInstallItem(IdA, "Intel Ethernet Adapter", 2, 0)], [],
+                Outcomes:
+                [
+                    Outcome(IdA, "Intel Ethernet Adapter", DriverUpdateOutcomeStatus.Installed),
+                    .. DriverUpdateOutcomeClassifier.NotOffered(
+                        [IdA, IdB], new HashSet<string>(StringComparer.OrdinalIgnoreCase) { IdA }),
+                ],
+                PostScan: []),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB)));
+
+        result.Message.ShouldBe("Installed 1; 1 not offered by Windows Update.");
+        var notOffered = JsonDocument.Parse(result.ResultJson!).RootElement.GetProperty("outcomes")
+            .EnumerateArray().Single(o => o.GetProperty("updateId").GetString() == IdB);
+        notOffered.GetProperty("status").GetString().ShouldBe("NotOffered");
+        notOffered.GetProperty("resultCode").ValueKind.ShouldBe(JsonValueKind.Null);
+        notOffered.GetProperty("hresult").ValueKind.ShouldBe(JsonValueKind.Null);
+        notOffered.GetProperty("rebootRequired").GetBoolean().ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task An_install_that_could_not_run_still_itemizes_every_requested_update()
+    {
+        var service = new FakeDriverUpdateService
+        {
+            InstallResult = DriverUpdateInstallResult.ForError(
+                "No driver updates were installed: 1 no longer offered by Windows Update; 1 preview; 1 with a licence that could not be accepted.",
+                [
+                    Outcome(IdA, DriverUpdateOutcomeClassifier.NotOfferedTitle, DriverUpdateOutcomeStatus.NotOffered, null, null),
+                    Outcome(IdB, "NVIDIA Display (Preview)", DriverUpdateOutcomeStatus.SkippedPreview, null, null),
+                    Outcome(IdC, "OEM firmware", DriverUpdateOutcomeStatus.EulaDeclined, null, null),
+                ]),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB, IdC)));
+
+        result.Succeeded.ShouldBeFalse();
+        (result.Message ?? "").ShouldStartWith("No driver updates were installed");
+
+        var root = JsonDocument.Parse(result.ResultJson!).RootElement;
+        root.GetProperty("installed").GetArrayLength().ShouldBe(0, "the legacy keys keep their pre-1.27.0 meaning on error");
+        root.GetProperty("failed").GetArrayLength().ShouldBe(0);
+        root.GetProperty("verified").GetBoolean().ShouldBeFalse();
+        root.GetProperty("postScan").ValueKind.ShouldBe(JsonValueKind.Null);
+
+        var statuses = root.GetProperty("outcomes").EnumerateArray().Select(o => o.GetProperty("status").GetString()).ToArray();
+        statuses.ShouldBe(["NotOffered", "SkippedPreview", "EulaDeclined"]);
+        root.GetProperty("outcomes").EnumerateArray()
+            .ShouldAllBe(o => o.GetProperty("resultCode").ValueKind == JsonValueKind.Null
+                && o.GetProperty("hresult").ValueKind == JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task A_service_result_without_outcomes_is_accounted_for_conservatively_on_the_wire()
+    {
+        var service = new FakeDriverUpdateService
+        {
+            InstallResult = new DriverUpdateInstallResult(
+                RebootRequired: false,
+                Installed: [new DriverUpdateInstallItem(IdA, "Intel Ethernet Adapter", 2, 0)],
+                Failed: [new DriverUpdateInstallItem(IdB, "Realtek Audio", 4, -1)]),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB)));
+        var root = JsonDocument.Parse(result.ResultJson!).RootElement;
+
+        var statuses = root.GetProperty("outcomes").EnumerateArray()
+            .ToDictionary(o => o.GetProperty("updateId").GetString()!, o => o.GetProperty("status").GetString());
+        statuses[IdA].ShouldBe("InstalledUnverified", "nothing verified it, so it is never claimed Installed");
+        statuses[IdB].ShouldBe("Failed");
+        root.GetProperty("verified").GetBoolean().ShouldBeFalse();
+        root.GetProperty("postScan").ValueKind.ShouldBe(JsonValueKind.Null);
     }
 
     // ============================================================  preview rule

@@ -188,7 +188,9 @@ public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient
         message.Headers.Add(AgentProtocol.Headers.Credential, credential.ToHeaderValue());
         message.Headers.Add(AgentProtocol.Headers.DeviceId, credential.DeviceId.ToString());
 
-        return await SendNoContentAsync(message, "task-result", cancellationToken);
+        // 404 is told apart here: it means the server has no such task for this
+        // device, so the dispatcher drops the result instead of spooling it for retry.
+        return await SendNoContentAsync(message, "task-result", cancellationToken, distinguishNotFound: true);
     }
 
     public async Task<AgentApiResult<AgentPolicyListResponse>> GetPoliciesAsync(
@@ -686,7 +688,8 @@ public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient
     private async Task<AgentApiResult<Unit>> SendNoContentAsync(
         HttpRequestMessage message,
         string operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool distinguishNotFound = false)
     {
         HttpResponseMessage response;
 
@@ -715,6 +718,12 @@ public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient
             if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 return AgentApiResult<Unit>.Unauthorized();
+            }
+
+            if (distinguishNotFound && response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogWarning("Agent {Operation} rejected: HTTP 404 (not found).", operation);
+                return AgentApiResult<Unit>.NotFound();
             }
 
             if ((int)response.StatusCode is >= 400 and < 500)

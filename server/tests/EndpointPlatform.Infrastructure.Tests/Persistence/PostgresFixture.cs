@@ -1,6 +1,7 @@
 using EndpointPlatform.Infrastructure.Persistence;
 using EndpointPlatform.Infrastructure.Persistence.Interceptors;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace EndpointPlatform.Infrastructure.Tests.Persistence;
 
@@ -50,7 +51,12 @@ public sealed class PostgresFixture : IAsyncLifetime
     /// default so the suites see what production sees; a test that drives a
     /// transaction by hand to stage a race turns it off.
     /// </param>
-    public EndpointPlatformDbContext CreateDbContext(TimeProvider? timeProvider = null, bool retryOnFailure = true)
+    /// <param name="extraInterceptors">
+    /// Added after the production interceptors -- e.g. one that records the SQL a
+    /// service sends, or fails a chosen command to stage a database blip.
+    /// </param>
+    public EndpointPlatformDbContext CreateDbContext(
+        TimeProvider? timeProvider = null, bool retryOnFailure = true, IInterceptor[]? extraInterceptors = null)
     {
         var options = new DbContextOptionsBuilder<EndpointPlatformDbContext>()
             .UseNpgsql(ConnectionString, npgsql =>
@@ -66,6 +72,7 @@ public sealed class PostgresFixture : IAsyncLifetime
                 new DeviceGroupAssignmentInterceptor(),
                 new AuditableEntityInterceptor(timeProvider ?? TimeProvider.System),
                 new AuditImmutabilityInterceptor())
+            .AddInterceptors(extraInterceptors ?? [])
             .Options;
 
         return new EndpointPlatformDbContext(options);

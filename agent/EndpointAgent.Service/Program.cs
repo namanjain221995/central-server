@@ -282,6 +282,11 @@ public static class Program
             builder.Services.AddSingleton<ISecretRedeemer, EndpointAgent.Core.Communication.ServerSecretRedeemer>();
 
             // Task pipeline: dispatcher + one executor per supported task type.
+            // A result whose one POST fails waits in the spool (plain JSON under the
+            // protected state directory -- task results carry no secrets by contract)
+            // and the heartbeat loop re-sends it on every successful tick, so a
+            // network blip, a server deploy or an agent restart no longer loses it.
+            builder.Services.AddSingleton<ITaskResultSpool, FileTaskResultSpool>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.TaskDispatcher>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.PingTaskExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.RefreshInventoryTaskExecutor>();
@@ -354,6 +359,8 @@ public static class Program
             // Task Scheduler launcher. The scan executor reports what is offered; the
             // install executor applies the selected updates and carries the
             // reboot-required flag back as success (the InstallDriverPackage convention).
+            // Since 1.27.0 the install also re-runs the search to verify, classifies
+            // every requested update, and carries that search back as its postScan.
             builder.Services.AddSingleton<IDriverUpdateService, WindowsDriverUpdateService>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ScanDriverUpdatesExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.InstallDriverUpdateExecutor>();

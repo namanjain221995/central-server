@@ -16,12 +16,20 @@ namespace EndpointPlatform.Domain.Tasks;
 /// The oldest agent build that has an executor for this task, or null when every
 /// supported agent can run it.
 /// </param>
+/// <param name="ExecutionGraceSeconds">
+/// How long, from the moment an agent claims the task, it has to do the work and
+/// report before the sweeper may expire it. 0 (the default) keeps the deadline the
+/// task was queued with. Set for long-running work, where a claim late in the
+/// lifetime would otherwise let the sweeper expire the task mid-run and refuse the
+/// device's honest result. The deadline is only ever extended, never shortened.
+/// </param>
 public sealed record DeviceTaskDefinition(
     DeviceTaskType Type,
     string RequiredPermission,
     bool HighRisk,
     int DefaultTimeToLiveSeconds,
-    string? MinimumAgentVersion = null);
+    string? MinimumAgentVersion = null,
+    int ExecutionGraceSeconds = 0);
 
 /// <summary>
 /// The authorization and lifetime policy for every task type, in one place.
@@ -159,16 +167,27 @@ public static class DeviceTaskCatalog
             // query is cheap to re-issue, so it is not armed for days. Gated on the
             // agent that has the Windows Update driver executor; an older one would
             // fail it as an unknown type, which reads exactly like the scan failing.
+            // An hour of execution grace from the claim: a Windows Update search can
+            // itself run past the half hour on a slow or busy machine, and a scan the
+            // sweeper expired mid-search had its honest result refused -- the device
+            // then read as never answering and was asked again at once. The grace is
+            // the claim-time extension the install already has; a late result is
+            // still refused for a scan (only an install takes one late).
             new(DeviceTaskType.ScanDriverUpdates, Permissions.Driver.View, HighRisk: false, 1800,
-                MinimumAgentVersion: "1.21.0"),
+                MinimumAgentVersion: "1.21.0", ExecutionGraceSeconds: 3600),
 
             // Installing a Windows Update driver puts kernel code on the machine, so
             // it carries driver.manage and is high-risk, exactly like sideloading an
             // approved driver package. A maintenance lifetime, not interactive: a
             // driver install that fires when a laptop reappears is still the right
             // thing to do. Same agent gate as the scan that produced the update ids.
+            // Two hours of execution grace from the claim: the agent downloads and
+            // installs inline, a driver can be hundreds of megabytes on a laptop's
+            // link, and an install claimed late in its hour must not be expired by
+            // the sweeper while it is still running -- that turned a finished
+            // install into "expired" and threw the device's result away.
             new(DeviceTaskType.InstallDriverUpdate, Permissions.Driver.Manage, HighRisk: true, 3600,
-                MinimumAgentVersion: "1.21.0"),
+                MinimumAgentVersion: "1.21.0", ExecutionGraceSeconds: 7200),
 
             // Open and close the live-chat window. Not high-risk: it shows a chat
             // window and takes nothing over -- the most it does is interrupt the

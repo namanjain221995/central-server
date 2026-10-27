@@ -15,7 +15,9 @@ namespace EndpointPlatform.Api.Endpoints;
 /// <c>driver.manage</c> and is high-risk, because a driver runs in the kernel. A
 /// scan changes nothing on the endpoint, so it is a view-level action; an install
 /// puts kernel code on the machine, so it is a manage-level one, the same split the
-/// driver-package catalogue draws.
+/// driver-package catalogue draws. Hiding an update (suppress / unsuppress) also
+/// rides on <c>driver.manage</c>: it changes nothing on the machine, but it decides
+/// what install-all will put there.
 /// </para>
 /// <para>
 /// Nothing here installs anything directly. Every device action queues a typed task
@@ -58,7 +60,107 @@ public static class DriverUpdateEndpoints
             .WithName("InstallDeviceDriverUpdates")
             .RequirePermission(Permissions.Driver.Manage);
 
+        // Hiding decides what install-all will queue on the machine, so it carries
+        // the install permission, not the read one.
+        device.MapPost("/suppress", SuppressAsync)
+            .WithName("SuppressDeviceDriverUpdate")
+            .RequirePermission(Permissions.Driver.Manage);
+
+        device.MapPost("/unsuppress", UnsuppressAsync)
+            .WithName("UnsuppressDeviceDriverUpdate")
+            .RequirePermission(Permissions.Driver.Manage);
+
         return endpoints;
+    }
+
+    /// <summary>Longest Windows Update id accepted -- the same bound the pending list stores.</summary>
+    private const int MaxUpdateIdLength = 64;
+
+    public sealed record SuppressRequest(string? UpdateId, string? Reason);
+
+    public sealed record UnsuppressRequest(string? UpdateId);
+
+    /// <summary>
+    /// Hides one update on one device: out of the actionable list, never queued by
+    /// install-all. Idempotent -- hiding an already-hidden update is still 204 and
+    /// writes nothing. Platform-side only; nothing is sent to the device.
+    /// </summary>
+    private static async Task<IResult> SuppressAsync(
+        Guid deviceId,
+        SuppressRequest request,
+        DriverUpdateService service,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (UpdateIdProblem(request.UpdateId) is { } problem)
+        {
+            return problem;
+        }
+
+        if (request.Reason is { } reason && reason.Trim().Length > Domain.Devices.DeviceDriverUpdateSuppression.MaxReasonLength)
+        {
+            return Results.Problem(
+                $"The reason may be at most {Domain.Devices.DeviceDriverUpdateSuppression.MaxReasonLength} characters.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var actor = AdminActor.Required(httpContext.User);
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
+        var result = await service.SuppressAsync(
+            actor.OrganizationId, deviceId, request.UpdateId!, request.Reason, actor.UserId, actor.Email, cancellationToken);
+
+        return result == DriverUpdateSuppressionResult.DeviceNotFound ? Results.NotFound() : Results.NoContent();
+    }
+
+    /// <summary>
+    /// Un-hides one update on one device. Idempotent -- un-hiding a visible update is
+    /// still 204 and writes nothing.
+    /// </summary>
+    private static async Task<IResult> UnsuppressAsync(
+        Guid deviceId,
+        UnsuppressRequest request,
+        DriverUpdateService service,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (UpdateIdProblem(request.UpdateId) is { } problem)
+        {
+            return problem;
+        }
+
+        var actor = AdminActor.Required(httpContext.User);
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
+        var result = await service.UnsuppressAsync(
+            actor.OrganizationId, deviceId, request.UpdateId!, actor.UserId, actor.Email, cancellationToken);
+
+        return result == DriverUpdateSuppressionResult.DeviceNotFound ? Results.NotFound() : Results.NoContent();
+    }
+
+    private static IResult? UpdateIdProblem(string? updateId)
+    {
+        if (string.IsNullOrWhiteSpace(updateId))
+        {
+            return Results.Problem("Name the update to hide or un-hide.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return updateId.Trim().Length > MaxUpdateIdLength
+            ? Results.Problem(
+                $"An update id is at most {MaxUpdateIdLength} characters.", statusCode: StatusCodes.Status400BadRequest)
+            : null;
     }
 
     private static async Task<IResult> OverviewAsync(

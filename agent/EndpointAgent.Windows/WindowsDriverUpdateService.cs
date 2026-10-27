@@ -31,6 +31,15 @@ namespace EndpointAgent.Windows;
 /// search, an install already in progress, a pending reboot -- are turned into an
 /// unsuccessful result with a clear, secret-free message rather than thrown.
 /// </para>
+/// <para>
+/// An install does not relay WUA's claim unverified (agent 1.27.0): after
+/// <c>Install()</c> it re-runs the same search in the same session and classifies
+/// every requested update -- Installed, InstalledUnverified, PendingReboot,
+/// ReOffered, Failed, NotOffered, SkippedPreview or EulaDeclined -- by the rules in
+/// <see cref="DriverUpdateOutcomeClassifier"/>. That search's offered set rides back
+/// as the result's <c>postScan</c>, so one install round-trip refreshes the server's
+/// pending list. Still WUA COM only; nothing is launched.
+/// </para>
 /// </remarks>
 [SupportedOSPlatform("windows")]
 public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateService> logger) : IDriverUpdateService
@@ -47,9 +56,9 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
     /// <summary><c>ssWindowsUpdate</c>: force the public Windows Update service, bypassing a WSUS redirect.</summary>
     private const int ServerSelectionWindowsUpdate = 2;
 
-    // OperationResultCode (per-update and overall install result).
-    private const int OperationResultSucceeded = 2;
-    private const int OperationResultSucceededWithErrors = 3;
+    // OperationResultCode (per-update and overall install result). Success (2, and
+    // 3 = succeeded with errors) is DriverUpdateOutcomeClassifier.IsSuccess; this is
+    // what an unreadable per-update result is taken to be.
     private const int OperationResultFailed = 4;
 
     private const int MaxTitleLength = 400;
@@ -176,8 +185,20 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
         var sessionType = Type.GetTypeFromProgID(ProgIdSession);
         if (sessionType is null)
         {
+            // Nothing was searched, so nothing is known about any requested update --
+            // claiming "not offered" here would be a guess. The error says why.
             return DriverUpdateInstallResult.ForError("The Windows Update Agent is not available on this device.");
         }
+
+        // Every requested update's fate, decided as the install proceeds. Declared out
+        // here so an operation-level failure part-way still reports what is already
+        // known instead of discarding it (Cause G: nothing the operator selected may
+        // silently vanish from the result).
+        var outcomes = new List<DriverUpdateOutcome>();
+
+        // Updates handed to the download/install pipeline whose outcome is not yet
+        // decided; if the operation throws, these are what it took down with it.
+        var staged = new List<(string Id, string Title)>();
 
         object? session = null;
         try
@@ -198,10 +219,7 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
 
             dynamic downloadColl = NewUpdateColl();
             var selected = new List<dynamic>();
-            var selectedMeta = new List<(string Id, string Title)>();
             var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var skippedPreview = 0;
-            var skippedEula = 0;
 
             for (var i = 0; i < count; i++)
             {
@@ -215,18 +233,18 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                 }
 
                 var normId = NormalizeId(rawId);
-                if (!wanted.Contains(normId))
+
+                // A repeat of an id already handled is not a second update.
+                if (!wanted.Contains(normId) || !matched.Add(normId))
                 {
                     continue;
                 }
 
-                matched.Add(normId);
-
-                var title = TryString(() => (string?)update.Title) ?? "(untitled driver update)";
+                var title = Truncate(TryString(() => (string?)update.Title) ?? "(untitled driver update)");
                 if (DriverUpdatePreview.IsPreview(title, TryBool(() => (bool)update.IsBeta)))
                 {
                     // The platform excludes previews from installation as well as scanning.
-                    skippedPreview++;
+                    outcomes.Add(NotInstalled(normId, title, DriverUpdateOutcomeStatus.SkippedPreview));
                     continue;
                 }
 
@@ -244,15 +262,19 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                     catch (Exception ex) when (ex is RuntimeBinderException or COMException)
                     {
                         _logger.LogDebug(ex, "Could not accept the EULA for a driver update; skipping it.");
-                        skippedEula++;
+                        outcomes.Add(NotInstalled(normId, title, DriverUpdateOutcomeStatus.EulaDeclined));
                         continue;
                     }
                 }
 
                 downloadColl.Add(update);
                 selected.Add(update);
-                selectedMeta.Add((normId, Truncate(title)));
+                staged.Add((normId, title));
             }
+
+            // Requested, but not in Windows Update's offered set at all: already
+            // installed meanwhile, or no longer applicable. Itemized, never dropped.
+            outcomes.AddRange(DriverUpdateOutcomeClassifier.NotOffered(requestedIds, matched));
 
             if (selected.Count == 0)
             {
@@ -260,32 +282,15 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                 // reported failure with the reason -- never the silent "Installed 0"
                 // success that left updates pending forever. The breakdown is what tells
                 // the operator (and the task result) why nothing happened.
-                var notOffered = wanted.Count - matched.Count;
-                var reasons = new List<string>();
-                if (notOffered > 0)
-                {
-                    reasons.Add($"{notOffered} no longer offered by Windows Update");
-                }
-
-                if (skippedPreview > 0)
-                {
-                    reasons.Add($"{skippedPreview} preview");
-                }
-
-                if (skippedEula > 0)
-                {
-                    reasons.Add($"{skippedEula} with a licence that could not be accepted");
-                }
-
-                var detail = reasons.Count > 0
-                    ? string.Join("; ", reasons)
-                    : "none were applicable on this device";
-                return DriverUpdateInstallResult.ForError($"No driver updates were installed: {detail}.");
+                return DriverUpdateInstallResult.ForError(
+                    $"No driver updates were installed: {DescribeNothingStaged(outcomes)}.", outcomes);
             }
+
+            var selectedMeta = staged.ToList();
 
             dynamic downloader = s.CreateUpdateDownloader();
             downloader.Updates = downloadColl;
-            downloader.Download();
+            dynamic downloadResult = downloader.Download();
 
             dynamic installColl = NewUpdateColl();
             var installMeta = new List<(string Id, string Title)>();
@@ -295,13 +300,23 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                 {
                     installColl.Add(selected[i]);
                     installMeta.Add(selectedMeta[i]);
+                    continue;
                 }
+
+                // Not downloaded: it never reaches the installer. Before 1.27.0 it
+                // silently fell out of the result; now it is a Failed outcome carrying
+                // the download's own per-update code when WUA will give it.
+                var (downloadCode, downloadHResult) = ReadOperationResult((object)downloadResult, i);
+                outcomes.Add(new DriverUpdateOutcome(
+                    selectedMeta[i].Id, selectedMeta[i].Title, downloadCode, downloadHResult,
+                    RebootRequired: false, DriverUpdateOutcomeStatus.Failed));
+                staged.Remove(selectedMeta[i]);
             }
 
             if (installMeta.Count == 0)
             {
                 return DriverUpdateInstallResult.ForError(
-                    "The selected driver updates could not be downloaded; nothing was installed.");
+                    "The selected driver updates could not be downloaded; nothing was installed.", outcomes);
             }
 
             dynamic installer = s.CreateUpdateInstaller();
@@ -325,33 +340,63 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
 
             if (TryBool(() => (bool)installer.IsBusy))
             {
+                // Downloaded but never handed to the installer: not installed, and the
+                // error says why. No code was produced, so none is invented.
+                foreach (var meta in installMeta)
+                {
+                    outcomes.Add(NotInstalled(meta.Id, meta.Title, DriverUpdateOutcomeStatus.Failed));
+                }
+
                 return DriverUpdateInstallResult.ForError(
-                    "Another update operation is in progress or a reboot is pending; try again later.");
+                    "Another update operation is in progress or a reboot is pending; try again later.", outcomes);
             }
 
             dynamic installResult = installer.Install();
-            var rebootRequired = TryBool(() => (bool)installResult.RebootRequired);
+
+            // From here on nothing may throw away the install's result: every read is
+            // guarded, and the verification pass degrades to "unverified", never to an
+            // error.
+            staged.Clear();
+
+            var aggregateReboot = TryBool(() => (bool)installResult.RebootRequired);
+
+            // The machine-wide flag (Microsoft.Update.SystemInfo). Read unconditionally:
+            // it is half of the PendingReboot rule for every update, not only a fallback.
+            var systemReboot = ReadSystemRebootRequired();
+
+            // The legacy aggregate key: the install's flag, else the system-wide one --
+            // the same value the pre-1.27.0 code reported.
+            var rebootRequired = aggregateReboot || systemReboot;
 
             var installed = new List<DriverUpdateInstallItem>();
             var failed = new List<DriverUpdateInstallItem>();
+            var installerResults = new List<(DriverUpdateInstallItem Item, bool ItemReboot)>(installMeta.Count);
 
             for (var i = 0; i < installMeta.Count; i++)
             {
                 var resultCode = OperationResultFailed;
                 var hresult = 0;
+
+                // Per-update reboot flag; until (unless) it is read, the aggregate
+                // stands in -- never false (contract section A).
+                var itemReboot = aggregateReboot;
                 try
                 {
                     dynamic perUpdate = installResult.GetUpdateResult(i);
                     resultCode = (int)perUpdate.ResultCode;
                     hresult = (int)perUpdate.HResult;
+
+                    // IUpdateInstallationResult documents exactly three properties:
+                    // HResult, ResultCode and RebootRequired. This reads the third.
+                    itemReboot = ReadPerUpdateReboot(() => (bool)perUpdate.RebootRequired, aggregateReboot, _logger);
                 }
-                catch (Exception ex) when (ex is RuntimeBinderException or COMException)
+                catch (Exception ex) when (ex is RuntimeBinderException or COMException or InvalidCastException)
                 {
                     _logger.LogDebug(ex, "Could not read a per-update install result; treating it as failed.");
                 }
 
                 var item = new DriverUpdateInstallItem(installMeta[i].Id, installMeta[i].Title, resultCode, hresult);
-                if (resultCode is OperationResultSucceeded or OperationResultSucceededWithErrors)
+                if (DriverUpdateOutcomeClassifier.IsSuccess(resultCode))
                 {
                     installed.Add(item);
                 }
@@ -359,18 +404,30 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                 {
                     failed.Add(item);
                 }
+
+                installerResults.Add((item, itemReboot));
             }
 
-            if (!rebootRequired)
+            // Did each "succeeded" update actually leave the offered set? The same
+            // searcher, the same criteria, the same session -- the only question the
+            // operator cares about, asked where it is cheapest to answer.
+            var (stillOffered, postScan) = VerifyOfferedSet((object)searcher);
+
+            foreach (var (item, itemReboot) in installerResults)
             {
-                rebootRequired = ReadSystemRebootRequired();
+                bool? offeredAfter = stillOffered is null ? null : stillOffered.Contains(item.UpdateId);
+                var status = DriverUpdateOutcomeClassifier.Classify(
+                    item.ResultCode, itemReboot || systemReboot, offeredAfter);
+
+                outcomes.Add(new DriverUpdateOutcome(
+                    item.UpdateId, item.Title, item.ResultCode, item.HResult, itemReboot, status));
             }
 
             _logger.LogInformation(
-                "Driver update install: {Installed} installed, {Failed} failed, reboot required {Reboot}.",
-                installed.Count, failed.Count, rebootRequired);
+                "Driver update install: {Installed} installed, {Failed} failed, reboot required {Reboot}, verified {Verified}.",
+                installed.Count, failed.Count, rebootRequired, postScan is not null);
 
-            return new DriverUpdateInstallResult(rebootRequired, installed, failed, null);
+            return new DriverUpdateInstallResult(rebootRequired, installed, failed, null, outcomes, postScan);
         }
         catch (OperationCanceledException)
         {
@@ -379,23 +436,164 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
         catch (COMException ex)
         {
             _logger.LogWarning(ex, "Driver update install failed (0x{HResult:X8}).", ex.HResult);
-            return DriverUpdateInstallResult.ForError(DescribeComError(ex));
+            return DriverUpdateInstallResult.ForError(DescribeComError(ex), WithStagedFailed(outcomes, staged, ex.HResult));
         }
         catch (RuntimeBinderException ex)
         {
             _logger.LogWarning(ex, "Driver update install failed binding a WUA member.");
             return DriverUpdateInstallResult.ForError(
-                "The Windows Update Agent returned an unexpected shape during the driver install.");
+                "The Windows Update Agent returned an unexpected shape during the driver install.",
+                WithStagedFailed(outcomes, staged, hresult: null));
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Driver update install failed.");
-            return DriverUpdateInstallResult.ForError("The driver update install could not be completed.");
+            return DriverUpdateInstallResult.ForError(
+                "The driver update install could not be completed.", WithStagedFailed(outcomes, staged, hresult: null));
         }
         finally
         {
             ReleaseComObject(session);
         }
+    }
+
+    /// <summary>
+    /// Re-runs the install's own search and returns what is still offered (every
+    /// readable identity, previews included, for classification) and the scan-shaped
+    /// list (previews excluded, exactly what <see cref="ScanCore"/> reports).
+    /// </summary>
+    /// <remarks>
+    /// Both null when the search cannot be trusted: it failed, or an entry's identity
+    /// could not be read -- an unreadable entry might be one of ours, and calling an
+    /// update "no longer offered" on that basis would be a lie. Never throws: the
+    /// install has already happened, and nothing here may turn its result into an
+    /// error.
+    /// </remarks>
+    private (IReadOnlySet<string>? StillOffered, IReadOnlyList<DriverUpdateInfo>? PostScan) VerifyOfferedSet(object searcherObject)
+    {
+        try
+        {
+            dynamic searcher = searcherObject;
+            dynamic verify = searcher.Search(SearchCriteria);
+            dynamic found = verify.Updates;
+            int count = (int)found.Count;
+
+            var offered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var postScan = new List<DriverUpdateInfo>(count);
+
+            for (var i = 0; i < count; i++)
+            {
+                dynamic update = found.Item(i);
+
+                // Throws (and so fails the whole verification) when unreadable.
+                var rawId = (string?)update.Identity.UpdateID;
+                if (string.IsNullOrWhiteSpace(rawId))
+                {
+                    continue;
+                }
+
+                offered.Add(NormalizeId(rawId));
+
+                DriverUpdateInfo? info = ReadUpdate(update);
+                if (info is not null && !info.IsPreview)
+                {
+                    postScan.Add(info);
+                }
+            }
+
+            return (offered, postScan);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Post-install verification search failed; driver update outcomes are reported unverified.");
+            return (null, null);
+        }
+    }
+
+    /// <summary>
+    /// The per-update reboot flag, or <paramref name="aggregateReboot"/> when the
+    /// late-bound read fails -- never false by default, so the worst failure mode is
+    /// the conservative PendingReboot, never a false ReOffered.
+    /// </summary>
+    internal static bool ReadPerUpdateReboot(Func<bool> read, bool aggregateReboot, ILogger? logger = null)
+    {
+        ArgumentNullException.ThrowIfNull(read);
+
+        try
+        {
+            return read();
+        }
+        catch (Exception ex) when (ex is RuntimeBinderException or COMException or InvalidCastException)
+        {
+            logger?.LogDebug(ex, "Per-update RebootRequired unavailable; using the aggregate flag.");
+            return aggregateReboot;
+        }
+    }
+
+    /// <summary>A requested update that never reached an operation producing a result code.</summary>
+    private static DriverUpdateOutcome NotInstalled(string id, string title, DriverUpdateOutcomeStatus status) =>
+        new(id, title, ResultCode: null, HResult: null, RebootRequired: false, status);
+
+    /// <summary>
+    /// The outcomes so far, plus every still-staged update as Failed: the operation
+    /// threw before the installer produced a per-update result for it, so it was not
+    /// installed by this task. The HRESULT is the operation's, when it has one.
+    /// </summary>
+    private static IReadOnlyList<DriverUpdateOutcome> WithStagedFailed(
+        List<DriverUpdateOutcome> outcomes, List<(string Id, string Title)> staged, int? hresult)
+    {
+        var all = new List<DriverUpdateOutcome>(outcomes.Count + staged.Count);
+        all.AddRange(outcomes);
+        foreach (var (id, title) in staged)
+        {
+            all.Add(new DriverUpdateOutcome(id, title, ResultCode: null, hresult, RebootRequired: false, DriverUpdateOutcomeStatus.Failed));
+        }
+
+        return all;
+    }
+
+    /// <summary>A per-update download result's code and HRESULT, or nulls when WUA will not say.</summary>
+    private (int? ResultCode, int? HResult) ReadOperationResult(object operationResultObject, int index)
+    {
+        try
+        {
+            dynamic operationResult = operationResultObject;
+            dynamic perUpdate = operationResult.GetUpdateResult(index);
+            return ((int)perUpdate.ResultCode, (int)perUpdate.HResult);
+        }
+        catch (Exception ex) when (ex is RuntimeBinderException or COMException or InvalidCastException)
+        {
+            _logger.LogDebug(ex, "Could not read a per-update download result.");
+            return (null, null);
+        }
+    }
+
+    /// <summary>Why nothing could be staged, from the outcomes already itemized.</summary>
+    private static string DescribeNothingStaged(IReadOnlyList<DriverUpdateOutcome> outcomes)
+    {
+        var notOffered = outcomes.Count(o => o.Status == DriverUpdateOutcomeStatus.NotOffered);
+        var preview = outcomes.Count(o => o.Status == DriverUpdateOutcomeStatus.SkippedPreview);
+        var eula = outcomes.Count(o => o.Status == DriverUpdateOutcomeStatus.EulaDeclined);
+
+        var reasons = new List<string>();
+        if (notOffered > 0)
+        {
+            reasons.Add($"{notOffered} no longer offered by Windows Update");
+        }
+
+        if (preview > 0)
+        {
+            reasons.Add($"{preview} preview");
+        }
+
+        if (eula > 0)
+        {
+            reasons.Add($"{eula} with a licence that could not be accepted");
+        }
+
+        return reasons.Count > 0
+            ? string.Join("; ", reasons)
+            : "none were applicable on this device";
     }
 
     private bool ReadSystemRebootRequired()
