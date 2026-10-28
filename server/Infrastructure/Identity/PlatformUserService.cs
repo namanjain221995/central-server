@@ -213,14 +213,19 @@ public sealed class PlatformUserService(
 
         user.AssignRole(role.Id);
 
-        // Deny-by-default everywhere else, but a Super Administrator with no device
-        // scope is powerless over the estate while appearing omnipotent, which is the
-        // more dangerous confusion. AdminBootstrapper grants the same for the same
-        // reason when it creates the first one.
-        if (string.Equals(roleKey, SystemRoles.SuperAdministrator, StringComparison.Ordinal))
-        {
-            user.GrantAllDeviceScope();
-        }
+        // Every new administrator starts with all-device scope, whatever the role.
+        // The role governs WHAT they may do; scope governs WHERE, and "no
+        // where-restriction configured" means the whole estate -- the model the
+        // 2026-08-18 migration recorded when it granted every existing account
+        // all-device scope. Until a scope-management surface exists there is no way
+        // to grant an account any scope after creation, so an account created
+        // without it would sign in to an empty console and stay that way.
+        // Restricting an account means clearing this flag AND giving it
+        // AdminDeviceScope rows; the authorizer itself stays deny-by-default for an
+        // account that has neither. AdminBootstrapper grants the same for the first
+        // Super Administrator. The BackfillAllDeviceScope migration repairs the
+        // accounts created under the old Super-Administrator-only rule.
+        user.GrantAllDeviceScope();
 
         _dbContext.PlatformUsers.Add(user);
 

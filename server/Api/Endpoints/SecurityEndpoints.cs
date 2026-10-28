@@ -1,6 +1,7 @@
 using EndpointPlatform.Api.Security;
 using EndpointPlatform.Domain.Authorization;
 using EndpointPlatform.Infrastructure.Devices;
+using EndpointPlatform.Infrastructure.Security;
 
 namespace EndpointPlatform.Api.Endpoints;
 
@@ -18,10 +19,17 @@ public static class SecurityEndpoints
 
     private static async Task<IResult> OverviewAsync(
         SecurityReadService securityReadService,
+        DeviceScopeAuthorizer scope,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-        var organizationId = AdminActor.Required(httpContext.User).OrganizationId;
-        return Results.Ok(await securityReadService.GetOverviewAsync(organizationId, cancellationToken));
+        // Every row names a device, so the overview is narrowed to the caller's
+        // scope exactly as the device list is.
+        var actor = AdminActor.Required(httpContext.User);
+        var scopedDeviceIds = await scope.ScopedDeviceIdsOrNullAsync(
+            actor.UserId, actor.OrganizationId, cancellationToken);
+
+        return Results.Ok(await securityReadService.GetOverviewAsync(
+            actor.OrganizationId, scopedDeviceIds, cancellationToken));
     }
 }

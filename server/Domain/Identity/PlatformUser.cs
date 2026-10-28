@@ -92,10 +92,12 @@ public sealed class PlatformUser : AuditableEntity
     /// Whether this administrator's authority spans every device in the organization.
     /// </summary>
     /// <remarks>
-    /// Deny-by-default: a new administrator has this false and no
-    /// <see cref="AdminDeviceScope"/> rows, so their permissions reach no device until
-    /// scope is granted explicitly. "No scope" therefore means "nothing", never
-    /// "everything" — the inverse would make every future account silently omnipotent.
+    /// False on a freshly constructed entity, and an account with this false and no
+    /// <see cref="AdminDeviceScope"/> rows reaches no device: "no scope" means
+    /// "nothing", never "everything". The account-creation path grants it
+    /// explicitly (see <see cref="AdminDeviceScope"/> for why), so a restriction is
+    /// always something configured — the flag cleared and group rows added — rather
+    /// than an accident of how the account was made.
     /// </remarks>
     public bool HasAllDeviceScope { get; private set; }
 

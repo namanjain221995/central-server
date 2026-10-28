@@ -577,13 +577,17 @@ public static class LocalAccountEndpoints
     }
 
     /// <summary>
-    /// Out-of-scope and non-existent devices are indistinguishable on the wire, so a
-    /// probing operator cannot map the estate by watching which ids 403 vs 404.
+    /// Deliberately 404, matching every other device route: out-of-scope and
+    /// non-existent devices are indistinguishable on the wire, so a probing operator
+    /// cannot map the estate by watching which ids 403 vs 404.
     /// </summary>
-    private static IResult OutOfScope() =>
-        Results.Problem(
-            title: "This device is not within your assigned scope.",
-            statusCode: StatusCodes.Status403Forbidden);
+    /// <remarks>
+    /// This used to answer 403 "not within your assigned scope" -- which, next to
+    /// the 404 for an unknown id, told a scoped operator exactly which ids were real
+    /// devices elsewhere in the organization. The comment above always described the
+    /// intent; the status code now matches it.
+    /// </remarks>
+    private static IResult OutOfScope() => Results.NotFound();
 
     private static IResult ToResult(LocalAccountOperationResult result, Guid deviceId) =>
         result.Status switch

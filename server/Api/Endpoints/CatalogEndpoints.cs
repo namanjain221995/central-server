@@ -114,9 +114,18 @@ public static class CatalogEndpoints
         });
     }
 
+    /// <summary>
+    /// The caller's scoped groups, or null for all-device scope. Every catalog
+    /// write takes it: an entry's visibility decides which devices may install it as
+    /// SYSTEM, so it is held to the caller's scope like a deployment is.
+    /// </summary>
+    private static Task<IReadOnlyCollection<Guid>?> ScopedGroupsAsync(
+        DeviceScopeAuthorizer scope, AdminActor actor, CancellationToken cancellationToken) =>
+        scope.ScopedGroupIdsOrNullAsync(actor.UserId, actor.OrganizationId, cancellationToken);
+
     private static async Task<IResult> CreateAsync(
-        CatalogAppRequest request, CatalogAppService catalogService, HttpContext httpContext,
-        CancellationToken cancellationToken)
+        CatalogAppRequest request, CatalogAppService catalogService, DeviceScopeAuthorizer scope,
+        HttpContext httpContext, CancellationToken cancellationToken)
     {
         if (!TryParseInput(request, out var input, out var problem))
         {
@@ -125,7 +134,8 @@ public static class CatalogEndpoints
 
         var actor = AdminActor.Required(httpContext.User);
         var result = await catalogService.CreateAsync(
-            actor.OrganizationId, input, request.Publish ?? false, actor.UserId, actor.Email, cancellationToken);
+            actor.OrganizationId, input, request.Publish ?? false,
+            await ScopedGroupsAsync(scope, actor, cancellationToken), actor.UserId, actor.Email, cancellationToken);
 
         return result.Status == CatalogAppStatus.Success
             ? Results.Created($"/admin/v1/catalog/{result.App!.Id}", new { result.App.Id })
@@ -133,8 +143,8 @@ public static class CatalogEndpoints
     }
 
     private static async Task<IResult> UpdateAsync(
-        Guid appId, CatalogAppRequest request, CatalogAppService catalogService, HttpContext httpContext,
-        CancellationToken cancellationToken)
+        Guid appId, CatalogAppRequest request, CatalogAppService catalogService, DeviceScopeAuthorizer scope,
+        HttpContext httpContext, CancellationToken cancellationToken)
     {
         if (!TryParseInput(request, out var input, out var problem))
         {
@@ -143,35 +153,42 @@ public static class CatalogEndpoints
 
         var actor = AdminActor.Required(httpContext.User);
         var result = await catalogService.UpdateAsync(
-            actor.OrganizationId, appId, input, actor.UserId, actor.Email, cancellationToken);
+            actor.OrganizationId, appId, input,
+            await ScopedGroupsAsync(scope, actor, cancellationToken), actor.UserId, actor.Email, cancellationToken);
 
         return result.Status == CatalogAppStatus.Success ? Results.NoContent() : ToProblem(result);
     }
 
     private static async Task<IResult> DeleteAsync(
-        Guid appId, CatalogAppService catalogService, HttpContext httpContext, CancellationToken cancellationToken)
+        Guid appId, CatalogAppService catalogService, DeviceScopeAuthorizer scope,
+        HttpContext httpContext, CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
-        var ok = await catalogService.DeleteAsync(
-            actor.OrganizationId, appId, actor.UserId, actor.Email, cancellationToken);
-        return ok ? Results.NoContent() : Results.NotFound();
+        var result = await catalogService.DeleteAsync(
+            actor.OrganizationId, appId,
+            await ScopedGroupsAsync(scope, actor, cancellationToken), actor.UserId, actor.Email, cancellationToken);
+        return result.Status == CatalogAppStatus.Success ? Results.NoContent() : ToProblem(result);
     }
 
     private static async Task<IResult> PublishAsync(
-        Guid appId, CatalogAppService catalogService, HttpContext httpContext, CancellationToken cancellationToken)
+        Guid appId, CatalogAppService catalogService, DeviceScopeAuthorizer scope,
+        HttpContext httpContext, CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
         var result = await catalogService.SetPublishedAsync(
-            actor.OrganizationId, appId, true, actor.UserId, actor.Email, cancellationToken);
+            actor.OrganizationId, appId, true,
+            await ScopedGroupsAsync(scope, actor, cancellationToken), actor.UserId, actor.Email, cancellationToken);
         return result.Status == CatalogAppStatus.Success ? Results.NoContent() : ToProblem(result);
     }
 
     private static async Task<IResult> UnpublishAsync(
-        Guid appId, CatalogAppService catalogService, HttpContext httpContext, CancellationToken cancellationToken)
+        Guid appId, CatalogAppService catalogService, DeviceScopeAuthorizer scope,
+        HttpContext httpContext, CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
         var result = await catalogService.SetPublishedAsync(
-            actor.OrganizationId, appId, false, actor.UserId, actor.Email, cancellationToken);
+            actor.OrganizationId, appId, false,
+            await ScopedGroupsAsync(scope, actor, cancellationToken), actor.UserId, actor.Email, cancellationToken);
         return result.Status == CatalogAppStatus.Success ? Results.NoContent() : ToProblem(result);
     }
 
@@ -184,7 +201,8 @@ public static class CatalogEndpoints
     }
 
     private static async Task<IResult> SetIconAsync(
-        Guid appId, CatalogAppService catalogService, HttpContext httpContext, CancellationToken cancellationToken)
+        Guid appId, CatalogAppService catalogService, DeviceScopeAuthorizer scope,
+        HttpContext httpContext, CancellationToken cancellationToken)
     {
         if (!httpContext.Request.HasFormContentType)
         {
@@ -227,17 +245,20 @@ public static class CatalogEndpoints
 
         var actor = AdminActor.Required(httpContext.User);
         var result = await catalogService.SetIconAsync(
-            actor.OrganizationId, appId, png, actor.UserId, actor.Email, cancellationToken);
+            actor.OrganizationId, appId, png,
+            await ScopedGroupsAsync(scope, actor, cancellationToken), actor.UserId, actor.Email, cancellationToken);
 
         return result.Status == CatalogAppStatus.Success ? Results.NoContent() : ToProblem(result);
     }
 
     private static async Task<IResult> ClearIconAsync(
-        Guid appId, CatalogAppService catalogService, HttpContext httpContext, CancellationToken cancellationToken)
+        Guid appId, CatalogAppService catalogService, DeviceScopeAuthorizer scope,
+        HttpContext httpContext, CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
         var result = await catalogService.SetIconAsync(
-            actor.OrganizationId, appId, null, actor.UserId, actor.Email, cancellationToken);
+            actor.OrganizationId, appId, null,
+            await ScopedGroupsAsync(scope, actor, cancellationToken), actor.UserId, actor.Email, cancellationToken);
 
         return result.Status == CatalogAppStatus.Success ? Results.NoContent() : ToProblem(result);
     }
@@ -274,6 +295,11 @@ public static class CatalogEndpoints
         CatalogAppStatus.PackageNotFound => Results.Problem(result.Error, statusCode: StatusCodes.Status404NotFound),
         CatalogAppStatus.DuplicatePackage => Results.Problem(result.Error, statusCode: StatusCodes.Status409Conflict),
         CatalogAppStatus.PackageWithdrawn => Results.Problem(result.Error, statusCode: StatusCodes.Status409Conflict),
+
+        // The same shape as a scoped administrator creating a device group: a 403
+        // whose detail names the scope, because the entry and its groups are
+        // already in the caller's catalog list.
+        CatalogAppStatus.OutOfScope => Results.Problem(result.Error, statusCode: StatusCodes.Status403Forbidden),
         _ => Results.Problem(result.Error ?? "Invalid catalog app.", statusCode: StatusCodes.Status400BadRequest),
     };
 

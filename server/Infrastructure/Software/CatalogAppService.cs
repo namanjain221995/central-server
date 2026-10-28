@@ -15,10 +15,23 @@ namespace EndpointPlatform.Infrastructure.Software;
 /// offered to end users, how they are presented, and to whom.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Every change is audited under <c>software.catalog.*</c> and requires
 /// <c>software.deploy</c>. Publishing an app is, in effect, pre-approving an
 /// install on every device that can see it, which is the same authority as
 /// deploying the package -- so it is gated by the same permission.
+/// </para>
+/// <para>
+/// <b>And by the same scope.</b> An entry's visibility is the set of devices that
+/// may install it as SYSTEM, so a group-scoped administrator may only offer an app
+/// to groups they hold, may never choose "all devices", and may not change, publish,
+/// unpublish or delete an entry that already reaches beyond their groups. Every
+/// write takes the caller's scoped group ids (null for all-device scope, which
+/// changes nothing) and refuses with <see cref="CatalogAppStatus.OutOfScope"/>,
+/// the catalog's equivalent of the 403 a scoped administrator gets for creating a
+/// device group. Entries and their group ids are already visible to every
+/// <c>software.view</c> holder, so the refusal reveals nothing the list does not.
+/// </para>
 /// </remarks>
 public sealed class CatalogAppService(
     EndpointPlatformDbContext dbContext,
@@ -76,10 +89,16 @@ public sealed class CatalogAppService(
         Guid organizationId,
         CatalogAppInput input,
         bool publish,
+        IReadOnlyCollection<Guid>? scopedGroupIds,
         Guid actorId,
         string actorDisplay,
         CancellationToken cancellationToken = default)
     {
+        if (InputOutsideScope(input, scopedGroupIds) is { } refused)
+        {
+            return refused;
+        }
+
         // Any package of the organization, withdrawn or not: an administrator
         // may set an entry up ahead of restoring the package. The portal itself
         // never offers a withdrawn package, whatever the catalog says.
@@ -155,6 +174,7 @@ public sealed class CatalogAppService(
         Guid organizationId,
         Guid appId,
         CatalogAppInput input,
+        IReadOnlyCollection<Guid>? scopedGroupIds,
         Guid actorId,
         string actorDisplay,
         CancellationToken cancellationToken = default)
@@ -163,6 +183,19 @@ public sealed class CatalogAppService(
         if (app is null)
         {
             return CatalogAppResult.Failed(CatalogAppStatus.NotFound, "The catalog app does not exist.");
+        }
+
+        // Both ends of the change must be within scope: narrowing an entry that
+        // reaches other groups would withdraw it from devices the caller has no
+        // authority over, and widening one would offer it to them.
+        if (await AppOutsideScopeAsync(app, scopedGroupIds, cancellationToken) is { } beyond)
+        {
+            return beyond;
+        }
+
+        if (InputOutsideScope(input, scopedGroupIds) is { } refused)
+        {
+            return refused;
         }
 
         if (app.PackageId != input.PackageId)
@@ -214,6 +247,7 @@ public sealed class CatalogAppService(
         Guid organizationId,
         Guid appId,
         byte[]? png,
+        IReadOnlyCollection<Guid>? scopedGroupIds,
         Guid actorId,
         string actorDisplay,
         CancellationToken cancellationToken = default)
@@ -222,6 +256,14 @@ public sealed class CatalogAppService(
         if (app is null)
         {
             return CatalogAppResult.Failed(CatalogAppStatus.NotFound, "The catalog app does not exist.");
+        }
+
+        // The icon is what an employee trusts when choosing what to install, so
+        // restyling an entry seen beyond the caller's groups is the same change of
+        // someone else's catalog as editing its text.
+        if (await AppOutsideScopeAsync(app, scopedGroupIds, cancellationToken) is { } beyond)
+        {
+            return beyond;
         }
 
         try
@@ -257,6 +299,7 @@ public sealed class CatalogAppService(
         Guid organizationId,
         Guid appId,
         bool published,
+        IReadOnlyCollection<Guid>? scopedGroupIds,
         Guid actorId,
         string actorDisplay,
         CancellationToken cancellationToken = default)
@@ -265,6 +308,14 @@ public sealed class CatalogAppService(
         if (app is null)
         {
             return CatalogAppResult.Failed(CatalogAppStatus.NotFound, "The catalog app does not exist.");
+        }
+
+        // Publishing an entry that reaches beyond the caller's groups would
+        // pre-approve an install on devices they have no authority over;
+        // unpublishing it would withdraw it from them.
+        if (await AppOutsideScopeAsync(app, scopedGroupIds, cancellationToken) is { } beyond)
+        {
+            return beyond;
         }
 
         if (published)
@@ -297,9 +348,10 @@ public sealed class CatalogAppService(
     /// Removes the entry. Installs already made from it are untouched, and their
     /// request history keeps the app's name.
     /// </summary>
-    public async Task<bool> DeleteAsync(
+    public async Task<CatalogAppResult> DeleteAsync(
         Guid organizationId,
         Guid appId,
+        IReadOnlyCollection<Guid>? scopedGroupIds,
         Guid actorId,
         string actorDisplay,
         CancellationToken cancellationToken = default)
@@ -307,7 +359,12 @@ public sealed class CatalogAppService(
         var app = await FindAsync(organizationId, appId, cancellationToken);
         if (app is null)
         {
-            return false;
+            return CatalogAppResult.Failed(CatalogAppStatus.NotFound, "The catalog app does not exist.");
+        }
+
+        if (await AppOutsideScopeAsync(app, scopedGroupIds, cancellationToken) is { } beyond)
+        {
+            return beyond;
         }
 
         _dbContext.CatalogApps.Remove(app);
@@ -316,7 +373,7 @@ public sealed class CatalogAppService(
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        return true;
+        return CatalogAppResult.Succeeded(app);
     }
 
     /// <summary>Newest first, with the device and the task's current status.</summary>
@@ -360,6 +417,65 @@ public sealed class CatalogAppService(
     }
 
     private const string WithdrawnMessage = "The package is withdrawn. Restore it before publishing the app.";
+
+    /// <summary>
+    /// Refuses a requested visibility that reaches beyond the caller's groups, or
+    /// null when it does not. Checked before the group ids are resolved, so an
+    /// unknown group and another administrator's group get the same answer.
+    /// </summary>
+    private static CatalogAppResult? InputOutsideScope(
+        CatalogAppInput input, IReadOnlyCollection<Guid>? scopedGroupIds)
+    {
+        if (scopedGroupIds is null)
+        {
+            return null;
+        }
+
+        // "All devices" is every device in the organization, not the built-in
+        // "All Devices" group, so even scope over that group does not reach it.
+        if (input.Visibility == CatalogVisibility.AllDevices)
+        {
+            return CatalogAppResult.Failed(
+                CatalogAppStatus.OutOfScope, "Offering an app to all devices requires all-device scope.");
+        }
+
+        var scoped = scopedGroupIds.ToHashSet();
+        return (input.GroupIds ?? []).All(scoped.Contains)
+            ? null
+            : CatalogAppResult.Failed(
+                CatalogAppStatus.OutOfScope, "An app can only be offered to groups within your device scope.");
+    }
+
+    /// <summary>
+    /// Refuses a change to an entry that is already offered beyond the caller's
+    /// groups, or null when every device it reaches is theirs.
+    /// </summary>
+    private async Task<CatalogAppResult?> AppOutsideScopeAsync(
+        CatalogApp app, IReadOnlyCollection<Guid>? scopedGroupIds, CancellationToken cancellationToken)
+    {
+        if (scopedGroupIds is null)
+        {
+            return null;
+        }
+
+        var withinScope = false;
+        if (app.Visibility != CatalogVisibility.AllDevices)
+        {
+            var groups = await _dbContext.CatalogAppGroups.AsNoTracking()
+                .Where(g => g.CatalogAppId == app.Id)
+                .Select(g => g.DeviceGroupId)
+                .ToListAsync(cancellationToken);
+
+            var scoped = scopedGroupIds.ToHashSet();
+            withinScope = groups.All(scoped.Contains);
+        }
+
+        return withinScope
+            ? null
+            : CatalogAppResult.Failed(
+                CatalogAppStatus.OutOfScope,
+                "This app is offered to devices outside your scope; only an administrator with authority over all of them can change it.");
+    }
 
     private static bool IsUniqueViolation(DbUpdateException exception, string constraint) =>
         exception.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation } pg
@@ -435,6 +551,12 @@ public enum CatalogAppStatus
     PackageWithdrawn,
     InvalidGroups,
     Invalid,
+
+    /// <summary>
+    /// The caller lacks all-device scope and the change would reach devices outside
+    /// their groups. A 403, mirroring a scoped administrator creating a group.
+    /// </summary>
+    OutOfScope,
 }
 
 public sealed record CatalogAppResult(CatalogAppStatus Status, CatalogApp? App, string? Error)

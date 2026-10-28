@@ -173,11 +173,13 @@ public sealed class EnrollmentApprovalService(
             return ApprovalResult.Gone("The enrollment request has expired or does not exist.");
         }
 
+        // Out of scope reads as not found: the pending list leaves this row out for
+        // this administrator, so a "forbidden" would confirm that a device they
+        // cannot see is being re-enrolled.
         if (!await _deviceScope.CanActOnDeviceAsync(
                 approverUserId, organizationId, pending.ExistingDeviceId.Value, cancellationToken))
         {
-            return ApprovalResult.Forbidden(
-                "Approving a re-enrollment requires device scope over the matched device.");
+            return ApprovalResult.OutOfScope();
         }
 
         var decided = await _pendingStore.DecideAsync(
@@ -242,14 +244,23 @@ public sealed class EnrollmentApprovalService(
             return ApprovalResult.Gone($"The enrollment request has already been {pending.Status.ToString().ToLowerInvariant()}.");
         }
 
-        // Rejecting a re-enrollment is tenant-bound like approving one; no device
-        // scope check, because refusing a handover takes nothing from anyone.
-        // The decided record then serves its cooling-off: the still-knocking agent
-        // is refused without re-pending until the rejection expires.
-        if (pending.Kind == PendingEnrollmentKind.ReEnrollment
-            && pending.OrganizationId != organizationId)
+        // Rejecting a re-enrollment is tenant-bound like approving one, and
+        // scope-bound too: the row is hidden from an administrator who cannot act
+        // on the matched device, and a rejection still decides that device's fate
+        // -- the decided record serves its cooling-off, refusing the still-knocking
+        // agent without re-pending until the rejection expires.
+        if (pending.Kind == PendingEnrollmentKind.ReEnrollment)
         {
-            return ApprovalResult.Gone("The enrollment request has expired or does not exist.");
+            if (pending.OrganizationId != organizationId)
+            {
+                return ApprovalResult.Gone("The enrollment request has expired or does not exist.");
+            }
+
+            if (pending.ExistingDeviceId is { } matched
+                && !await _deviceScope.CanActOnDeviceAsync(approverUserId, organizationId, matched, cancellationToken))
+            {
+                return ApprovalResult.OutOfScope();
+            }
         }
 
         var decided = await _pendingStore.DecideAsync(
@@ -297,7 +308,7 @@ public sealed class EnrollmentApprovalService(
 
 /// <summary>Outcome of an approve/reject attempt.</summary>
 public sealed record ApprovalResult(
-    bool Success, string? FailureReason, PendingEnrollment? Request, bool IsForbidden = false)
+    bool Success, string? FailureReason, PendingEnrollment? Request, bool IsNotFound = false)
 {
     public static ApprovalResult Ok(PendingEnrollment request) => new(true, null, request);
 
@@ -311,10 +322,10 @@ public sealed record ApprovalResult(
     public static ApprovalResult Gone(string reason) => new(false, reason, null);
 
     /// <summary>
-    /// The caller is authenticated and the request exists in their organization,
-    /// but they lack device scope over the matched device. Distinguished from
-    /// <see cref="Gone"/> because the administrator CAN see the row and needs to
-    /// know the refusal is about their scope, not about staleness.
+    /// A re-enrollment whose matched device is outside the caller's device scope.
+    /// The pending list does not show such a row to them, so it answers as not
+    /// found -- the platform's answer for anything out of scope -- with no reason
+    /// that would confirm the device is being re-enrolled.
     /// </summary>
-    public static ApprovalResult Forbidden(string reason) => new(false, reason, null, IsForbidden: true);
+    public static ApprovalResult OutOfScope() => new(false, null, null, IsNotFound: true);
 }

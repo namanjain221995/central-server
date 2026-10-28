@@ -151,7 +151,8 @@ public static class PackageEndpoints
 
     private static async Task<IResult> DeployAsync(
         Guid packageId, DeployPackageRequest request, SoftwarePackageService packageService,
-        HttpContext httpContext, CancellationToken cancellationToken)
+        Infrastructure.Security.DeviceScopeAuthorizer scope, HttpContext httpContext,
+        CancellationToken cancellationToken)
     {
         if ((request.DeviceId is null) == (request.GroupId is null))
         {
@@ -160,6 +161,19 @@ public static class PackageEndpoints
         }
 
         var actor = AdminActor.Required(httpContext.User);
+
+        // Installing software runs as SYSTEM on the target, so the target is scoped
+        // like every other device action -- the device the caller may act on, or a
+        // group they are scoped to (which means every member). The target comes from
+        // the body, not the route, and is checked all the same. Out of scope is the
+        // same 404 as a target that does not exist.
+        var inScope = request.DeviceId is { } targetDevice
+            ? await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, targetDevice, cancellationToken)
+            : await scope.CanActOnGroupAsync(actor.UserId, actor.OrganizationId, request.GroupId!.Value, cancellationToken);
+        if (!inScope)
+        {
+            return Results.NotFound();
+        }
 
         if (request.DeviceId is { } deviceId)
         {

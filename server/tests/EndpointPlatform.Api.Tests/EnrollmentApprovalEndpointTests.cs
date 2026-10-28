@@ -478,9 +478,12 @@ public sealed class EnrollmentApprovalEndpointTests(AdminApiPostgresFixture fixt
         using var unscoped = await UnscopedAdminAsync();
 
         // device.enroll alone admits unknown machines; handing over an EXISTING
-        // device additionally needs authority over that device.
+        // device additionally needs authority over that device. Out of scope is
+        // 404 like everywhere else -- the list does not show this row to them.
         var refused = await unscoped.PostAsync(ApproveUri(requestId), null);
-        refused.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+        refused.StatusCode.ShouldBe(HttpStatusCode.NotFound);
+        (await refused.Content.ReadAsStringAsync()).ShouldNotContain(
+            "SCOPE-REENROLL", customMessage: "the refusal must not name the device it protects");
 
         (await ReadAsync(requestId))!.Status.ShouldBe(
             PendingEnrollmentStatus.Pending, "a scope refusal must not have decided anything");
@@ -489,6 +492,47 @@ public sealed class EnrollmentApprovalEndpointTests(AdminApiPostgresFixture fixt
         // unknown machine was never scope-gated, and must not have become so.
         var (_, plainId) = await SeedPendingAsync("SCOPE-PLAIN");
         (await unscoped.PostAsync(ApproveUri(plainId), null)).StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task A_group_scoped_administrator_sees_and_decides_only_re_enrollments_of_their_own_devices()
+    {
+        var outHost = $"R8OUT-{Guid.NewGuid():N}"[..14];
+        var inHost = $"R8IN-{Guid.NewGuid():N}"[..13];
+        var (outRequest, outDevice, _) = await SeedReEnrollmentAsync(outHost);
+        var (inRequest, inDevice, _) = await SeedReEnrollmentAsync(inHost);
+        var (_, plainRequest) = await SeedPendingAsync($"R8PLAIN-{Guid.NewGuid():N}"[..15]);
+
+        var groups = new GroupTestSupport(_fixture);
+        using var itAdmin = await groups.ClientAsAsync(AdminApiPostgresFixture.ItAdminEmail);
+        var groupId = await groups.CreateGroupAsync(itAdmin, GroupTestSupport.UniqueName("R8"), inDevice);
+        using var scoped = await groups.ScopedAdminAsync(groupId);
+
+        // The list: the out-of-scope re-enrollment is absent -- its request id, the
+        // matched device's id and its hostname all -- while the in-scope one and the
+        // plain request (no device, no organization yet) remain.
+        var scopedList = await (await scoped.GetAsync(PendingUri)).Content.ReadAsStringAsync();
+        scopedList.ShouldNotContain(outRequest);
+        scopedList.ShouldNotContain(outDevice.ToString());
+        scopedList.ShouldNotContain(outHost);
+        scopedList.ShouldContain(inRequest);
+        scopedList.ShouldContain(plainRequest, customMessage: "plain enrollment rows are unchanged");
+
+        var allList = await (await itAdmin.GetAsync(PendingUri)).Content.ReadAsStringAsync();
+        allList.ShouldContain(outRequest, customMessage: "an all-device administrator is unchanged");
+        allList.ShouldContain(inRequest);
+
+        // Deciding the hidden row is 404 both ways, and decides nothing.
+        (await scoped.PostAsync(ApproveUri(outRequest), null)).StatusCode.ShouldBe(HttpStatusCode.NotFound);
+        (await scoped.PostAsync(RejectUri(outRequest), null)).StatusCode.ShouldBe(HttpStatusCode.NotFound);
+        (await ReadAsync(outRequest))!.Status.ShouldBe(PendingEnrollmentStatus.Pending);
+
+        // Their own device's re-enrollment they still decide.
+        (await scoped.PostAsync(RejectUri(inRequest), null)).StatusCode.ShouldBe(HttpStatusCode.OK);
+        (await ReadAsync(inRequest))!.Status.ShouldBe(PendingEnrollmentStatus.Rejected);
+
+        // And the all-device administrator decides the other one exactly as before.
+        (await itAdmin.PostAsync(ApproveUri(outRequest), null)).StatusCode.ShouldBe(HttpStatusCode.OK);
     }
 
     [Fact]

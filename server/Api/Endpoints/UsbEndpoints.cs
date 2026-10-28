@@ -4,6 +4,7 @@ using EndpointPlatform.Domain.Authorization;
 using EndpointPlatform.Domain.Peripherals;
 using EndpointPlatform.Infrastructure.Peripherals;
 using EndpointPlatform.Infrastructure.Persistence;
+using EndpointPlatform.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 
 namespace EndpointPlatform.Api.Endpoints;
@@ -23,6 +24,14 @@ namespace EndpointPlatform.Api.Endpoints;
 /// There is no endpoint here that an endpoint's own user can reach. The agent's
 /// only USB-related route is the report it POSTs under its device credential,
 /// and that route cannot create or widen a grant.
+/// </para>
+/// <para>
+/// Every route is device-scoped as well as permission-gated. A department-scoped
+/// administrator holding <c>usb.manage</c> may open storage only on machines in
+/// their own groups: grant and reapply check the named device, revoke checks the
+/// device the grant belongs to (never anything the caller supplies), and every
+/// list leaves out-of-scope machines out. Out of scope answers 404, exactly as a
+/// device that does not exist, matching the rest of the device routes.
 /// </para>
 /// </remarks>
 public static class UsbEndpoints
@@ -63,15 +72,14 @@ public static class UsbEndpoints
         Guid deviceId,
         HttpContext httpContext,
         UsbReadService readService,
-        EndpointPlatformDbContext dbContext,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
 
-        var exists = await dbContext.Devices.AnyAsync(
-            d => d.Id == deviceId && d.OrganizationId == actor.OrganizationId, cancellationToken);
-
-        if (!exists)
+        // Covers existence in the caller's organization too: a device that is
+        // not there and one outside the caller's scope are the same 404.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
         {
             return Results.NotFound();
         }
@@ -85,23 +93,31 @@ public static class UsbEndpoints
     private static async Task<IResult> ListConnectedAsync(
         HttpContext httpContext,
         UsbReadService readService,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
-        return Results.Ok(await readService.ListConnectedAsync(actor.OrganizationId, cancellationToken));
+        var scopedDeviceIds = await scope.ScopedDeviceIdsOrNullAsync(
+            actor.UserId, actor.OrganizationId, cancellationToken);
+
+        return Results.Ok(await readService.ListConnectedAsync(
+            actor.OrganizationId, cancellationToken, scopedDeviceIds));
     }
 
     private static async Task<IResult> ListRequestsAsync(
         HttpContext httpContext,
         UsbReadService readService,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken,
         bool liveOnly = false,
         int limit = 100)
     {
         var actor = AdminActor.Required(httpContext.User);
+        var scopedDeviceIds = await scope.ScopedDeviceIdsOrNullAsync(
+            actor.UserId, actor.OrganizationId, cancellationToken);
 
         var requests = await readService.ListRequestsAsync(
-            actor.OrganizationId, liveOnly, limit, cancellationToken);
+            actor.OrganizationId, liveOnly, limit, cancellationToken, scopedDeviceIds);
 
         return Results.Ok(requests);
     }
@@ -112,6 +128,7 @@ public static class UsbEndpoints
         GrantUsbAccessRequest request,
         HttpContext httpContext,
         UsbService usbService,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -136,6 +153,15 @@ public static class UsbEndpoints
                 $"Unknown USB access level '{request.Policy}'. Valid values are "
                 + $"'{nameof(UsbStoragePolicy.ReadOnly)}' and '{nameof(UsbStoragePolicy.Enabled)}'.",
                 statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        // Scope after the caller's own input mistakes (which are 400 whatever the
+        // device), before anything is recorded or pushed. Opening storage is a
+        // change to one machine, so an administrator restricted to a group must not
+        // reach a machine outside it by knowing its id.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
         }
 
         var (outcome, granted) = await usbService.GrantAsync(
@@ -199,9 +225,27 @@ public static class UsbEndpoints
         RevokeUsbAccessRequest? request,
         HttpContext httpContext,
         UsbService usbService,
+        DeviceScopeAuthorizer scope,
+        EndpointPlatformDbContext dbContext,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
+
+        // Scope is resolved from the grant's own device, not from anything the
+        // caller supplies: the route names a grant, and an administrator scoped to
+        // one group must not narrow -- or learn of -- another group's grant by
+        // quoting its id. Unknown and out of scope are the same 404.
+        var grantDeviceId = await dbContext.UsbAccessRequests
+            .AsNoTracking()
+            .Where(r => r.Id == requestId && r.OrganizationId == actor.OrganizationId)
+            .Select(r => (Guid?)r.DeviceId)
+            .SingleOrDefaultAsync(cancellationToken);
+
+        if (grantDeviceId is not { } deviceId
+            || !await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
 
         var outcome = await usbService.RevokeAsync(
             actor.OrganizationId, requestId, request?.Note, actor.UserId, actor.Email, cancellationToken);
@@ -221,16 +265,15 @@ public static class UsbEndpoints
         Guid deviceId,
         HttpContext httpContext,
         UsbService usbService,
-        EndpointPlatformDbContext dbContext,
-        TimeProvider timeProvider,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
 
-        var device = await dbContext.Devices.AsNoTracking().SingleOrDefaultAsync(
-            d => d.Id == deviceId && d.OrganizationId == actor.OrganizationId, cancellationToken);
-
-        if (device is null)
+        // Reapply grants nothing, but it still queues work on one machine and writes
+        // an audit entry against it, so it is scoped like every other device action.
+        // The check also covers existence in the caller's organization.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
         {
             return Results.NotFound();
         }

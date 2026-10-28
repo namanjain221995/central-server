@@ -103,9 +103,9 @@ public sealed class AdminBootstrapper(EndpointPlatformDbContext dbContext, ILogg
         user.AssignRole(superAdminRole.Id);
 
         // Device scope is deny-by-default, so an administrator with no scope reaches no
-        // device at all. That is right for accounts created later through the platform,
-        // where an operator chooses their scope - but the bootstrap account is the one
-        // that has to be able to grant everyone else's, so it starts organization-wide.
+        // device at all. The bootstrap account starts organization-wide, exactly as
+        // PlatformUserService grants every account it creates: a restriction is
+        // something configured afterwards, never the accident of an empty default.
         user.GrantAllDeviceScope();
 
         _dbContext.PlatformUsers.Add(user);

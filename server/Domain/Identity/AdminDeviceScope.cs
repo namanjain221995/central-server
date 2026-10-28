@@ -13,12 +13,15 @@ namespace EndpointPlatform.Domain.Identity;
 /// type on zero devices.
 /// </para>
 /// <para>
-/// The model is deliberately deny-by-default. A newly created administrator has no
-/// scope rows and <see cref="PlatformUser.HasAllDeviceScope"/> false, so they can
-/// act on nothing until an operator grants them either specific groups or
-/// all-devices. Administrators that predate this model are migrated to
-/// all-devices explicitly, so the upgrade cannot silently revoke anyone's access
-/// and "no rows" never has to mean "unlimited".
+/// The authorizer is deliberately deny-by-default: an administrator with no scope
+/// rows and <see cref="PlatformUser.HasAllDeviceScope"/> false acts on nothing, so
+/// "no rows" never has to mean "unlimited". Accounts are nevertheless CREATED with
+/// all-device scope (PlatformUserService.CreateAsync): the role says what an
+/// administrator may do, and until there is a surface for granting scope, an account
+/// born without it would be unusable. Restricting an administrator to specific
+/// groups means clearing the flag and adding rows here. Administrators that predate
+/// this model were migrated to all-devices explicitly, and the
+/// BackfillAllDeviceScope migration did the same for accounts left with neither.
 /// </para>
 /// </remarks>
 public sealed class AdminDeviceScope : AuditableEntity

@@ -153,6 +153,7 @@ public static class DeviceEndpoints
         Guid deviceId,
         SetDisplayNameRequest request,
         DeviceLifecycleService lifecycleService,
+        DeviceScopeAuthorizer scope,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
@@ -166,6 +167,15 @@ public static class DeviceEndpoints
         }
 
         var actor = AdminActor.Required(httpContext.User);
+
+        // A rename is a change to one device and is audited against it, so it is
+        // scoped like every other device route: outside the caller's groups the
+        // device is reported as not there.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
         var result = await lifecycleService.RenameAsync(
             actor.OrganizationId, deviceId, request.DisplayName, actor.UserId, actor.Email, cancellationToken);
 
@@ -546,6 +556,7 @@ public static class DeviceEndpoints
 
     private static async Task<IResult> ListAsync(
         DeviceReadService deviceReadService,
+        DeviceScopeAuthorizer scope,
         HttpContext httpContext,
         string? search,
         CancellationToken cancellationToken,
@@ -554,7 +565,8 @@ public static class DeviceEndpoints
         string? status = null,
         string? connectivity = null)
     {
-        var organizationId = AdminActor.Required(httpContext.User).OrganizationId;
+        var actor = AdminActor.Required(httpContext.User);
+        var organizationId = actor.OrganizationId;
 
         bool? online = null;
         if (!string.IsNullOrWhiteSpace(connectivity))
@@ -589,6 +601,12 @@ public static class DeviceEndpoints
             statusFilter = parsed;
         }
 
+        // Scope narrows the list rather than refusing it: a group-scoped
+        // administrator sees their own devices, and the totals say nothing about
+        // how many others exist. Null means unrestricted, exactly as before.
+        var scopedDeviceIds = await scope.ScopedDeviceIdsOrNullAsync(
+            actor.UserId, organizationId, cancellationToken);
+
         var result = await deviceReadService.ListAsync(
             organizationId,
             page,
@@ -596,24 +614,32 @@ public static class DeviceEndpoints
             search,
             statusFilter,
             cancellationToken,
-            online);
+            online,
+            scopedDeviceIds);
 
         return Results.Ok(result);
     }
 
     private static async Task<IResult> CountsAsync(
         DeviceReadService deviceReadService,
+        DeviceScopeAuthorizer scope,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
-        var organizationId = AdminActor.Required(httpContext.User).OrganizationId;
+        var actor = AdminActor.Required(httpContext.User);
 
-        return Results.Ok(await deviceReadService.CountsAsync(organizationId, cancellationToken));
+        // Scoped exactly as the list is, so "Online 2" opens a list of two.
+        var scopedDeviceIds = await scope.ScopedDeviceIdsOrNullAsync(
+            actor.UserId, actor.OrganizationId, cancellationToken);
+
+        return Results.Ok(await deviceReadService.CountsAsync(
+            actor.OrganizationId, scopedDeviceIds, cancellationToken));
     }
 
     private static async Task<IResult> GetAsync(
         Guid deviceId,
         EndpointPlatformDbContext dbContext,
+        DeviceScopeAuthorizer scope,
         HttpContext httpContext,
         Microsoft.Extensions.Options.IOptions<Infrastructure.Configuration.AgentServerOptions> agentServerOptions,
         TimeProvider timeProvider,
@@ -621,7 +647,17 @@ public static class DeviceEndpoints
     {
         // Organization scoping: an administrator only ever sees their own
         // organization's devices, even with a guessed id.
-        var organizationId = AdminActor.Required(httpContext.User).OrganizationId;
+        var actor = AdminActor.Required(httpContext.User);
+        var organizationId = actor.OrganizationId;
+
+        // And device scope: the detail carries the full inventory -- local
+        // accounts, software, services, processes -- so a group-scoped
+        // administrator must not read it for a machine outside their groups.
+        // Answered 404, indistinguishable from a device that does not exist.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, organizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
 
         var device = await dbContext.Devices
             .AsNoTracking()

@@ -10,15 +10,33 @@ public sealed class SecurityReadService(EndpointPlatformDbContext dbContext)
     private readonly EndpointPlatformDbContext _dbContext = dbContext
         ?? throw new ArgumentNullException(nameof(dbContext));
 
+    /// <param name="scopedDeviceIds">
+    /// The devices the caller may see, or null for all of them -- the value
+    /// <c>DeviceScopeAuthorizer.ScopedDeviceIdsOrNullAsync</c> returns. Required, not
+    /// defaulted: every row names a device, so a caller that forgot to pass scope
+    /// would hand a group-scoped administrator the whole estate's hostnames. Applied
+    /// in SQL, before anything is materialised or summarised, so the summary counts
+    /// describe the caller's devices only.
+    /// </param>
     public async Task<SecurityOverview> GetOverviewAsync(
-        Guid organizationId, CancellationToken cancellationToken = default)
+        Guid organizationId,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
+        CancellationToken cancellationToken = default)
     {
-        var rows = await (
+        var query =
             from p in _dbContext.DeviceSecurityPosture.AsNoTracking()
             join d in _dbContext.Devices.AsNoTracking() on p.DeviceId equals d.Id
             where d.OrganizationId == organizationId && d.Status == DeviceStatus.Active
-            select new { d.Id, d.Hostname, Posture = p })
-            .ToListAsync(cancellationToken);
+            select new { d.Id, d.Hostname, Posture = p };
+
+        // Materialised first: EF translates Contains on a List, not on every
+        // IReadOnlyCollection a caller might hand over.
+        if (scopedDeviceIds?.ToList() is { } visible)
+        {
+            query = query.Where(x => visible.Contains(x.Id));
+        }
+
+        var rows = await query.ToListAsync(cancellationToken);
 
         var devices = rows
             .Select(r => new DeviceSecuritySummary(

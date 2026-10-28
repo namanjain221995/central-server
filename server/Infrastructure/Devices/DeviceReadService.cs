@@ -29,6 +29,13 @@ public sealed class DeviceReadService(
     private readonly TimeProvider _timeProvider = timeProvider
         ?? throw new ArgumentNullException(nameof(timeProvider));
 
+    /// <param name="scopedDeviceIds">
+    /// The devices the caller may see, or null for all of them -- the value
+    /// <c>DeviceScopeAuthorizer.ScopedDeviceIdsOrNullAsync</c> returns. Applied
+    /// before counting and paging, so a scoped administrator's total and pages
+    /// describe their own devices and never reveal how large the rest of the
+    /// estate is.
+    /// </param>
     public async Task<DevicePage> ListAsync(
         Guid organizationId,
         int page,
@@ -36,7 +43,8 @@ public sealed class DeviceReadService(
         string? search,
         Domain.Devices.DeviceStatus? status = null,
         CancellationToken cancellationToken = default,
-        bool? online = null)
+        bool? online = null,
+        IReadOnlyCollection<Guid>? scopedDeviceIds = null)
     {
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, 200);
@@ -45,9 +53,7 @@ public sealed class DeviceReadService(
         var staleAfter = TimeSpan.FromSeconds(_options.OfflineAfterSeconds);
         var onlineThreshold = now - staleAfter;
 
-        var query = _dbContext.Devices
-            .AsNoTracking()
-            .Where(d => d.OrganizationId == organizationId);
+        var query = ScopedDevices(organizationId, scopedDeviceIds);
 
         // The normal working view is Active machines; removed (retired) devices
         // keep their rows and history and stay reachable through the Retired
@@ -178,14 +184,22 @@ public sealed class DeviceReadService(
         return new DevicePage(items, totalCount, page, pageSize);
     }
 
-    public async Task<DeviceCounts> CountsAsync(Guid organizationId, CancellationToken cancellationToken = default)
+    /// <param name="scopedDeviceIds">
+    /// The devices the caller may see, or null for all of them. Counts are scoped
+    /// exactly as the list is, so the dashboard's tiles open lists of the same size.
+    /// Deliberately the only overload: an unscoped convenience overload once let the
+    /// fleet report count the whole estate for a group-scoped administrator, so a
+    /// caller must always say which devices it means.
+    /// </param>
+    public async Task<DeviceCounts> CountsAsync(
+        Guid organizationId,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
+        CancellationToken cancellationToken = default)
     {
         var now = _timeProvider.GetUtcNow();
         var onlineThreshold = now - TimeSpan.FromSeconds(_options.OfflineAfterSeconds);
 
-        var counts = await _dbContext.Devices
-            .AsNoTracking()
-            .Where(d => d.OrganizationId == organizationId)
+        var counts = await ScopedDevices(organizationId, scopedDeviceIds)
             .GroupBy(_ => 1)
             .Select(g => new
             {
@@ -205,6 +219,26 @@ public sealed class DeviceReadService(
 
         var offline = counts.Total - counts.Online - counts.Retired;
         return new DeviceCounts(counts.Total, counts.Online, offline, counts.Retired);
+    }
+
+    /// <summary>
+    /// The organization's devices, narrowed to the caller's scope when there is one.
+    /// Null means unrestricted; an empty collection means no device at all, never
+    /// every device -- deny by default, as the authorizer itself is.
+    /// </summary>
+    private IQueryable<Domain.Devices.Device> ScopedDevices(
+        Guid organizationId, IReadOnlyCollection<Guid>? scopedDeviceIds)
+    {
+        var query = _dbContext.Devices
+            .AsNoTracking()
+            .Where(d => d.OrganizationId == organizationId);
+
+        if (scopedDeviceIds?.ToList() is { } visible)
+        {
+            query = query.Where(d => visible.Contains(d.Id));
+        }
+
+        return query;
     }
 }
 

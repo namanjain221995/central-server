@@ -22,16 +22,37 @@ public sealed class ReportReadService(
     private readonly SecurityReadService _securityReadService = securityReadService;
     private readonly UpdateReadService _updateReadService = updateReadService;
 
+    /// <param name="scopedDeviceIds">
+    /// The devices the caller may see, or null for all of them -- the value
+    /// <c>DeviceScopeAuthorizer.ScopedDeviceIdsOrNullAsync</c> returns. Every
+    /// per-device figure (device counts, posture, patching, task throughput,
+    /// non-compliant results) is narrowed to it, so a scoped administrator's report
+    /// describes their own devices and never how large or unhealthy the rest of the
+    /// estate is. Policy and package totals are organization catalogue sizes, not
+    /// per-device facts, and stay organization-wide.
+    /// </param>
     public async Task<FleetReport> GetSummaryAsync(
-        Guid organizationId, CancellationToken cancellationToken = default)
+        Guid organizationId,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
+        CancellationToken cancellationToken = default)
     {
-        var devices = await _deviceReadService.CountsAsync(organizationId, cancellationToken);
-        var security = (await _securityReadService.GetOverviewAsync(organizationId, cancellationToken)).Summary;
-        var updates = (await _updateReadService.GetOverviewAsync(organizationId, cancellationToken)).Summary;
+        // Materialised once: EF translates Contains on a List, not on every
+        // IReadOnlyCollection a caller might hand over.
+        var visible = scopedDeviceIds?.ToList();
 
-        var taskCountsRaw = await _dbContext.DeviceTasks
+        var devices = await _deviceReadService.CountsAsync(organizationId, visible, cancellationToken);
+        var security = (await _securityReadService.GetOverviewAsync(organizationId, visible, cancellationToken)).Summary;
+        var updates = (await _updateReadService.GetOverviewAsync(organizationId, visible, cancellationToken)).Summary;
+
+        var taskQuery = _dbContext.DeviceTasks
             .AsNoTracking()
-            .Where(t => t.OrganizationId == organizationId)
+            .Where(t => t.OrganizationId == organizationId);
+        if (visible is not null)
+        {
+            taskQuery = taskQuery.Where(t => visible.Contains(t.DeviceId));
+        }
+
+        var taskCountsRaw = await taskQuery
             .GroupBy(t => t.Status)
             .Select(g => new { Status = g.Key, Count = g.Count() })
             .ToListAsync(cancellationToken);
@@ -48,9 +69,15 @@ public sealed class ReportReadService(
 
         var policyTotal = await _dbContext.Policies
             .CountAsync(p => p.OrganizationId == organizationId && p.IsEnabled, cancellationToken);
-        var nonCompliant = await _dbContext.PolicyComplianceResults
-            .CountAsync(r => r.OrganizationId == organizationId
-                && r.State == PolicyComplianceState.NonCompliant, cancellationToken);
+        var nonCompliantQuery = _dbContext.PolicyComplianceResults
+            .AsNoTracking()
+            .Where(r => r.OrganizationId == organizationId && r.State == PolicyComplianceState.NonCompliant);
+        if (visible is not null)
+        {
+            nonCompliantQuery = nonCompliantQuery.Where(r => visible.Contains(r.DeviceId));
+        }
+
+        var nonCompliant = await nonCompliantQuery.CountAsync(cancellationToken);
 
         var activePackages = await _dbContext.SoftwarePackages
             .CountAsync(p => p.OrganizationId == organizationId && !p.IsWithdrawn, cancellationToken);

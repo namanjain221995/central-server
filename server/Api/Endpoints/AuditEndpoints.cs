@@ -1,6 +1,7 @@
 using EndpointPlatform.Api.Security;
 using EndpointPlatform.Domain.Authorization;
 using EndpointPlatform.Infrastructure.Persistence;
+using EndpointPlatform.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 
 namespace EndpointPlatform.Api.Endpoints;
@@ -34,19 +35,45 @@ public static class AuditEndpoints
         return endpoints;
     }
 
+    /// <remarks>
+    /// Scoped for an administrator without all-device scope: rows about a device
+    /// outside their groups are left out (before the page is cut, so a scoped page
+    /// is still a full page of their own), while rows naming no device -- sign-ins,
+    /// account and catalog changes -- remain, as they describe the console rather
+    /// than the estate. Asking for an out-of-scope device's history is 404, the
+    /// same answer as for a device that does not exist. An all-device
+    /// administrator sees exactly what they saw before.
+    /// </remarks>
     private static async Task<IResult> ListAsync(
         HttpContext httpContext,
         EndpointPlatformDbContext dbContext,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken,
         int limit = 50,
         DateTimeOffset? before = null,
         Guid? deviceId = null)
     {
-        var organizationId = AdminActor.Required(httpContext.User).OrganizationId;
+        var actor = AdminActor.Required(httpContext.User);
+        var organizationId = actor.OrganizationId;
+
+        // Materialised first: EF translates Contains on a List, not on every
+        // IReadOnlyCollection the authorizer might hand over.
+        var visible = (await scope.ScopedDeviceIdsOrNullAsync(actor.UserId, organizationId, cancellationToken))
+            ?.ToList();
+
+        if (deviceId is { } requested && visible is not null && !visible.Contains(requested))
+        {
+            return Results.NotFound();
+        }
 
         var query = dbContext.AuditLogEntries
             .AsNoTracking()
             .Where(a => a.OrganizationId == organizationId);
+
+        if (visible is not null)
+        {
+            query = query.Where(a => a.DeviceId == null || visible.Contains(a.DeviceId.Value));
+        }
 
         if (before is { } cursor)
         {

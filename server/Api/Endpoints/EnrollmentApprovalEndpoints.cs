@@ -4,6 +4,7 @@ using EndpointPlatform.Domain.Enrollment;
 using EndpointPlatform.Infrastructure.Configuration;
 using EndpointPlatform.Infrastructure.Enrollment;
 using EndpointPlatform.Infrastructure.Persistence;
+using EndpointPlatform.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -81,18 +82,28 @@ public static class EnrollmentApprovalEndpoints
         EndpointPlatformDbContext dbContext,
         IOptions<AgentServerOptions> agentServerOptions,
         TimeProvider timeProvider,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
         var all = await pendingStore.ListAsync(cancellationToken);
         var now = timeProvider.GetUtcNow();
 
-        // Re-enrollment rows name a real device, so they are tenant-scoped like
-        // everything else that names one. Plain requests carry no organization until
-        // approval and remain visible to anyone who may approve, as before.
+        // Null for an all-device administrator, who sees every row as before.
+        var visible = (await scope.ScopedDeviceIdsOrNullAsync(actor.UserId, actor.OrganizationId, cancellationToken))
+            ?.ToHashSet();
+
+        // Re-enrollment rows name a real device, so they are tenant- AND
+        // device-scoped like everything else that names one: a group-scoped
+        // administrator does not see the matched device's id or hostname for a
+        // machine outside their groups, and approving or rejecting such a row is a
+        // 404. Plain requests carry no organization and no device until approval
+        // and remain visible to anyone who may approve, as before.
         var pending = all
             .Where(entry => entry.Request.Kind != PendingEnrollmentKind.ReEnrollment
-                            || entry.Request.OrganizationId == actor.OrganizationId)
+                            || (entry.Request.OrganizationId == actor.OrganizationId
+                                && (visible is null
+                                    || (entry.Request.ExistingDeviceId is { } matched && visible.Contains(matched)))))
             .ToList();
 
         // One query answers "is the matched device's credential still being used"
@@ -187,16 +198,20 @@ public static class EnrollmentApprovalEndpoints
 
         if (!result.Success)
         {
-            // Scope refusals are 403: the administrator can see the row and needs
-            // to know the problem is their device scope, not a stale list.
-            // Everything else — expired, already decided, lost a race, another
-            // tenant's request — is 409 rather than 404: the request may well have
-            // existed a moment ago, and the caller's view of it is simply stale.
+            // A re-enrollment of a device outside the caller's scope is 404, the
+            // platform's answer for anything out of scope: the list never showed
+            // them the row. Everything else — expired, already decided, lost a
+            // race, another tenant's request — is 409 rather than 404: the request
+            // may well have existed a moment ago, and the caller's view of it is
+            // simply stale.
+            if (result.IsNotFound)
+            {
+                return Results.NotFound();
+            }
+
             return Results.Problem(
                 title: result.FailureReason ?? "The enrollment request could not be approved.",
-                statusCode: result.IsForbidden
-                    ? StatusCodes.Status403Forbidden
-                    : StatusCodes.Status409Conflict);
+                statusCode: StatusCodes.Status409Conflict);
         }
 
         var isReEnrollment = result.Request!.Kind == PendingEnrollmentKind.ReEnrollment;
@@ -229,6 +244,11 @@ public static class EnrollmentApprovalEndpoints
 
         if (!result.Success)
         {
+            if (result.IsNotFound)
+            {
+                return Results.NotFound();
+            }
+
             return Results.Problem(
                 title: result.FailureReason ?? "The enrollment request could not be rejected.",
                 statusCode: StatusCodes.Status409Conflict);

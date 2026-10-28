@@ -88,18 +88,22 @@ public static class DeploymentEndpoints
     /// <remarks>
     /// Only Queued tasks are cancellable. A delivered install is running on a
     /// Windows machine and is deliberately left alone rather than reported as
-    /// cancelled, which would be a claim the platform cannot support.
+    /// cancelled, which would be a claim the platform cannot support. Only the
+    /// caller's in-scope targets are cancelled; a deployment with none is 404.
     /// </remarks>
     private static async Task<IResult> CancelAsync(
         Guid deploymentId,
         SoftwareDeploymentService deploymentService,
+        DeviceScopeAuthorizer scope,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
+        var scopedDeviceIds = await scope.ScopedDeviceIdsOrNullAsync(
+            actor.UserId, actor.OrganizationId, cancellationToken);
 
         var result = await deploymentService.CancelPendingAsync(
-            actor.OrganizationId, deploymentId, actor.UserId, actor.Email, cancellationToken);
+            actor.OrganizationId, deploymentId, scopedDeviceIds, actor.UserId, actor.Email, cancellationToken);
 
         return result is null
             ? Results.NotFound()
