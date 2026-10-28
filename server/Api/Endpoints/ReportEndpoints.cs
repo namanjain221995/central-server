@@ -1,6 +1,7 @@
 using EndpointPlatform.Api.Security;
 using EndpointPlatform.Domain.Authorization;
 using EndpointPlatform.Infrastructure.Reporting;
+using EndpointPlatform.Infrastructure.Security;
 
 namespace EndpointPlatform.Api.Endpoints;
 
@@ -16,9 +17,16 @@ public static class ReportEndpoints
     }
 
     private static async Task<IResult> SummaryAsync(
-        ReportReadService reportReadService, HttpContext httpContext, CancellationToken cancellationToken)
+        ReportReadService reportReadService,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
     {
-        var organizationId = AdminActor.Required(httpContext.User).OrganizationId;
-        return Results.Ok(await reportReadService.GetSummaryAsync(organizationId, cancellationToken));
+        var actor = AdminActor.Required(httpContext.User);
+        var scopedDeviceIds = await scope.ScopedDeviceIdsOrNullAsync(
+            actor.UserId, actor.OrganizationId, cancellationToken);
+
+        return Results.Ok(await reportReadService.GetSummaryAsync(
+            actor.OrganizationId, scopedDeviceIds, cancellationToken));
     }
 }

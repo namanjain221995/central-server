@@ -112,10 +112,21 @@ public static class PlatformHostExtensions
     /// Maps <c>/health/live</c> and <c>/health/ready</c>.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Both are anonymous by design so an orchestrator can probe them, and both
     /// therefore return only check names and statuses - never a connection string,
     /// an exception message or a stack trace, which is what the default health
     /// response writer would leak.
+    /// </para>
+    /// <para>
+    /// Marked <c>AllowAnonymous</c> explicitly, not merely left unannotated. The
+    /// Admin API runs a deny-by-default fallback authorization policy, under which an
+    /// unannotated endpoint requires a signed-in administrator -- and the container
+    /// healthcheck and the deploy script's health wait call these with no
+    /// credentials, so an unannotated probe would fail every deploy. The Agent API
+    /// has no authorization middleware at all; the metadata is inert there and its
+    /// behaviour is unchanged.
+    /// </para>
     /// </remarks>
     public static IEndpointRouteBuilder MapPlatformHealthChecks(this IEndpointRouteBuilder endpoints)
     {
@@ -127,7 +138,8 @@ public static class PlatformHostExtensions
                 registration.Tags.Contains(InfrastructureServiceCollectionExtensions.LivenessTag),
             ResponseWriter = WriteMinimalHealthResponse,
             AllowCachingResponses = false,
-        });
+        })
+            .AllowAnonymous();
 
         endpoints.MapHealthChecks("/health/ready", new HealthCheckOptions
         {
@@ -143,7 +155,8 @@ public static class PlatformHostExtensions
                 [HealthStatus.Degraded] = StatusCodes.Status200OK,
                 [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable,
             },
-        });
+        })
+            .AllowAnonymous();
 
         return endpoints;
     }

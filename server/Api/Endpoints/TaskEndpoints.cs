@@ -1,6 +1,7 @@
 using EndpointPlatform.Api.Security;
 using EndpointPlatform.Domain.Tasks;
 using EndpointPlatform.Infrastructure.Persistence;
+using EndpointPlatform.Infrastructure.Security;
 using Microsoft.EntityFrameworkCore;
 
 namespace EndpointPlatform.Api.Endpoints;
@@ -43,12 +44,14 @@ public static class TaskEndpoints
     private static async Task<IResult> ListAsync(
         HttpContext httpContext,
         EndpointPlatformDbContext dbContext,
+        DeviceScopeAuthorizer scope,
         CancellationToken cancellationToken,
         int page = 1,
         int pageSize = 50,
         string? status = null)
     {
-        var organizationId = AdminActor.Required(httpContext.User).OrganizationId;
+        var actor = AdminActor.Required(httpContext.User);
+        var organizationId = actor.OrganizationId;
 
         page = Math.Max(1, page);
         pageSize = Math.Clamp(pageSize, 1, MaxPageSize);
@@ -56,6 +59,18 @@ public static class TaskEndpoints
         var query = dbContext.DeviceTasks
             .AsNoTracking()
             .Where(t => t.OrganizationId == organizationId);
+
+        // Device scope, as on the per-device history: a task says what was done to
+        // which machine and by whom, so a group-scoped administrator sees the work
+        // queued against their own devices and nothing else. Applied before the
+        // count, so the total does not reveal how busy the rest of the fleet is.
+        // Null means unrestricted -- an all-device administrator sees everything.
+        var scopedDeviceIds = (await scope.ScopedDeviceIdsOrNullAsync(
+            actor.UserId, organizationId, cancellationToken))?.ToList();
+        if (scopedDeviceIds is not null)
+        {
+            query = query.Where(t => scopedDeviceIds.Contains(t.DeviceId));
+        }
 
         if (!string.IsNullOrWhiteSpace(status))
         {

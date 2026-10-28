@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using EndpointPlatform.Contracts.Common;
 using EndpointPlatform.Infrastructure.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace EndpointPlatform.Api.Tests;
 
@@ -139,14 +140,32 @@ public sealed class AdminApiHostTests(AdminApiFactory factory)
         // The two APIs are separate trust boundaries. An agent endpoint appearing on
         // the administrator host would let a stolen device credential reach
         // administrative surface, so this asserts the boundary rather than trusting it.
+        //
+        // Asserted on the route table, not on a 404: the deny-by-default fallback
+        // policy answers an anonymous request for an unmapped path with 401, so the
+        // status code can no longer say whether a route exists. The table can.
         using var client = _factory.CreateClient();
+
+        var routes = _factory.Services
+            .GetRequiredService<Microsoft.AspNetCore.Routing.EndpointDataSource>()
+            .Endpoints
+            .OfType<Microsoft.AspNetCore.Routing.RouteEndpoint>()
+            .Select(e => e.RoutePattern.RawText ?? string.Empty)
+            .ToList();
+
+        routes.ShouldNotBeEmpty();
+        routes.ShouldNotContain(
+            r => r.TrimStart('/').StartsWith("agent", StringComparison.OrdinalIgnoreCase),
+            "the Admin API must not map any agent-protocol route");
 
         foreach (var path in new[] { "/agent/v1/enroll", "/agent/v1/heartbeat", "/agent/v1/inventory" })
         {
             var response = await client.GetAsync(new Uri(path, UriKind.Relative));
 
+            // Never anything a caller could use: no route answers, and the fallback
+            // policy refuses the anonymous request before routing could matter.
             response.StatusCode.ShouldBe(
-                HttpStatusCode.NotFound,
+                HttpStatusCode.Unauthorized,
                 $"the Admin API must not expose the agent route {path}");
         }
     }

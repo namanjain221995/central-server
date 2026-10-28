@@ -19,6 +19,12 @@ public sealed class SoftwareDeploymentReadService(EndpointPlatformDbContext dbCo
 {
     private readonly EndpointPlatformDbContext _dbContext = dbContext;
 
+    /// <param name="scopedDeviceIds">
+    /// The devices the caller may see, or null for all of them. A deployment is
+    /// listed only when at least one of its targets is in scope, and that filter is
+    /// applied before counting and paging: a group-scoped administrator must not
+    /// learn what was deployed elsewhere, or how much, from the page or its total.
+    /// </param>
     public async Task<DeploymentSummaryPage> ListAsync(
         Guid organizationId,
         IReadOnlyCollection<Guid>? scopedDeviceIds,
@@ -31,6 +37,14 @@ public sealed class SoftwareDeploymentReadService(EndpointPlatformDbContext dbCo
 
         var deployments = _dbContext.SoftwareDeployments.AsNoTracking()
             .Where(d => d.OrganizationId == organizationId);
+
+        // Materialised first: EF translates Contains on a List, not on every
+        // IReadOnlyCollection a caller might hand over.
+        if (scopedDeviceIds?.ToList() is { } visible)
+        {
+            deployments = deployments.Where(d => _dbContext.SoftwareDeploymentTargets
+                .Any(t => t.DeploymentId == d.Id && visible.Contains(t.DeviceId)));
+        }
 
         var totalCount = await deployments.CountAsync(cancellationToken);
 
@@ -89,6 +103,16 @@ public sealed class SoftwareDeploymentReadService(EndpointPlatformDbContext dbCo
             .SingleOrDefaultAsync(cancellationToken);
 
         if (deployment is null)
+        {
+            return null;
+        }
+
+        // A deployment the list does not show this caller -- no target in their
+        // scope -- reads as not found here too, rather than as an empty detail
+        // that still names the package and who deployed it.
+        if (scopedDeviceIds?.ToList() is { } inScope
+            && !await _dbContext.SoftwareDeploymentTargets.AnyAsync(
+                t => t.DeploymentId == deploymentId && inScope.Contains(t.DeviceId), cancellationToken))
         {
             return null;
         }

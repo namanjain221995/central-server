@@ -244,6 +244,15 @@ public sealed class SoftwareDeploymentService(
             return null;
         }
 
+        // A deployment with no target in the caller's scope is one the list never
+        // showed them; it answers as not found rather than as an audited no-op.
+        if (scopedDeviceIds?.ToList() is { } inScope
+            && !await _dbContext.SoftwareDeploymentTargets.AnyAsync(
+                t => t.DeploymentId == deploymentId && inScope.Contains(t.DeviceId), cancellationToken))
+        {
+            return null;
+        }
+
         var package = await _packageService.GetDeployableAsync(
             organizationId, deployment.PackageId, cancellationToken);
         if (package is null)
@@ -317,15 +326,29 @@ public sealed class SoftwareDeploymentService(
     /// Cancels the work in a deployment that has not reached an agent yet.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Only Queued tasks are cancellable, and that limit comes from
     /// <see cref="DeviceTaskService.CancelAsync"/> rather than being re-decided
     /// here: a task already delivered is running on a Windows machine, and
     /// reporting it as cancelled would be a lie the console then repeats.
     /// Delivered and finished targets are left exactly as they are.
+    /// </para>
+    /// <para>
+    /// Scoped like the deployment's detail: only targets on devices the caller may
+    /// act on are considered, so a group-scoped administrator cancels their own
+    /// devices' installs and nobody else's. A deployment with no target in scope
+    /// answers null -- the same as one that does not exist -- because the list
+    /// never showed it to them.
+    /// </para>
     /// </remarks>
+    /// <param name="scopedDeviceIds">
+    /// The devices the caller may act on, or null for all of them -- the value
+    /// <c>DeviceScopeAuthorizer.ScopedDeviceIdsOrNullAsync</c> returns.
+    /// </param>
     public async Task<DeploymentCancelResult?> CancelPendingAsync(
         Guid organizationId,
         Guid deploymentId,
+        IReadOnlyCollection<Guid>? scopedDeviceIds,
         Guid actorId,
         string actorDisplay,
         CancellationToken cancellationToken = default)
@@ -339,12 +362,29 @@ public sealed class SoftwareDeploymentService(
             return null;
         }
 
-        var pending = await (
+        // Materialised first: EF translates Contains on a List, not on every
+        // IReadOnlyCollection a caller might hand over.
+        var visible = scopedDeviceIds?.ToList();
+
+        if (visible is not null
+            && !await _dbContext.SoftwareDeploymentTargets.AnyAsync(
+                t => t.DeploymentId == deploymentId && visible.Contains(t.DeviceId), cancellationToken))
+        {
+            return null;
+        }
+
+        var pendingQuery =
             from target in _dbContext.SoftwareDeploymentTargets.AsNoTracking()
             join task in _dbContext.DeviceTasks.AsNoTracking() on target.TaskId equals task.Id
             where target.DeploymentId == deploymentId && task.Status == DeviceTaskStatus.Queued
-            select new { target.DeviceId, TaskId = task.Id })
-            .ToListAsync(cancellationToken);
+            select new { target.DeviceId, TaskId = task.Id };
+
+        if (visible is not null)
+        {
+            pendingQuery = pendingQuery.Where(x => visible.Contains(x.DeviceId));
+        }
+
+        var pending = await pendingQuery.ToListAsync(cancellationToken);
 
         var cancelled = 0;
         foreach (var item in pending)

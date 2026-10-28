@@ -4,12 +4,21 @@ using EndpointPlatform.Domain.Authorization;
 using EndpointPlatform.Domain.Policies;
 using EndpointPlatform.Infrastructure.Persistence;
 using EndpointPlatform.Infrastructure.Policies;
+using EndpointPlatform.Infrastructure.Security;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace EndpointPlatform.Api.Endpoints;
 
 /// <summary>Policy management: create, version, assign, view compliance.</summary>
+/// <remarks>
+/// Policies themselves are organization-wide definitions, but assigning one is a
+/// change to the devices it lands on, and compliance results describe individual
+/// devices. So assignment is device-scoped (to a device the caller may act on, or a
+/// group the caller is scoped to) and compliance reads are narrowed to the caller's
+/// devices. Out of scope answers 404, indistinguishable from a target that does not
+/// exist, matching every other device route.
+/// </remarks>
 public static class PolicyEndpoints
 {
     public static IEndpointRouteBuilder MapPolicyEndpoints(this IEndpointRouteBuilder endpoints)
@@ -29,9 +38,11 @@ public static class PolicyEndpoints
     public sealed record AssignRequest(Guid DeviceId);
 
     private static async Task<IResult> ListAsync(
-        EndpointPlatformDbContext dbContext, HttpContext httpContext, CancellationToken cancellationToken)
+        EndpointPlatformDbContext dbContext, DeviceScopeAuthorizer scope, HttpContext httpContext,
+        CancellationToken cancellationToken)
     {
-        var orgId = AdminActor.Required(httpContext.User).OrganizationId;
+        var actor = AdminActor.Required(httpContext.User);
+        var orgId = actor.OrganizationId;
 
         var policies = await dbContext.Policies.AsNoTracking()
             .Where(p => p.OrganizationId == orgId)
@@ -39,9 +50,11 @@ public static class PolicyEndpoints
             .Select(p => new { p.Id, Type = p.Type.ToString(), p.Name, p.Description, p.IsEnabled, p.CurrentVersionNumber })
             .ToListAsync(cancellationToken);
 
-        // Attach compliance rollups.
-        var rollups = await dbContext.PolicyComplianceResults.AsNoTracking()
-            .Where(r => r.OrganizationId == orgId)
+        // Attach compliance rollups, counted over the caller's devices only: the
+        // counts are per-device results summed, and a scoped administrator's
+        // totals must not describe machines they cannot see.
+        var results = await ScopedComplianceResultsAsync(dbContext, scope, actor, cancellationToken);
+        var rollups = await results
             .GroupBy(r => new { r.PolicyId, r.State })
             .Select(g => new { g.Key.PolicyId, g.Key.State, Count = g.Count() })
             .ToListAsync(cancellationToken);
@@ -90,9 +103,18 @@ public static class PolicyEndpoints
 
     private static async Task<IResult> AssignAsync(
         Guid policyId, [FromBody] AssignRequest request, HttpContext httpContext,
-        PolicyService policyService, CancellationToken cancellationToken)
+        PolicyService policyService, DeviceScopeAuthorizer scope, CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
+
+        // The target comes from the body rather than the route, but it is still one
+        // device: an administrator scoped to a group must not push a policy onto a
+        // machine outside it by naming its id. Covers existence in the organization.
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, request.DeviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
         var ok = await policyService.AssignToDeviceAsync(
             actor.OrganizationId, policyId, request.DeviceId, actor.UserId, actor.Email, cancellationToken);
         return ok ? Results.NoContent() : Results.NotFound();
@@ -102,14 +124,18 @@ public static class PolicyEndpoints
 
     private static async Task<IResult> AssignGroupAsync(
         Guid policyId, [FromBody] AssignGroupRequest request, HttpContext httpContext,
-        EndpointPlatformDbContext dbContext, PolicyService policyService, CancellationToken cancellationToken)
+        EndpointPlatformDbContext dbContext, DeviceScopeAuthorizer scope, CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
         var policy = await dbContext.Policies
             .SingleOrDefaultAsync(p => p.Id == policyId && p.OrganizationId == actor.OrganizationId, cancellationToken);
-        var groupExists = await dbContext.DeviceGroups
-            .AnyAsync(g => g.Id == request.GroupId && g.OrganizationId == actor.OrganizationId, cancellationToken);
-        if (policy is null || !groupExists)
+
+        // Authority over a group means authority over every member, which is what
+        // CanActOnGroupAsync answers; it also answers false for a group that does
+        // not exist in this organization, so unknown and out of scope are one 404.
+        var groupInScope = await scope.CanActOnGroupAsync(
+            actor.UserId, actor.OrganizationId, request.GroupId, cancellationToken);
+        if (policy is null || !groupInScope)
         {
             return Results.NotFound();
         }
@@ -128,14 +154,19 @@ public static class PolicyEndpoints
     }
 
     private static async Task<IResult> ComplianceAsync(
-        Guid policyId, EndpointPlatformDbContext dbContext, HttpContext httpContext, CancellationToken cancellationToken)
+        Guid policyId, EndpointPlatformDbContext dbContext, DeviceScopeAuthorizer scope, HttpContext httpContext,
+        CancellationToken cancellationToken)
     {
-        var orgId = AdminActor.Required(httpContext.User).OrganizationId;
+        var actor = AdminActor.Required(httpContext.User);
+
+        // One row per device: narrowed to the caller's devices, so a scoped
+        // administrator never sees the hostname or state of a machine elsewhere.
+        var results = await ScopedComplianceResultsAsync(dbContext, scope, actor, cancellationToken);
 
         var rows = await (
-            from r in dbContext.PolicyComplianceResults.AsNoTracking()
+            from r in results
             join d in dbContext.Devices.AsNoTracking() on r.DeviceId equals d.Id
-            where r.PolicyId == policyId && r.OrganizationId == orgId
+            where r.PolicyId == policyId
             orderby d.Hostname
             select new
             {
@@ -148,5 +179,26 @@ public static class PolicyEndpoints
             x.DeviceId, x.Hostname, x.State, x.PolicyVersionNumber, x.EvaluatedAt,
             Deviations = x.Deviations is null ? null : (JsonElement?)JsonSerializer.Deserialize<JsonElement>(x.Deviations),
         }));
+    }
+
+    /// <summary>
+    /// The organization's compliance results, narrowed to the devices the caller may
+    /// see. Null scope means unrestricted, exactly as before.
+    /// </summary>
+    private static async Task<IQueryable<PolicyComplianceResult>> ScopedComplianceResultsAsync(
+        EndpointPlatformDbContext dbContext, DeviceScopeAuthorizer scope, AdminActor actor,
+        CancellationToken cancellationToken)
+    {
+        var orgId = actor.OrganizationId;
+        var query = dbContext.PolicyComplianceResults.AsNoTracking()
+            .Where(r => r.OrganizationId == orgId);
+
+        var visible = (await scope.ScopedDeviceIdsOrNullAsync(actor.UserId, orgId, cancellationToken))?.ToList();
+        if (visible is not null)
+        {
+            query = query.Where(r => visible.Contains(r.DeviceId));
+        }
+
+        return query;
     }
 }

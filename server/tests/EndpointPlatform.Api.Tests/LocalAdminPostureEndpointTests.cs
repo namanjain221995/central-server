@@ -233,6 +233,8 @@ public sealed class LocalAdminPostureEndpointTests(AdminApiPostgresFixture fixtu
 
         var response = await client.GetAsync(PostureOf(Guid.CreateVersion7()));
 
-        response.StatusCode.ShouldBeOneOf(HttpStatusCode.NotFound, HttpStatusCode.Forbidden);
+        // Exactly 404 now: the device routes answer unknown and out-of-scope ids
+        // identically, so this no longer has to tolerate the old scope 403.
+        response.StatusCode.ShouldBe(HttpStatusCode.NotFound);
     }
 }

@@ -154,19 +154,35 @@ public sealed class UsbReadService(EndpointPlatformDbContext dbContext, TimeProv
     /// <summary>
     /// The fleet-wide access ledger: live grants first, then recent history.
     /// </summary>
+    /// <param name="scopedDeviceIds">
+    /// The devices the caller may see, or null for all of them -- the value
+    /// <c>DeviceScopeAuthorizer.ScopedDeviceIdsOrNullAsync</c> returns. A grant on a
+    /// device outside the caller's scope is left out, never redacted: the row names
+    /// the device, and an administrator scoped to one group must not learn which
+    /// machines elsewhere have storage opened.
+    /// </param>
     public async Task<IReadOnlyList<UsbAccessRequestView>> ListRequestsAsync(
         Guid organizationId,
         bool liveOnly,
         int limit,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<Guid>? scopedDeviceIds = null)
     {
         var now = _timeProvider.GetUtcNow();
+        var visible = scopedDeviceIds?.ToList();
 
         var query =
             from r in _dbContext.UsbAccessRequests.AsNoTracking()
             join d in _dbContext.Devices.AsNoTracking() on r.DeviceId equals d.Id
             where r.OrganizationId == organizationId
             select new { Request = r, d.Hostname, d.DisplayName };
+
+        // Applied before the limit, so a scoped caller still gets up to `limit`
+        // rows of their own rather than a page filtered down after the fact.
+        if (visible is not null)
+        {
+            query = query.Where(x => visible.Contains(x.Request.DeviceId));
+        }
 
         if (liveOnly)
         {
@@ -219,18 +235,31 @@ public sealed class UsbReadService(EndpointPlatformDbContext dbContext, TimeProv
     /// Only peripheral classes are listed — hubs, keyboards and other inventory a
     /// USB control does not act on are not what "connected devices" means here.
     /// </remarks>
+    /// <param name="scopedDeviceIds">
+    /// The devices the caller may see, or null for all of them. Out-of-scope
+    /// machines are left out entirely, as on every other fleet list.
+    /// </param>
     public async Task<IReadOnlyList<ConnectedUsbDeviceView>> ListConnectedAsync(
         Guid organizationId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyCollection<Guid>? scopedDeviceIds = null)
     {
-        var rows = await (
-                from u in _dbContext.UsbDevices.AsNoTracking()
-                join d in _dbContext.Devices.AsNoTracking() on u.DeviceId equals d.Id
-                where u.OrganizationId == organizationId
-                    && u.IsConnected
-                    && d.Status == Domain.Devices.DeviceStatus.Active
-                select new { Usb = u, d.Hostname, d.DisplayName, d.LastSeenAt })
-            .ToListAsync(cancellationToken);
+        var visible = scopedDeviceIds?.ToList();
+
+        var query =
+            from u in _dbContext.UsbDevices.AsNoTracking()
+            join d in _dbContext.Devices.AsNoTracking() on u.DeviceId equals d.Id
+            where u.OrganizationId == organizationId
+                && u.IsConnected
+                && d.Status == Domain.Devices.DeviceStatus.Active
+            select new { Usb = u, d.Hostname, d.DisplayName, d.LastSeenAt };
+
+        if (visible is not null)
+        {
+            query = query.Where(x => visible.Contains(x.Usb.DeviceId));
+        }
+
+        var rows = await query.ToListAsync(cancellationToken);
 
         return rows
             .Where(x => x.Usb.IsRestrictable)

@@ -240,11 +240,13 @@ public sealed class LocalAccountEndpointTests(AdminApiPostgresFixture fixture)
         var token = await _fixture.SignInAsync(email);
         using var client = _fixture.CreateClientFor(token);
 
+        // 404, not 403: out of scope is indistinguishable from not there, so a
+        // probing operator cannot map which ids are real devices elsewhere.
         (await client.PostAsJsonAsync(ChangeType(deviceId, StandardSid), new { accountType = "Administrator" }))
-            .StatusCode.ShouldBe(HttpStatusCode.Forbidden, "permission without scope must reach nothing");
+            .StatusCode.ShouldBe(HttpStatusCode.NotFound, "permission without scope must reach nothing");
 
         (await client.GetAsync(new Uri($"/admin/v1/devices/{deviceId}/local-users", UriKind.Relative)))
-            .StatusCode.ShouldBe(HttpStatusCode.Forbidden, "scope narrows reads too");
+            .StatusCode.ShouldBe(HttpStatusCode.NotFound, "scope narrows reads too");
     }
 
     [Fact]
@@ -282,7 +284,7 @@ public sealed class LocalAccountEndpointTests(AdminApiPostgresFixture fixture)
             .StatusCode.ShouldBe(HttpStatusCode.OK, "the device is in a group this admin is scoped to");
 
         (await client.GetAsync(new Uri($"/admin/v1/devices/{outOfScopeDevice}/local-users", UriKind.Relative)))
-            .StatusCode.ShouldBe(HttpStatusCode.Forbidden, "a device outside the scoped group stays invisible");
+            .StatusCode.ShouldBe(HttpStatusCode.NotFound, "a device outside the scoped group stays invisible");
     }
 
     // -------------------------------------------------------- input validation

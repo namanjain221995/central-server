@@ -171,7 +171,22 @@ public sealed class Program
                     displayName: "Admin session",
                     configureOptions: null);
 
-            builder.Services.AddAuthorization();
+            // Deny by default. Without a fallback policy, an endpoint mapped without
+            // .RequirePermission(...) or .RequireAuthorization() is silently anonymous
+            // -- on a host reachable from the public internet that can reveal
+            // BitLocker keys. With it, forgetting the annotation yields a 401, and
+            // anonymity has to be asked for with an explicit .AllowAnonymous() (sign-in,
+            // sign-out, MFA verify, the service banner and the health probes). The
+            // anonymous set is pinned by AdminApiAuthorizationSurfaceTests, so adding to
+            // it means consciously editing that test too.
+            //
+            // Side effect, accepted: an anonymous request for a path that maps to no
+            // endpoint at all is now 401 rather than 404, so an unauthenticated caller
+            // can no longer tell which routes exist by probing them.
+            builder.Services.AddAuthorization(options =>
+                options.FallbackPolicy = new AuthorizationPolicyBuilder(AdminAuthenticationHandler.SchemeName)
+                    .RequireAuthenticatedUser()
+                    .Build());
             builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
             builder.Services.AddSingleton<IAuthorizationHandler, PermissionRequirementHandler>();
             builder.Services.AddScoped<IAuthorizationMiddlewareResultHandler, AuditingAuthorizationResultHandler>();

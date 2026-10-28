@@ -148,13 +148,29 @@ public static class ScreenLockEndpoints
 
     public sealed record SetUnlockCodeRequest(string? Code);
 
+    /// <remarks>
+    /// The code is organization-wide: every lock engaged after it changes, in any
+    /// group, captures it. Changing it therefore requires all-device scope, refused
+    /// with the same 403 a scoped administrator gets for creating a device group --
+    /// otherwise an administrator scoped to one group would set the recovery code
+    /// for machines they have no authority over. Reading whether one is set stays
+    /// open to every <c>device.screenlock</c> holder, since locking needs it.
+    /// </remarks>
     private static async Task<IResult> SetUnlockCodeAsync(
         SetUnlockCodeRequest request,
         ScreenUnlockCodeService unlockCodeService,
+        DeviceScopeAuthorizer scope,
         HttpContext httpContext,
         CancellationToken cancellationToken)
     {
         var actor = AdminActor.Required(httpContext.User);
+
+        if (await scope.ScopedGroupIdsOrNullAsync(actor.UserId, actor.OrganizationId, cancellationToken) is not null)
+        {
+            return Results.Problem(
+                "Changing the IT unlock code requires all-device scope.",
+                statusCode: StatusCodes.Status403Forbidden);
+        }
 
         // Shape only; the service re-checks the length and is the one place that
         // ever sees the plaintext, which it immediately turns into a verifier.
