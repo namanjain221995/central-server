@@ -59,24 +59,46 @@ public sealed record SecurityUpdateInstallItem(
 /// <para>
 /// <see cref="Error"/> is non-null only when the operation could not run at all
 /// (the update service is stopped, another operation is in progress, a reboot is
-/// pending, or any COM failure). In that case <see cref="Installed"/> and
-/// <see cref="Failed"/> are empty.
+/// pending, nothing could be staged or downloaded, or any COM failure). In that case
+/// <see cref="Installed"/> and <see cref="Failed"/> are empty -- exactly as before
+/// agent 1.28.0 -- while <see cref="Outcomes"/> still itemizes whatever is known
+/// about each requested update.
 /// </para>
 /// <para>
 /// When <see cref="Error"/> is null the operation ran and the per-update split is
 /// authoritative: an update is in <see cref="Installed"/> when WUA reported success
 /// (or success-with-errors) for it, and in <see cref="Failed"/> otherwise.
 /// <see cref="RebootRequired"/> follows the install result and the system-wide
-/// reboot flag.
+/// reboot flag. These two lists keep their pre-1.28.0 meaning on purpose: they are
+/// the legacy keys of the result document.
+/// </para>
+/// <para>
+/// <see cref="Outcomes"/> (1.28.0+) is the full accounting -- one entry per requested
+/// update, classified against a verification search run after the install, by the
+/// same <see cref="EndpointAgent.Core.Updates.UpdateOutcomeClassifier"/> the driver
+/// install uses.
+/// <see cref="PostScan"/> is that verification search's offered set (previews
+/// excluded), or null when it could not run; <see cref="Verified"/> says which.
+/// A service that predates outcomes leaves <see cref="Outcomes"/> null and the
+/// executor derives a conservative accounting from the legacy lists.
 /// </para>
 /// </remarks>
 public sealed record SecurityUpdateInstallResult(
     bool RebootRequired,
     IReadOnlyList<SecurityUpdateInstallItem> Installed,
     IReadOnlyList<SecurityUpdateInstallItem> Failed,
-    string? Error = null)
+    string? Error = null,
+    IReadOnlyList<UpdateOutcome>? Outcomes = null,
+    IReadOnlyList<SecurityUpdateInfo>? PostScan = null)
 {
+    /// <summary>Whether the post-install verification search ran (and so <see cref="PostScan"/> is the live offered set).</summary>
+    public bool Verified => PostScan is not null;
+
     public static SecurityUpdateInstallResult ForError(string message) => new(false, [], [], message);
+
+    /// <summary>An operation that could not run, still itemizing what is known about each requested update.</summary>
+    public static SecurityUpdateInstallResult ForError(string message, IReadOnlyList<UpdateOutcome> outcomes) =>
+        new(false, [], [], message, outcomes);
 }
 
 /// <summary>
@@ -108,8 +130,9 @@ public interface ISecurityUpdateService
     Task<SecurityUpdateScanResult> ScanAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Downloads and installs the subset of the requested updates that are present,
-    /// not a preview, and installable without user input.
+    /// Downloads and installs the subset of the requested updates that are present
+    /// and not a preview, then re-runs the same search to verify which left the
+    /// offered set, and classifies every requested update.
     /// </summary>
     /// <param name="updateIds">The requested update identity GUIDs (as normalised strings).</param>
     Task<SecurityUpdateInstallResult> InstallAsync(

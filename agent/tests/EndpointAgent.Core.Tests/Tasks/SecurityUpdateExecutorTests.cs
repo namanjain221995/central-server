@@ -190,13 +190,15 @@ public sealed class SecurityUpdateExecutorTests
             InstallResult = new SecurityUpdateInstallResult(
                 RebootRequired: false,
                 Installed: [new SecurityUpdateInstallItem(IdA, "Security Update for Microsoft Defender", 2, 0)],
-                Failed: []),
+                Failed: [],
+                Outcomes: [Outcome(IdA, "Security Update for Microsoft Defender", UpdateOutcomeStatus.Installed)],
+                PostScan: []),
         };
 
         var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA)));
 
         result.Succeeded.ShouldBeTrue();
-        result.Message.ShouldBe("Installed 1 security update(s).");
+        result.Message.ShouldBe("Installed 1.");
 
         var root = JsonDocument.Parse(result.ResultJson!).RootElement;
         root.GetProperty("rebootRequired").GetBoolean().ShouldBeFalse();
@@ -224,7 +226,10 @@ public sealed class SecurityUpdateExecutorTests
         var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA)));
 
         result.Succeeded.ShouldBeTrue("a pending reboot is a successful install, not a failure");
-        (result.Message ?? "").ShouldContain("restart is required");
+
+        // A service result with no outcomes (the pre-1.28.0 shape) is accounted for
+        // conservatively: installed + reboot is PendingReboot.
+        result.Message.ShouldBe("1 needs a restart to finish.");
 
         JsonDocument.Parse(result.ResultJson!).RootElement
             .GetProperty("rebootRequired").GetBoolean().ShouldBeTrue();
@@ -338,6 +343,318 @@ public sealed class SecurityUpdateExecutorTests
     public void The_install_task_type_matches_the_server_enum_name()
     {
         Installer(new FakeSecurityUpdateService()).TaskType.ShouldBe("InstallSecurityUpdate");
+    }
+
+    // ==========================================  1.28.0: outcomes, verified, postScan
+
+    private const string IdC = "33333333-3333-3333-3333-333333333333";
+    private const string IdD = "44444444-4444-4444-4444-444444444444";
+
+    private static UpdateOutcome Outcome(
+        string id, string title, UpdateOutcomeStatus status, int? resultCode = 2, int? hresult = 0, bool reboot = false) =>
+        new(id, title, resultCode, hresult, reboot, status);
+
+    private static SecurityUpdateInfo Info(string id, string title, bool preview = false) =>
+        new(id, 1, title, "KB5044284", "Important", preview, 1_000);
+
+    private static IReadOnlyList<string> PropertyNames(JsonElement element) =>
+        element.EnumerateObject().Select(p => p.Name).ToList();
+
+    [Fact]
+    public async Task The_install_result_is_a_superset_with_every_old_key_unchanged_and_the_new_keys_exactly_named()
+    {
+        var service = new FakeSecurityUpdateService
+        {
+            InstallResult = new SecurityUpdateInstallResult(
+                RebootRequired: true,
+                Installed: [new SecurityUpdateInstallItem(IdA, "2026-10 Cumulative Update for Windows 11", 2, 0)],
+                Failed: [new SecurityUpdateInstallItem(IdB, "Security Update for Microsoft Defender", 4, unchecked((int)0x80240022))],
+                Outcomes:
+                [
+                    Outcome(IdA, "2026-10 Cumulative Update for Windows 11", UpdateOutcomeStatus.PendingReboot, reboot: true),
+                    Outcome(IdB, "Security Update for Microsoft Defender", UpdateOutcomeStatus.Failed, 4, unchecked((int)0x80240022)),
+                ],
+                PostScan: [Info(IdA, "2026-10 Cumulative Update for Windows 11")]),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB)));
+        var root = JsonDocument.Parse(result.ResultJson!).RootElement;
+
+        // The pre-1.28.0 keys first, then the three appended -- nothing renamed or removed.
+        PropertyNames(root).ShouldBe(["rebootRequired", "installed", "failed", "outcomes", "verified", "postScan"]);
+
+        // The old keys carry exactly what they always did.
+        root.GetProperty("rebootRequired").GetBoolean().ShouldBeTrue();
+        var installed = root.GetProperty("installed").EnumerateArray().ShouldHaveSingleItem();
+        PropertyNames(installed).ShouldBe(["updateId", "title", "resultCode", "hresult"]);
+        installed.GetProperty("updateId").GetString().ShouldBe(IdA);
+        var failed = root.GetProperty("failed").EnumerateArray().ShouldHaveSingleItem();
+        PropertyNames(failed).ShouldBe(["updateId", "title", "resultCode", "hresult"]);
+        failed.GetProperty("hresult").GetInt32().ShouldBe(unchecked((int)0x80240022));
+
+        // The new keys, exact names and values.
+        var outcomes = root.GetProperty("outcomes").EnumerateArray().ToList();
+        outcomes.Count.ShouldBe(2);
+        PropertyNames(outcomes[0]).ShouldBe(["updateId", "title", "resultCode", "hresult", "rebootRequired", "status"]);
+        outcomes[0].GetProperty("updateId").GetString().ShouldBe(IdA);
+        outcomes[0].GetProperty("title").GetString().ShouldBe("2026-10 Cumulative Update for Windows 11");
+        outcomes[0].GetProperty("resultCode").GetInt32().ShouldBe(2);
+        outcomes[0].GetProperty("hresult").GetInt32().ShouldBe(0);
+        outcomes[0].GetProperty("rebootRequired").GetBoolean().ShouldBeTrue();
+        outcomes[0].GetProperty("status").GetString().ShouldBe("PendingReboot");
+        outcomes[1].GetProperty("status").GetString().ShouldBe("Failed");
+
+        root.GetProperty("verified").GetBoolean().ShouldBeTrue();
+        root.GetProperty("postScan").ValueKind.ShouldBe(JsonValueKind.Object);
+    }
+
+    [Fact]
+    public async Task The_post_scan_is_byte_for_byte_the_document_a_scan_reports()
+    {
+        IReadOnlyList<SecurityUpdateInfo> offered =
+        [
+            new SecurityUpdateInfo(IdA, 3, "2026-10 Cumulative Update for Windows 11", "KB5044284", "Critical", false, 734_003_200),
+            new SecurityUpdateInfo(IdB, 1, "Windows Malicious Software Removal Tool", null, null, false, 0),
+            new SecurityUpdateInfo(IdC, 2, "2026-10 Cumulative Update Preview for Windows 11", "KB5044380", null, true, 2_000),
+        ];
+
+        var scan = await Scanner(new FakeSecurityUpdateService { ScanResult = SecurityUpdateScanResult.Ok(offered) })
+            .ExecuteAsync(ScanTask());
+
+        var installService = new FakeSecurityUpdateService
+        {
+            InstallResult = new SecurityUpdateInstallResult(
+                false, [new SecurityUpdateInstallItem(IdD, "Some security update", 2, 0)], [],
+                Outcomes: [Outcome(IdD, "Some security update", UpdateOutcomeStatus.Installed)],
+                PostScan: offered),
+        };
+        var install = await new InstallSecurityUpdateExecutor(
+                installService, NullLogger<InstallSecurityUpdateExecutor>.Instance, new FixedClock(Now))
+            .ExecuteAsync(InstallTask(InstallPayload(IdD)));
+
+        var postScan = JsonDocument.Parse(install.ResultJson!).RootElement.GetProperty("postScan");
+
+        // Same code path, same clock: the server can feed postScan to its scan parser unchanged.
+        postScan.GetRawText().ShouldBe(scan.ResultJson);
+
+        // The item shape is the scan's, KB ids and severity included (null when none).
+        var items = postScan.GetProperty("updates").EnumerateArray().ToList();
+        PropertyNames(items[0]).ShouldBe(["updateId", "revision", "title", "kbIds", "severity", "isPreview", "sizeBytes"]);
+        items[1].GetProperty("kbIds").ValueKind.ShouldBe(JsonValueKind.Null);
+        items[1].GetProperty("severity").ValueKind.ShouldBe(JsonValueKind.Null);
+
+        // Previews are excluded from postScan exactly as from a scan.
+        items.Select(u => u.GetProperty("updateId").GetString()).ToArray().ShouldBe([IdA, IdB]);
+    }
+
+    [Fact]
+    public async Task Both_the_scan_and_the_post_scan_are_capped_at_the_servers_500()
+    {
+        var many = Enumerable.Range(0, 600)
+            .Select(i => Info(new Guid(i, 0, 0, new byte[8]).ToString(), $"Security update {i}"))
+            .ToList();
+
+        var scan = await Scanner(new FakeSecurityUpdateService { ScanResult = SecurityUpdateScanResult.Ok(many) })
+            .ExecuteAsync(ScanTask());
+        JsonDocument.Parse(scan.ResultJson!).RootElement.GetProperty("updates").GetArrayLength().ShouldBe(500);
+
+        var install = await Installer(new FakeSecurityUpdateService
+        {
+            InstallResult = new SecurityUpdateInstallResult(
+                false, [new SecurityUpdateInstallItem(IdA, "x", 2, 0)], [],
+                Outcomes: [Outcome(IdA, "x", UpdateOutcomeStatus.Installed)],
+                PostScan: many),
+        }).ExecuteAsync(InstallTask(InstallPayload(IdA)));
+        JsonDocument.Parse(install.ResultJson!).RootElement
+            .GetProperty("postScan").GetProperty("updates").GetArrayLength().ShouldBe(500);
+    }
+
+    [Fact]
+    public async Task A_failed_verification_is_reported_unverified_with_no_post_scan_never_a_claim()
+    {
+        var service = new FakeSecurityUpdateService
+        {
+            InstallResult = new SecurityUpdateInstallResult(
+                false, [new SecurityUpdateInstallItem(IdA, "Security Update for Microsoft Defender", 2, 0)], [],
+                Outcomes: [Outcome(IdA, "Security Update for Microsoft Defender", UpdateOutcomeStatus.InstalledUnverified)],
+                PostScan: null),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA)));
+        var root = JsonDocument.Parse(result.ResultJson!).RootElement;
+
+        root.GetProperty("verified").GetBoolean().ShouldBeFalse();
+        root.TryGetProperty("postScan", out var postScan).ShouldBeTrue("the key is always present");
+        postScan.ValueKind.ShouldBe(JsonValueKind.Null);
+        root.GetProperty("outcomes").EnumerateArray().ShouldHaveSingleItem()
+            .GetProperty("status").GetString().ShouldBe("InstalledUnverified");
+        result.Message.ShouldBe("1 reported installed but could not be verified.");
+    }
+
+    [Fact]
+    public async Task The_message_is_honest_per_outcome_class()
+    {
+        var service = new FakeSecurityUpdateService
+        {
+            InstallResult = new SecurityUpdateInstallResult(
+                true,
+                [
+                    new SecurityUpdateInstallItem(IdA, "A", 2, 0), new SecurityUpdateInstallItem(IdB, "B", 2, 0),
+                    new SecurityUpdateInstallItem(IdC, "C", 2, 0), new SecurityUpdateInstallItem(IdD, "D", 2, 0),
+                ],
+                [],
+                Outcomes:
+                [
+                    Outcome(IdA, "A", UpdateOutcomeStatus.Installed),
+                    Outcome(IdB, "B", UpdateOutcomeStatus.PendingReboot, reboot: true),
+                    Outcome(IdC, "C", UpdateOutcomeStatus.ReOffered),
+                    Outcome(IdD, "D", UpdateOutcomeStatus.ReOffered),
+                ],
+                PostScan: [Info(IdC, "C"), Info(IdD, "D")]),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB, IdC, IdD)));
+
+        result.Succeeded.ShouldBeTrue();
+        result.Message.ShouldBe(
+            "Installed 1; 1 needs a restart to finish; 2 were re-offered by Windows Update and cannot be completed by the platform.");
+    }
+
+    [Fact]
+    public async Task A_cumulative_update_awaiting_its_restart_is_pending_reboot_and_the_task_succeeds()
+    {
+        // The common security case: WUA installs the cumulative update, it needs a
+        // restart, and the verification search still offers it until then. That is
+        // PendingReboot and a success -- never ReOffered, never a failure.
+        var service = new FakeSecurityUpdateService
+        {
+            InstallResult = new SecurityUpdateInstallResult(
+                true,
+                [new SecurityUpdateInstallItem(IdA, "2026-10 Cumulative Update for Windows 11", 2, 0)],
+                [],
+                Outcomes: [Outcome(IdA, "2026-10 Cumulative Update for Windows 11", UpdateOutcomeStatus.PendingReboot, reboot: true)],
+                PostScan: [Info(IdA, "2026-10 Cumulative Update for Windows 11")]),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA)));
+
+        result.Succeeded.ShouldBeTrue("a pending restart is a successful install, not a failure");
+        result.Message.ShouldBe("1 needs a restart to finish.");
+
+        var root = JsonDocument.Parse(result.ResultJson!).RootElement;
+        root.GetProperty("rebootRequired").GetBoolean().ShouldBeTrue();
+        var outcome = root.GetProperty("outcomes").EnumerateArray().ShouldHaveSingleItem();
+        outcome.GetProperty("status").GetString().ShouldBe("PendingReboot");
+        outcome.GetProperty("rebootRequired").GetBoolean().ShouldBeTrue();
+        root.GetProperty("verified").GetBoolean().ShouldBeTrue();
+        root.GetProperty("postScan").GetProperty("updates").EnumerateArray().ShouldHaveSingleItem()
+            .GetProperty("updateId").GetString().ShouldBe(IdA);
+    }
+
+    [Fact]
+    public async Task A_requested_update_windows_no_longer_offers_is_itemized_even_when_others_install()
+    {
+        // Before 1.28.0 the operator selected two, the result said "Installed 1", and
+        // nothing accounted for the second.
+        var service = new FakeSecurityUpdateService
+        {
+            InstallResult = new SecurityUpdateInstallResult(
+                false, [new SecurityUpdateInstallItem(IdA, "Security Update for Microsoft Defender", 2, 0)], [],
+                Outcomes:
+                [
+                    Outcome(IdA, "Security Update for Microsoft Defender", UpdateOutcomeStatus.Installed),
+                    .. UpdateOutcomeClassifier.NotOffered(
+                        [IdA, IdB], new HashSet<string>(StringComparer.OrdinalIgnoreCase) { IdA }),
+                ],
+                PostScan: []),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB)));
+
+        result.Message.ShouldBe("Installed 1; 1 not offered by Windows Update.");
+        var notOffered = JsonDocument.Parse(result.ResultJson!).RootElement.GetProperty("outcomes")
+            .EnumerateArray().Single(o => o.GetProperty("updateId").GetString() == IdB);
+        notOffered.GetProperty("status").GetString().ShouldBe("NotOffered");
+        notOffered.GetProperty("resultCode").ValueKind.ShouldBe(JsonValueKind.Null);
+        notOffered.GetProperty("hresult").ValueKind.ShouldBe(JsonValueKind.Null);
+        notOffered.GetProperty("rebootRequired").GetBoolean().ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task An_install_that_could_not_run_still_itemizes_every_requested_update()
+    {
+        var service = new FakeSecurityUpdateService
+        {
+            InstallResult = SecurityUpdateInstallResult.ForError(
+                "No security updates were installed: 1 no longer offered by Windows Update; 1 preview; 1 with a licence that could not be accepted.",
+                [
+                    Outcome(IdA, UpdateOutcomeClassifier.NotOfferedTitle, UpdateOutcomeStatus.NotOffered, null, null),
+                    Outcome(IdB, "2026-10 Cumulative Update Preview for Windows 11", UpdateOutcomeStatus.SkippedPreview, null, null),
+                    Outcome(IdC, "Some licensed update", UpdateOutcomeStatus.EulaDeclined, null, null),
+                ]),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB, IdC)));
+
+        result.Succeeded.ShouldBeFalse();
+        (result.Message ?? "").ShouldStartWith("No security updates were installed");
+
+        var root = JsonDocument.Parse(result.ResultJson!).RootElement;
+        root.GetProperty("installed").GetArrayLength().ShouldBe(0, "the legacy keys keep their pre-1.28.0 meaning on error");
+        root.GetProperty("failed").GetArrayLength().ShouldBe(0);
+        root.GetProperty("verified").GetBoolean().ShouldBeFalse();
+        root.GetProperty("postScan").ValueKind.ShouldBe(JsonValueKind.Null);
+
+        var statuses = root.GetProperty("outcomes").EnumerateArray().Select(o => o.GetProperty("status").GetString()).ToArray();
+        statuses.ShouldBe(["NotOffered", "SkippedPreview", "EulaDeclined"]);
+        root.GetProperty("outcomes").EnumerateArray()
+            .ShouldAllBe(o => o.GetProperty("resultCode").ValueKind == JsonValueKind.Null
+                && o.GetProperty("hresult").ValueKind == JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task A_service_result_without_outcomes_is_accounted_for_conservatively_on_the_wire()
+    {
+        var service = new FakeSecurityUpdateService
+        {
+            InstallResult = new SecurityUpdateInstallResult(
+                RebootRequired: false,
+                Installed: [new SecurityUpdateInstallItem(IdA, "Security Update for Microsoft Defender", 2, 0)],
+                Failed: [new SecurityUpdateInstallItem(IdB, "2026-10 Cumulative Update for Windows 11", 4, -1)]),
+        };
+
+        var result = await Installer(service).ExecuteAsync(InstallTask(InstallPayload(IdA, IdB)));
+        var root = JsonDocument.Parse(result.ResultJson!).RootElement;
+
+        var statuses = root.GetProperty("outcomes").EnumerateArray()
+            .ToDictionary(o => o.GetProperty("updateId").GetString()!, o => o.GetProperty("status").GetString());
+        statuses[IdA].ShouldBe("InstalledUnverified", "nothing verified it, so it is never claimed Installed");
+        statuses[IdB].ShouldBe("Failed");
+        root.GetProperty("verified").GetBoolean().ShouldBeFalse();
+        root.GetProperty("postScan").ValueKind.ShouldBe(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public void A_legacy_security_result_is_accounted_for_conservatively_never_installed_or_re_offered()
+    {
+        // The security overload of the shared classifier's legacy mapping: the same
+        // rule the driver path uses, and the one the server applies to a pre-1.28.0
+        // security result.
+        var noReboot = new SecurityUpdateInstallResult(
+            RebootRequired: false,
+            Installed: [new SecurityUpdateInstallItem(IdA, "Security Update for Microsoft Defender", 2, 0)],
+            Failed: [new SecurityUpdateInstallItem(IdB, "2026-10 Cumulative Update for Windows 11", 4, unchecked((int)0x80240022))]);
+
+        var outcomes = UpdateOutcomeClassifier.FromLegacy(noReboot);
+        outcomes.Single(o => o.UpdateId == IdA).Status.ShouldBe(UpdateOutcomeStatus.InstalledUnverified);
+        outcomes.Single(o => o.UpdateId == IdB).Status.ShouldBe(UpdateOutcomeStatus.Failed);
+        outcomes.Single(o => o.UpdateId == IdB).HResult.ShouldBe(unchecked((int)0x80240022));
+        outcomes.Single(o => o.UpdateId == IdB).RebootRequired.ShouldBeFalse();
+
+        var withReboot = noReboot with { RebootRequired = true };
+        var pending = UpdateOutcomeClassifier.FromLegacy(withReboot).Single(o => o.UpdateId == IdA);
+        pending.Status.ShouldBe(UpdateOutcomeStatus.PendingReboot);
+        pending.RebootRequired.ShouldBeTrue();
     }
 
     // ============================================================  preview rule

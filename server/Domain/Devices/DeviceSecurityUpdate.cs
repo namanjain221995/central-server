@@ -15,7 +15,11 @@ namespace EndpointPlatform.Domain.Devices;
 /// has nothing pending, never that it was never asked. The live state of an install
 /// in flight is read from its <see cref="Tasks.DeviceTaskType.InstallSecurityUpdate"/>
 /// task, not from a column here; once the install completes the next scan reflects
-/// what actually got installed.
+/// what actually got installed. What the platform remembers about installing an
+/// update -- attempts, outcome, whether it came back -- lives in
+/// <see cref="DeviceSecurityUpdateInstallRecord"/>, and an operator's decision to hide
+/// one in <see cref="DeviceSecurityUpdateSuppression"/>, because these rows are
+/// replaced by every scan and that memory must survive it.
 /// </para>
 /// <para>
 /// <see cref="UpdateId"/> and <see cref="Revision"/> together are the Windows Update

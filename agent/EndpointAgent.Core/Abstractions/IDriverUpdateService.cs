@@ -56,94 +56,6 @@ public sealed record DriverUpdateInstallItem(
     int ResultCode,
     int HResult);
 
-/// <summary>
-/// What became of ONE requested driver update, as the agent can honestly tell it at
-/// the moment the install task finishes. A closed set: every requested update lands
-/// in exactly one of these, so nothing the operator selected silently vanishes from
-/// the result.
-/// </summary>
-/// <remarks>
-/// The wire strings are pinned by <see cref="DriverUpdateOutcomeStatusNames"/>, not
-/// by these member names, so a rename here can never change the contract.
-/// </remarks>
-public enum DriverUpdateOutcomeStatus
-{
-    /// <summary>WUA reported success, no restart is needed, and a fresh search no longer offers it.</summary>
-    Installed,
-
-    /// <summary>WUA reported success, no restart is needed, but the verification search could not run -- so it is not confirmed.</summary>
-    InstalledUnverified,
-
-    /// <summary>
-    /// WUA reported success and a restart is required (the update's own flag or the
-    /// machine's). Whether it is still offered is NOT judged: a reboot-pending update
-    /// may legitimately stay offered until the restart, and that judgement needs a
-    /// post-reboot scan, which the server owns.
-    /// </summary>
-    PendingReboot,
-
-    /// <summary>WUA reported success, no restart is needed, and a fresh search STILL offers it: the "claims success, does not stick" class.</summary>
-    ReOffered,
-
-    /// <summary>WUA reported failure for it, or it never reached the installer because the operation stopped (download failure, installer busy).</summary>
-    Failed,
-
-    /// <summary>The server asked for it, but Windows Update did not offer it to this device at install time (already installed meanwhile, or no longer applicable).</summary>
-    NotOffered,
-
-    /// <summary>It is a preview/beta update, which the platform never installs.</summary>
-    SkippedPreview,
-
-    /// <summary>Its licence could not be accepted, so it was not staged.</summary>
-    EulaDeclined,
-}
-
-/// <summary>The exact wire strings for <see cref="DriverUpdateOutcomeStatus"/> (the driver-update-truth contract, section A).</summary>
-public static class DriverUpdateOutcomeStatusNames
-{
-    /// <summary>The contract string for <paramref name="status"/>.</summary>
-    public static string ToWire(DriverUpdateOutcomeStatus status) => status switch
-    {
-        DriverUpdateOutcomeStatus.Installed => "Installed",
-        DriverUpdateOutcomeStatus.InstalledUnverified => "InstalledUnverified",
-        DriverUpdateOutcomeStatus.PendingReboot => "PendingReboot",
-        DriverUpdateOutcomeStatus.ReOffered => "ReOffered",
-        DriverUpdateOutcomeStatus.Failed => "Failed",
-        DriverUpdateOutcomeStatus.NotOffered => "NotOffered",
-        DriverUpdateOutcomeStatus.SkippedPreview => "SkippedPreview",
-        DriverUpdateOutcomeStatus.EulaDeclined => "EulaDeclined",
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "Not a driver update outcome."),
-    };
-}
-
-/// <summary>One requested update's classified outcome.</summary>
-/// <param name="UpdateId">The update identity GUID (lower-case, no braces).</param>
-/// <param name="Title">
-/// The update's title. For <see cref="DriverUpdateOutcomeStatus.NotOffered"/> the
-/// agent never saw the update, so this is a fixed placeholder, never empty; the
-/// server already holds the real title on its pending row.
-/// </param>
-/// <param name="ResultCode">
-/// The WUA <c>OperationResultCode</c> of the operation that decided the outcome (the
-/// install, or for an update that failed to download, the download). Null when the
-/// update never reached an operation that produces one (NotOffered, SkippedPreview,
-/// EulaDeclined, or a Failed update stopped before the installer ran).
-/// </param>
-/// <param name="HResult">The matching HRESULT, null under the same conditions as <paramref name="ResultCode"/>.</param>
-/// <param name="RebootRequired">
-/// The update's OWN reboot flag (<c>IUpdateInstallationResult.RebootRequired</c>),
-/// falling back to the install's aggregate flag when the per-update read fails --
-/// never to false. False for updates that never reached the installer.
-/// </param>
-/// <param name="Status">The classification; see <see cref="DriverUpdateOutcomeStatus"/>.</param>
-public sealed record DriverUpdateOutcome(
-    string UpdateId,
-    string Title,
-    int? ResultCode,
-    int? HResult,
-    bool RebootRequired,
-    DriverUpdateOutcomeStatus Status);
-
 /// <summary>The outcome of installing a set of requested driver updates.</summary>
 /// <remarks>
 /// <para>
@@ -176,7 +88,7 @@ public sealed record DriverUpdateInstallResult(
     IReadOnlyList<DriverUpdateInstallItem> Installed,
     IReadOnlyList<DriverUpdateInstallItem> Failed,
     string? Error = null,
-    IReadOnlyList<DriverUpdateOutcome>? Outcomes = null,
+    IReadOnlyList<UpdateOutcome>? Outcomes = null,
     IReadOnlyList<DriverUpdateInfo>? PostScan = null)
 {
     /// <summary>Whether the post-install verification search ran (and so <see cref="PostScan"/> is the live offered set).</summary>
@@ -185,7 +97,7 @@ public sealed record DriverUpdateInstallResult(
     public static DriverUpdateInstallResult ForError(string message) => new(false, [], [], message);
 
     /// <summary>An operation that could not run, still itemizing what is known about each requested update.</summary>
-    public static DriverUpdateInstallResult ForError(string message, IReadOnlyList<DriverUpdateOutcome> outcomes) =>
+    public static DriverUpdateInstallResult ForError(string message, IReadOnlyList<UpdateOutcome> outcomes) =>
         new(false, [], [], message, outcomes);
 }
 

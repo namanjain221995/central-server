@@ -2,6 +2,7 @@ using System.Text.Json;
 using EndpointAgent.Core.Abstractions;
 using EndpointAgent.Core.Drivers;
 using EndpointAgent.Core.Tasks;
+using EndpointAgent.Core.Updates;
 using EndpointPlatform.Contracts.Agent;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -165,7 +166,7 @@ public sealed class DriverUpdateExecutorTests
                 RebootRequired: false,
                 Installed: [new DriverUpdateInstallItem(IdA, "Intel Ethernet Adapter", 2, 0)],
                 Failed: [],
-                Outcomes: [Outcome(IdA, "Intel Ethernet Adapter", DriverUpdateOutcomeStatus.Installed)],
+                Outcomes: [Outcome(IdA, "Intel Ethernet Adapter", UpdateOutcomeStatus.Installed)],
                 PostScan: []),
         };
 
@@ -309,8 +310,8 @@ public sealed class DriverUpdateExecutorTests
     private const string IdC = "33333333-3333-3333-3333-333333333333";
     private const string IdD = "44444444-4444-4444-4444-444444444444";
 
-    private static DriverUpdateOutcome Outcome(
-        string id, string title, DriverUpdateOutcomeStatus status, int? resultCode = 2, int? hresult = 0, bool reboot = false) =>
+    private static UpdateOutcome Outcome(
+        string id, string title, UpdateOutcomeStatus status, int? resultCode = 2, int? hresult = 0, bool reboot = false) =>
         new(id, title, resultCode, hresult, reboot, status);
 
     private static DriverUpdateInfo Info(string id, string title, bool preview = false) =>
@@ -330,8 +331,8 @@ public sealed class DriverUpdateExecutorTests
                 Failed: [new DriverUpdateInstallItem(IdB, "Realtek Audio", 4, unchecked((int)0x80240022))],
                 Outcomes:
                 [
-                    Outcome(IdA, "Intel Ethernet Adapter", DriverUpdateOutcomeStatus.PendingReboot, reboot: true),
-                    Outcome(IdB, "Realtek Audio", DriverUpdateOutcomeStatus.Failed, 4, unchecked((int)0x80240022)),
+                    Outcome(IdA, "Intel Ethernet Adapter", UpdateOutcomeStatus.PendingReboot, reboot: true),
+                    Outcome(IdB, "Realtek Audio", UpdateOutcomeStatus.Failed, 4, unchecked((int)0x80240022)),
                 ],
                 PostScan: [Info(IdA, "Intel Ethernet Adapter")]),
         };
@@ -384,7 +385,7 @@ public sealed class DriverUpdateExecutorTests
         {
             InstallResult = new DriverUpdateInstallResult(
                 false, [new DriverUpdateInstallItem(IdD, "Some driver", 2, 0)], [],
-                Outcomes: [Outcome(IdD, "Some driver", DriverUpdateOutcomeStatus.Installed)],
+                Outcomes: [Outcome(IdD, "Some driver", UpdateOutcomeStatus.Installed)],
                 PostScan: offered),
         };
         var install = await new InstallDriverUpdateExecutor(
@@ -416,7 +417,7 @@ public sealed class DriverUpdateExecutorTests
         {
             InstallResult = new DriverUpdateInstallResult(
                 false, [new DriverUpdateInstallItem(IdA, "x", 2, 0)], [],
-                Outcomes: [Outcome(IdA, "x", DriverUpdateOutcomeStatus.Installed)],
+                Outcomes: [Outcome(IdA, "x", UpdateOutcomeStatus.Installed)],
                 PostScan: many),
         }).ExecuteAsync(InstallTask(InstallPayload(IdA)));
         JsonDocument.Parse(install.ResultJson!).RootElement
@@ -430,7 +431,7 @@ public sealed class DriverUpdateExecutorTests
         {
             InstallResult = new DriverUpdateInstallResult(
                 false, [new DriverUpdateInstallItem(IdA, "Intel Ethernet Adapter", 2, 0)], [],
-                Outcomes: [Outcome(IdA, "Intel Ethernet Adapter", DriverUpdateOutcomeStatus.InstalledUnverified)],
+                Outcomes: [Outcome(IdA, "Intel Ethernet Adapter", UpdateOutcomeStatus.InstalledUnverified)],
                 PostScan: null),
         };
 
@@ -459,10 +460,10 @@ public sealed class DriverUpdateExecutorTests
                 [],
                 Outcomes:
                 [
-                    Outcome(IdA, "A", DriverUpdateOutcomeStatus.Installed),
-                    Outcome(IdB, "B", DriverUpdateOutcomeStatus.PendingReboot, reboot: true),
-                    Outcome(IdC, "C", DriverUpdateOutcomeStatus.ReOffered),
-                    Outcome(IdD, "D", DriverUpdateOutcomeStatus.ReOffered),
+                    Outcome(IdA, "A", UpdateOutcomeStatus.Installed),
+                    Outcome(IdB, "B", UpdateOutcomeStatus.PendingReboot, reboot: true),
+                    Outcome(IdC, "C", UpdateOutcomeStatus.ReOffered),
+                    Outcome(IdD, "D", UpdateOutcomeStatus.ReOffered),
                 ],
                 PostScan: [Info(IdC, "C"), Info(IdD, "D")]),
         };
@@ -485,8 +486,8 @@ public sealed class DriverUpdateExecutorTests
                 false, [new DriverUpdateInstallItem(IdA, "Intel Ethernet Adapter", 2, 0)], [],
                 Outcomes:
                 [
-                    Outcome(IdA, "Intel Ethernet Adapter", DriverUpdateOutcomeStatus.Installed),
-                    .. DriverUpdateOutcomeClassifier.NotOffered(
+                    Outcome(IdA, "Intel Ethernet Adapter", UpdateOutcomeStatus.Installed),
+                    .. UpdateOutcomeClassifier.NotOffered(
                         [IdA, IdB], new HashSet<string>(StringComparer.OrdinalIgnoreCase) { IdA }),
                 ],
                 PostScan: []),
@@ -511,9 +512,9 @@ public sealed class DriverUpdateExecutorTests
             InstallResult = DriverUpdateInstallResult.ForError(
                 "No driver updates were installed: 1 no longer offered by Windows Update; 1 preview; 1 with a licence that could not be accepted.",
                 [
-                    Outcome(IdA, DriverUpdateOutcomeClassifier.NotOfferedTitle, DriverUpdateOutcomeStatus.NotOffered, null, null),
-                    Outcome(IdB, "NVIDIA Display (Preview)", DriverUpdateOutcomeStatus.SkippedPreview, null, null),
-                    Outcome(IdC, "OEM firmware", DriverUpdateOutcomeStatus.EulaDeclined, null, null),
+                    Outcome(IdA, UpdateOutcomeClassifier.NotOfferedTitle, UpdateOutcomeStatus.NotOffered, null, null),
+                    Outcome(IdB, "NVIDIA Display (Preview)", UpdateOutcomeStatus.SkippedPreview, null, null),
+                    Outcome(IdC, "OEM firmware", UpdateOutcomeStatus.EulaDeclined, null, null),
                 ]),
         };
 

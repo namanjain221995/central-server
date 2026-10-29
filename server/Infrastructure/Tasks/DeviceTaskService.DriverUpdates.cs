@@ -904,14 +904,20 @@ public sealed partial class DeviceTaskService
             }
 
             var cleanTitle = string.IsNullOrWhiteSpace(title) ? null : Truncate(title.Trim(), 512);
+            if (string.IsNullOrWhiteSpace(cleanTitle))
+            {
+                cleanTitle = null;
+            }
             outcomes.Add(new InstallOutcome(updateId.Trim(), cleanTitle, status, resultCode, ToHresult(hresult)));
         }
 
         if (report.Outcomes is { } classified)
         {
+            // A null element ("outcomes":[null]) is skipped: the deserializer does
+            // not enforce the list's nullability.
             foreach (var item in classified)
             {
-                if (MapOutcome(item) is { } status)
+                if (item is not null && MapOutcome(item) is { } status)
                 {
                     Add(item.UpdateId, item.Title, status, item.ResultCode, item.Hresult);
                 }
@@ -928,14 +934,21 @@ public sealed partial class DeviceTaskService
                 ? DriverUpdateInstallStatus.PendingReboot
                 : DriverUpdateInstallStatus.InstalledUnverified;
 
+            // Null elements are skipped, as in the classified list.
             foreach (var item in report.Installed ?? [])
             {
-                Add(item.UpdateId, item.Title, installedAs, item.ResultCode, item.Hresult);
+                if (item is not null)
+                {
+                    Add(item.UpdateId, item.Title, installedAs, item.ResultCode, item.Hresult);
+                }
             }
 
             foreach (var item in report.Failed ?? [])
             {
-                Add(item.UpdateId, item.Title, DriverUpdateInstallStatus.Failed, item.ResultCode, item.Hresult);
+                if (item is not null)
+                {
+                    Add(item.UpdateId, item.Title, DriverUpdateInstallStatus.Failed, item.ResultCode, item.Hresult);
+                }
             }
         }
 

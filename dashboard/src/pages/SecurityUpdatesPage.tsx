@@ -11,8 +11,11 @@ import {
   restartDevice,
   scanAllSecurityUpdates,
   scanSecurityUpdates,
+  suppressSecurityUpdate,
+  unsuppressSecurityUpdate,
   type DeviceSecurityUpdates,
   type SecurityUpdateDeviceRow,
+  type SecurityUpdateItem,
   type SecurityUpdateOverview,
 } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -21,12 +24,35 @@ import { Icon } from '../components/Icon'
 import { TaskProgress } from '../components/TaskProgress'
 import { useTaskTracker } from '../components/useTaskTracker'
 import {
+  activeInstallMessage,
+  chipBadgeClass,
+  detailNeedsFollowUp,
+  followUpHidden,
+  followUpPolled,
+  followUpSignature,
+  followUpTimerMs,
+  followUpVisible,
   formatKbIds,
   formatUpdateSize,
+  HIDE_REASON_MAX_LENGTH,
+  hiddenUpdatesLabel,
+  hideReasonValid,
   installRebootRequired,
+  needsRestartText,
   nonPreviewUpdateIds,
+  overviewCounts,
+  pendingRebootCount,
+  RE_OFFERED_EXPLANATION,
+  recentInstallNote,
+  reOfferedSelection,
+  reOfferedWarning,
+  settlingSelectionNotes,
   severityBadgeClass,
-  shouldAutoRescanAfterInstall,
+  showRebootBanner,
+  startFollowUp,
+  statusChip,
+  wuErrorText,
+  type FollowUpStop,
 } from './securityUpdatesView'
 
 /**
@@ -41,8 +67,20 @@ import {
  * install leaves a reboot pending it offers a restart there and then, and a
  * route to Restart Management for a department.
  *
- * Reading the page needs `update.view`; scanning and installing need
- * `update.manage`. The gates hide controls; the server enforces each one.
+ * Every update carries the server's own verdict (Pending / Installing… /
+ * Verifying… / Needs restart to finish / Rolled back — retry / Failed: why),
+ * built from install records the server keeps — so a reload, a closed tab or
+ * an old agent never leaves a dead "installing". The server also queues every
+ * follow-up rescan itself; this page only reads and words what it reports.
+ * Unlike a driver, a security update Windows offers again after its install
+ * stays actionable: it usually rolled back during the restart, and a retry after
+ * fixing the cause usually works. One that keeps rolling back can be hidden per
+ * device (and unhidden) — never without a reason, because a hidden security
+ * update leaves the device without that fix.
+ *
+ * Reading the page needs `update.view`; scanning, installing, hiding and
+ * unhiding need `update.manage`. The gates hide controls; the server enforces
+ * each one.
  */
 export function SecurityUpdatesPage() {
   const { hasPermission } = useAuth()
@@ -66,15 +104,20 @@ export function SecurityUpdatesPage() {
   }, [])
 
   // Re-read on a short cadence while a device is expanded (an install may be in
-  // flight below) or any device is reboot-pending, so counts and states move
-  // without a manual refresh; slower when the fleet is quiet. Per-task progress
-  // is the 3s useTaskTracker inside each expanded panel, not this poll.
-  const lively = expanded !== null || (overview?.devices.some((d) => d.rebootPending) ?? false)
+  // flight below); slower otherwise. A pending reboot does NOT speed it up: a
+  // restart can be hours away and the server resolves the verdict on its own,
+  // so a 10s poll there would run for as long as the tab stays open — and after
+  // a security install a pending reboot is the usual state. Nothing is fetched
+  // while the tab is hidden. Per-task progress is the 3s useTaskTracker inside
+  // each expanded panel, not this poll.
+  const lively = expanded !== null
   useEffect(() => {
     if (!canView) return
     void load()
     const interval = lively ? 10_000 : 30_000
-    const timer = setInterval(() => void load(), interval)
+    const timer = setInterval(() => {
+      if (!document.hidden) void load()
+    }, interval)
     return () => clearInterval(timer)
   }, [canView, lively, load])
 
@@ -128,6 +171,7 @@ export function SecurityUpdatesPage() {
   }
 
   const summary = overview?.summary
+  const counts = overviewCounts(overview)
   const devices = overview?.devices ?? []
 
   return (
@@ -165,13 +209,26 @@ export function SecurityUpdatesPage() {
           <div className="stat-label">Devices with pending</div>
           <div className="stat-value">{summary ? summary.devicesWithPending : '—'}</div>
         </div>
+        {/* Actionable vs needs-attention: the number the operator steers by
+            excludes only hidden updates; a rolled-back (re-offered) one stays
+            actionable and is ALSO counted under "Needs attention" — the two
+            overlap on purpose. */}
         <div className="card stat-card">
-          <div className="stat-label">Pending updates</div>
-          <div className="stat-value">{summary ? summary.totalPending : '—'}</div>
+          <div className="stat-label">Actionable updates</div>
+          <div className="stat-value">{counts ? counts.actionable : '—'}</div>
+          <div className="stat-note">Pending, not hidden</div>
+        </div>
+        <div className={`card stat-card${counts && counts.cannotComplete > 0 ? ' tone-warn' : ''}`}>
+          <div className="stat-label">Needs attention</div>
+          <div className="stat-value">{counts ? counts.cannotComplete : '—'}</div>
+          <div className="stat-note">Rolled back after a restart, or hidden</div>
         </div>
         <div className={`card stat-card${summary && summary.devicesRebootPending > 0 ? ' tone-warn' : ''}`}>
           <div className="stat-label">Reboot pending</div>
           <div className="stat-value">{summary ? summary.devicesRebootPending : '—'}</div>
+          {counts && counts.needsRestart > 0 && (
+            <div className="stat-note">{needsRestartText(counts.needsRestart)}</div>
+          )}
         </div>
       </div>
 
@@ -222,8 +279,9 @@ export function SecurityUpdatesPage() {
                   <th style={{ width: 32 }} aria-label="Expand" />
                   <th>Device</th>
                   <th>Status</th>
-                  <th>Pending</th>
+                  <th>Actionable</th>
                   <th>Preview</th>
+                  <th>Needs attention</th>
                   <th>Last scan</th>
                   <th>Reboot pending</th>
                 </tr>
@@ -256,10 +314,12 @@ export function SecurityUpdatesPage() {
           onConfirm={() => void onInstallAll()}
         >
           Every device with pending security updates is queued to install its non-preview (not
-          optional) updates. Preview updates are left alone. Each device installs on its next
-          check-in and reports its own result. Security updates are large downloads and almost
-          always need a restart to finish, so expect devices to ask for a reboot afterwards. This
-          action is audited.
+          optional) updates, including any that rolled back after a restart. Preview updates are
+          left alone, and so are updates hidden on a device or still installing, waiting for a
+          restart, or being verified. Each device installs on its next check-in and reports its
+          own result. Security updates are large
+          downloads and almost always need a restart to finish, so expect devices to ask for a
+          reboot afterwards. This action is audited.
         </ConfirmDialog>
       )}
     </>
@@ -319,6 +379,11 @@ function DeviceRows({
         <td>
           <span className="badge plain neutral">{device.previewCount}</span>
         </td>
+        <td>
+          <span className={`badge plain ${(device.cannotCompleteCount ?? 0) > 0 ? 'warn' : 'neutral'}`}>
+            {device.cannotCompleteCount ?? 0}
+          </span>
+        </td>
         <td className="muted">{device.lastScanAt ? new Date(device.lastScanAt).toLocaleString() : 'never'}</td>
         <td>
           {device.rebootPending ? (
@@ -326,11 +391,14 @@ function DeviceRows({
           ) : (
             <span className="badge neutral">No</span>
           )}
+          {(device.needsRestartCount ?? 0) > 0 && (
+            <div className="row-sub">{needsRestartText(device.needsRestartCount ?? 0)}</div>
+          )}
         </td>
       </tr>
       {open && (
         <tr>
-          <td colSpan={7} style={{ background: 'transparent' }}>
+          <td colSpan={8} style={{ background: 'transparent' }}>
             <DeviceSecurityUpdatesPanel device={device} canManage={canManage} onChanged={onChanged} />
           </td>
         </tr>
@@ -342,10 +410,108 @@ function DeviceRows({
 // ------------------------------------------------------------- device panel
 
 /**
- * One device's pending security updates: the selectable list, the scan/install
- * actions, live task progress, and the reboot handoff. Loads its own detail and
- * refreshes it whenever a tracked task settles, so the list and the counts above
- * never disagree with what the device has actually done.
+ * Re-reads one device's detail while the server still has work in flight for it
+ * ({@link detailNeedsFollowUp}), on the schedule securityUpdatesView's FollowUpState describes:
+ * 10s, backing off to a 60s cap while nothing changes, paused while the page is
+ * hidden (and read straight away when it comes back), giving up after 15 minutes
+ * of no change. `onStopped` fires once when polling ends on its own -- the detail
+ * settled, or it gave up -- so the caller can refresh what sits above it.
+ * Changing `restartKey` starts the schedule afresh (a manual Refresh).
+ *
+ * The timers live here; every scheduling decision is the pure helpers', which
+ * is where they are tested. The twin of WindowsDriverUpdatesPage's hook.
+ */
+function useFollowUpPolling(
+  following: boolean,
+  restartKey: number,
+  details: DeviceSecurityUpdates | null,
+  poll: () => Promise<DeviceSecurityUpdates | null>,
+  onStopped: (reason: FollowUpStop) => void,
+) {
+  const detailsRef = useRef(details)
+  detailsRef.current = details
+  const pollRef = useRef(poll)
+  pollRef.current = poll
+  const onStoppedRef = useRef(onStopped)
+  onStoppedRef.current = onStopped
+
+  useEffect(() => {
+    if (!following) return
+
+    let state = startFollowUp(Date.now(), document.hidden)
+    let lastSignature = followUpSignature(detailsRef.current)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let cancelled = false
+    let inFlight = false
+
+    const schedule = () => {
+      clearTimeout(timer)
+      timer = undefined
+      const ms = followUpTimerMs(state, Date.now())
+      if (ms !== null) timer = setTimeout(() => void tick(), ms)
+    }
+
+    const tick = async () => {
+      if (cancelled || inFlight || state.stopped) return
+      inFlight = true
+      let fresh: DeviceSecurityUpdates | null = null
+      try {
+        fresh = await pollRef.current()
+      } finally {
+        inFlight = false
+      }
+      const signature = fresh ? followUpSignature(fresh) : lastSignature
+      state = followUpPolled(state, {
+        changed: signature !== lastSignature,
+        // A failed read settles nothing.
+        needsFollowUp: fresh ? detailNeedsFollowUp(fresh) : true,
+        now: Date.now(),
+      })
+      lastSignature = signature
+      if (state.stopped) {
+        // Even when this very poll tore the effect down (the detail settled and
+        // `following` flipped), the overview row above still needs its refresh.
+        onStoppedRef.current(state.stopped)
+        return
+      }
+      if (!cancelled) schedule()
+    }
+
+    const onVisibility = () => {
+      if (cancelled) return
+      const now = Date.now()
+      if (document.hidden) {
+        state = followUpHidden(state, now)
+        clearTimeout(timer)
+        timer = undefined
+      } else {
+        state = followUpVisible(state, now)
+        // Back in view: read now rather than show a stale list for up to a minute.
+        void tick()
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
+    schedule()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [following, restartKey])
+}
+
+/**
+ * One device's pending security updates: the selectable list with each update's
+ * install state, the scan/install actions, live task progress, the reboot
+ * handoff, recently confirmed installs, and the updates hidden on this device.
+ *
+ * Loads its own detail and refreshes it whenever a tracked task settles, and
+ * keeps re-reading it while the server still has work in flight for the device
+ * (an install, the verification scan after it) — that is how a rescan the server
+ * queued on its own reaches this list without anyone clicking. A restart still
+ * to happen is not polled for (it can be hours away); the panel's Refresh
+ * button reads the detail on demand.
  */
 function DeviceSecurityUpdatesPanel({
   device,
@@ -360,55 +526,54 @@ function DeviceSecurityUpdatesPanel({
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [busy, setBusy] = useState(false)
-  // Whether the install we queued reported a reboot is now pending, read from
-  // the install task's own resultJson. The device detail's rebootPending is the
-  // durable source; this is the immediate one, before the detail catches up.
+  // Whether the install we queued reported a reboot is now pending, read once
+  // from the install task's own resultJson when it settles. It only bridges the
+  // gap until the next detail read: from then on the detail's rebootPending (and
+  // any "Needs restart to finish" update) is the truth, so the banner goes away
+  // once the server has seen the restart.
   const [installReboot, setInstallReboot] = useState(false)
   const lastInstallTaskId = useRef<string | null>(null)
-  // The install task we have already queued an automatic re-scan for, so an
-  // install success triggers exactly one scan and that scan — which settles
-  // through onRefreshed like any other task — can never cascade into another.
-  const autoRescannedInstallTaskId = useRef<string | null>(null)
-  // track() comes from the hook below, which in turn takes onRefreshed, so the
-  // callback reaches it through a ref to avoid the declaration cycle (the same
-  // shape useTaskTracker itself uses for onRefreshed).
-  const trackRef = useRef<((taskId: string, label: string) => void) | null>(null)
+  // Follow-up polling gave up (15 minutes with no change); cleared by Refresh or
+  // once the detail no longer needs following. `followRun` restarts the schedule.
+  const [followGaveUp, setFollowGaveUp] = useState(false)
+  const [followRun, setFollowRun] = useState(0)
 
-  const load = useCallback(async () => {
+  /** Reads the detail; returns it, or null when the read failed (the error banner says so). */
+  const load = useCallback(async (): Promise<DeviceSecurityUpdates | null> => {
     try {
       const d = await getDeviceSecurityUpdates(device.deviceId)
       setDetails(d)
       setError(null)
-      // An update that is no longer pending leaves the selection too, so an
-      // install names only updates the device still offers.
+      if (!detailNeedsFollowUp(d)) setFollowGaveUp(false)
+      // The install's own reboot hint has been read; the durable detail wins now.
+      if (!lastInstallTaskId.current) setInstallReboot(false)
+      // An update that is no longer pending (installed, or hidden) leaves the
+      // selection too, so an install names only updates the device still offers.
       const ids = new Set(d.updates.map((u) => u.updateId))
       setSelected((cur) => new Set([...cur].filter((id) => ids.has(id))))
+      return d
     } catch {
       setError('Could not load this device’s security updates.')
+      return null
     }
   }, [device.deviceId])
 
   const onRefreshed = useCallback(async () => {
     await load()
     await onChanged()
-    // The reboot handoff is driven by the install task's structured result; read
-    // it once the task has settled rather than polling it on every tick.
+    // The immediate reboot hint comes from the install task's structured result,
+    // read once the task has settled rather than on every tick. There is no
+    // browser-side re-scan: the server queues the verification scan itself (and
+    // a newer agent verifies on the device), so the list moves on its own even
+    // if this tab is closed.
     if (!lastInstallTaskId.current) return
     try {
       const tasks = await getDeviceTasks(device.deviceId)
       const t = tasks.find((x) => x.id === lastInstallTaskId.current)
-      if (t && t.status === 'Succeeded') {
-        setInstallReboot(installRebootRequired(t.resultJson ?? null))
-        // The pending list is rebuilt only by a scan, so a successful install
-        // would otherwise keep showing the just-installed updates as pending
-        // until someone clicks "Scan now". Re-scan once (guarded to fire once
-        // per install) so they drop off on their own; a scan never triggers an
-        // install, so this cannot loop.
-        if (shouldAutoRescanAfterInstall(t, autoRescannedInstallTaskId.current)) {
-          autoRescannedInstallTaskId.current = t.id
-          const { taskId } = await scanSecurityUpdates(device.deviceId)
-          trackRef.current?.(taskId, 'Re-scan after install')
-        }
+      if (t && t.status !== 'Queued' && t.status !== 'Delivered') {
+        // Read once: a later settle (the restart, a scan) must not raise it again.
+        lastInstallTaskId.current = null
+        setInstallReboot(t.status === 'Succeeded' && installRebootRequired(t.resultJson ?? null))
       }
     } catch {
       // The detail's rebootPending still covers this; a failed read is not fatal.
@@ -416,15 +581,41 @@ function DeviceSecurityUpdatesPanel({
   }, [load, onChanged, device.deviceId])
 
   const { tracked, track, dismiss } = useTaskTracker(device.deviceId, !device.isOnline, onRefreshed)
-  trackRef.current = track
 
   useEffect(() => {
     void load()
   }, [load])
 
+  // Follow the server's own follow-up work until it settles (or goes quiet for
+  // 15 minutes); see detailNeedsFollowUp and useFollowUpPolling. When it stops
+  // on its own, the overview row above is re-read so its counts catch up.
+  const following = detailNeedsFollowUp(details)
+  useFollowUpPolling(following, followRun, details, load, (reason) => {
+    if (reason === 'gaveUp') setFollowGaveUp(true)
+    void onChanged()
+  })
+
+  /** Follows afresh: new work (or a Refresh) makes a schedule that gave up current again. */
+  function restartFollowUp() {
+    setFollowGaveUp(false)
+    setFollowRun((n) => n + 1)
+  }
+
+  async function onRefresh() {
+    restartFollowUp()
+    await load()
+    await onChanged()
+  }
+
   const updates = details?.updates ?? []
+  const hidden = details?.hidden ?? []
+  const recent = details?.recentInstalls ?? []
+  const activeInstall = details?.activeInstall ?? null
   const allSelected = updates.length > 0 && updates.every((u) => selected.has(u.updateId))
-  const rebootPending = (details?.rebootPending ?? device.rebootPending) || installReboot
+  const rebootPending = showRebootBanner(details, device, installReboot)
+  const restartCount = pendingRebootCount(updates)
+  const installWarning = reOfferedWarning(reOfferedSelection(updates, selected))
+  const settlingNotes = settlingSelectionNotes(updates, selected)
 
   function toggle(updateId: string) {
     setSelected((cur) => {
@@ -449,6 +640,7 @@ function DeviceSecurityUpdatesPanel({
     try {
       const { taskId } = await scanSecurityUpdates(device.deviceId)
       track(taskId, 'Scan for security updates')
+      restartFollowUp()
       await load()
     } catch (e) {
       setError(e instanceof ApiError && e.detail ? e.detail : 'Could not queue the scan.')
@@ -466,10 +658,47 @@ function DeviceSecurityUpdatesPanel({
       const { taskId } = await installSecurityUpdates(device.deviceId, [...selected])
       lastInstallTaskId.current = taskId
       track(taskId, `Install ${selected.size} security update${selected.size === 1 ? '' : 's'}`)
+      restartFollowUp()
       await load()
     } catch (e) {
       // 409 problem+json when none are eligible or the agent is too old.
       setError(e instanceof ApiError && e.detail ? e.detail : 'Could not queue the install.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Hides one update on this device; resolves true when the server accepted it. */
+  async function onHide(update: SecurityUpdateItem, reason: string): Promise<boolean> {
+    // The button is disabled for a blank reason; this is the same rule, so a
+    // stray submit never reaches the server only to be refused.
+    if (!hideReasonValid(reason)) return false
+    setBusy(true)
+    setError(null)
+    try {
+      await suppressSecurityUpdate(device.deviceId, update.updateId, reason)
+      // The reload moves it out of the list (and the selection) into Hidden.
+      await load()
+      await onChanged()
+      return true
+    } catch (e) {
+      // 400 problem+json when the reason is missing or too long.
+      setError(e instanceof ApiError && e.detail ? e.detail : 'Could not hide this update.')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onUnhide(updateId: string) {
+    setBusy(true)
+    setError(null)
+    try {
+      await unsuppressSecurityUpdate(device.deviceId, updateId)
+      await load()
+      await onChanged()
+    } catch (e) {
+      setError(e instanceof ApiError && e.detail ? e.detail : 'Could not unhide this update.')
     } finally {
       setBusy(false)
     }
@@ -507,12 +736,22 @@ function DeviceSecurityUpdatesPanel({
         </div>
       )}
 
+      {/* Live progress for tasks queued from this tab. */}
       <TaskProgress tasks={tracked} onDismiss={dismiss} />
+
+      {/* The durable "installing": from the server, so it survives a reload. */}
+      {activeInstall && (
+        <div className="info-banner" role="status">
+          <strong>{activeInstallMessage(activeInstall, device.isOnline)}</strong> Queued{' '}
+          {new Date(activeInstall.queuedAt).toLocaleString()}.
+        </div>
+      )}
 
       {rebootPending && (
         <div className="warn-banner">
           <strong>Reboot pending.</strong> A security update install needs the device to restart
           before it takes effect.
+          {restartCount > 0 && ` ${needsRestartText(restartCount)}.`}
           {canManage && (
             <>
               {' '}
@@ -522,6 +761,25 @@ function DeviceSecurityUpdatesPanel({
             </>
           )}{' '}
           Or restart a whole department from <Link to="/restart-management">Restart Management</Link>.
+          {restartCount > 0 &&
+            ' Once the device has restarted and checked in, the platform confirms the install on its own — use Refresh to see the result.'}
+        </div>
+      )}
+
+      {recent.length > 0 && (
+        <div className="notice-banner" role="status">
+          <Icon name="check" size={15} />
+          <div style={{ flex: 1 }}>
+            {recentInstallNote(recent.length)}
+            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+              {recent.map((r) => (
+                <li key={r.updateId}>
+                  {r.title}
+                  <span style={{ opacity: 0.8 }}> — confirmed {new Date(r.confirmedAt).toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 
@@ -530,6 +788,14 @@ function DeviceSecurityUpdatesPanel({
           Last scan: {details?.lastScanAt ? new Date(details.lastScanAt).toLocaleString() : 'never'}
         </span>
         <span className="spacer" />
+        <button
+          type="button"
+          className="btn-ghost btn-sm"
+          aria-label={`Refresh ${deviceName(device)}’s security updates`}
+          onClick={() => void onRefresh()}
+        >
+          <Icon name="refresh" size={14} /> Refresh
+        </button>
         {canManage && (
           <>
             <button type="button" className="btn-ghost btn-sm" disabled={busy} onClick={() => void onScan()}>
@@ -549,6 +815,27 @@ function DeviceSecurityUpdatesPanel({
           </>
         )}
       </div>
+
+      {/* Warn before retrying what rolled back after a restart; not a block —
+          retrying is the expected next step once the cause is fixed. */}
+      {canManage && installWarning && (
+        <div className="warn-banner" role="alert">
+          <strong>Before you start:</strong> {installWarning}
+        </div>
+      )}
+      {/* Same pattern for a hand-ticked update that is still settling (waiting
+          for a restart, or being verified): auto-select leaves these unticked. */}
+      {canManage && settlingNotes.length > 0 && (
+        <div className="warn-banner" role="alert">
+          <strong>Before you start:</strong> {settlingNotes.join(' ')}
+        </div>
+      )}
+
+      {following && followGaveUp && (
+        <p className="muted" role="status" style={{ fontSize: 12.5, margin: '0 0 12px' }}>
+          Stopped checking automatically after 15 minutes without a change — use Refresh to check again.
+        </p>
+      )}
 
       {!details && <div className="loading">Loading pending updates…</div>}
 
@@ -578,6 +865,7 @@ function DeviceSecurityUpdatesPanel({
                   />
                 </th>
                 <th>Security update</th>
+                <th>Status</th>
                 <th>KB</th>
                 <th>Severity</th>
                 <th>Size</th>
@@ -603,6 +891,9 @@ function DeviceSecurityUpdatesPanel({
                       </span>
                     )}
                   </td>
+                  <td>
+                    <UpdateStatusCell update={u} canManage={canManage} busy={busy} onHide={onHide} />
+                  </td>
                   <td className="muted">{formatKbIds(u.kbIds)}</td>
                   <td>
                     {u.severity ? (
@@ -618,6 +909,142 @@ function DeviceSecurityUpdatesPanel({
           </table>
         </div>
       )}
+
+      {/* Hidden per device, platform-side only; collapsed so the list stays the list. */}
+      {hidden.length > 0 && (
+        <details className="evidence" style={{ fontSize: 'inherit', marginTop: 16 }}>
+          <summary className="muted">{hiddenUpdatesLabel(hidden)}</summary>
+          <p className="muted" style={{ fontSize: 12.5, margin: '6px 0 8px' }}>
+            Hidden on this device by the platform, so they no longer count as actionable — and the
+            device stays without these fixes until they are unhidden and installed. The device’s own
+            Windows Update settings are unchanged.
+          </p>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Security update</th>
+                  <th>Reason</th>
+                  <th>Hidden by</th>
+                  <th>Hidden</th>
+                  {canManage && <th aria-label="Actions" />}
+                </tr>
+              </thead>
+              <tbody>
+                {hidden.map((h) => (
+                  <tr key={h.updateId}>
+                    <td>{h.title}</td>
+                    <td>{h.reason ?? '—'}</td>
+                    <td>{h.hiddenBy ?? '—'}</td>
+                    <td className="muted">{new Date(h.hiddenAt).toLocaleString()}</td>
+                    {canManage && (
+                      <td>
+                        <button
+                          type="button"
+                          className="btn-ghost btn-sm"
+                          disabled={busy}
+                          aria-label={`Unhide ${h.title}`}
+                          onClick={() => void onUnhide(h.updateId)}
+                        >
+                          Unhide
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
     </div>
+  )
+}
+
+// --------------------------------------------------------------- status cell
+
+/**
+ * One update's Status cell: the server's verdict as a chip, and the attempt
+ * count once the platform has tried it. A "Rolled back — retry" (re-offered)
+ * chip expands to the plain-words explanation, the last error code Windows
+ * reported when there is one, and, for `update.manage`, a Hide action whose
+ * reason is REQUIRED — unlike the driver page, because a hidden security update
+ * leaves the device without that fix. "Hide" stays disabled until the reason is
+ * non-blank (the server refuses a blank one too).
+ */
+function UpdateStatusCell({
+  update,
+  canManage,
+  busy,
+  onHide,
+}: {
+  update: SecurityUpdateItem
+  canManage: boolean
+  busy: boolean
+  onHide: (update: SecurityUpdateItem, reason: string) => Promise<boolean>
+}) {
+  const [reason, setReason] = useState('')
+  const chip = statusChip(update)
+  const status = update.installStatus ?? 'none'
+  const attempts = update.attempts ?? 0
+  const canSubmit = hideReasonValid(reason)
+  const badge = (
+    <span className={`badge ${chipBadgeClass(chip.tone)}`} style={{ whiteSpace: 'normal', maxWidth: 320 }}>
+      {chip.label}
+    </span>
+  )
+
+  async function submit() {
+    if (!canSubmit) return
+    // Keep what was typed if the server refused it, so it can be corrected.
+    if (await onHide(update, reason)) setReason('')
+  }
+
+  return (
+    <>
+      {status === 'reOffered' ? (
+        <details className="evidence" style={{ fontSize: 'inherit', marginTop: 0 }}>
+          <summary aria-label={`${chip.label}: why, and what to do`}>{badge}</summary>
+          <div style={{ maxWidth: 460, whiteSpace: 'normal', padding: '6px 0 8px', fontSize: 12.5 }}>
+            <p style={{ margin: '0 0 8px' }}>{RE_OFFERED_EXPLANATION}</p>
+            {update.lastHresult ? (
+              <p style={{ margin: '0 0 8px' }}>Last code Windows reported: {wuErrorText(update.lastHresult)}</p>
+            ) : null}
+            {canManage && (
+              <form
+                style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  void submit()
+                }}
+              >
+                <input
+                  type="text"
+                  aria-label={`Reason for hiding ${update.title} (required)`}
+                  placeholder="Reason (required)"
+                  value={reason}
+                  required
+                  maxLength={HIDE_REASON_MAX_LENGTH}
+                  disabled={busy}
+                  onChange={(e) => setReason(e.target.value)}
+                  style={{ flex: '1 1 180px', minWidth: 0 }}
+                />
+                <button type="submit" className="btn-sm" disabled={busy || !canSubmit}>
+                  Hide this update
+                </button>
+              </form>
+            )}
+          </div>
+        </details>
+      ) : (
+        badge
+      )}
+      {attempts > 0 && status !== 'none' && (
+        <div className="row-sub">
+          Tried {attempts} time{attempts === 1 ? '' : 's'}
+          {update.lastAttemptAt ? ` · last ${new Date(update.lastAttemptAt).toLocaleString()}` : ''}
+        </div>
+      )}
+    </>
   )
 }

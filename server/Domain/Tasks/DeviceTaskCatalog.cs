@@ -222,17 +222,27 @@ public static class DeviceTaskCatalog
             // is cheap to re-issue, so it is not armed for days. Gated on the agent
             // that has the Windows Update software executor; an older one would fail
             // it as an unknown type, which reads exactly like the scan failing.
+            // An hour of execution grace from the claim, like the driver scan: a
+            // Windows Update search for software updates can run past the half hour
+            // on a slow or busy machine, and a scan expired mid-search has its honest
+            // result refused. A late result is still refused for a scan (only an
+            // install takes one late).
             new(DeviceTaskType.ScanSecurityUpdates, Permissions.Update.View, HighRisk: false, 1800,
-                MinimumAgentVersion: "1.24.0"),
+                MinimumAgentVersion: "1.24.0", ExecutionGraceSeconds: 3600),
 
             // Installing a Windows Update security update rewrites the operating
             // system itself, so it carries update.manage and is high-risk. A long
             // maintenance lifetime, double the driver install's: a cumulative update
             // (LCU) is a large download followed by a long install, and one that
             // fires when a laptop reappears is still the right thing to do. Same
-            // agent gate as the scan that produced the update ids.
+            // agent gate as the scan that produced the update ids: older agents keep
+            // installing, only the richness of what they report depends on version.
+            // Three hours of execution grace from the claim -- more than the driver
+            // install's two, because a cumulative update is the largest download and
+            // the longest install Windows Update does -- so an install claimed late
+            // in its lifetime is not expired by the sweeper while it is still running.
             new(DeviceTaskType.InstallSecurityUpdate, Permissions.Update.Manage, HighRisk: true, 7200,
-                MinimumAgentVersion: "1.24.0"),
+                MinimumAgentVersion: "1.24.0", ExecutionGraceSeconds: 10800),
 
             // High-risk because it irreversibly deletes a person's browsing
             // identity -- bookmarks, history, sign-in state -- and chrome.manage

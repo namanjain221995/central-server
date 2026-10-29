@@ -2021,6 +2021,145 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("device_security_updates", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceSecurityUpdateInstallRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer")
+                        .HasColumnName("attempts");
+
+                    b.Property<DateTimeOffset?>("ConfirmedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("confirmed_at");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<DateTimeOffset>("FirstAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_attempt_at");
+
+                    b.Property<DateTimeOffset>("LastAttemptAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_attempt_at");
+
+                    b.Property<int?>("LastHresult")
+                        .HasColumnType("integer")
+                        .HasColumnName("last_hresult");
+
+                    b.Property<int?>("LastResultCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("last_result_code");
+
+                    b.Property<Guid?>("LastTaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("last_task_id");
+
+                    b.Property<int?>("Revision")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("UpdateId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("update_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_device_security_update_install_records");
+
+                    b.HasIndex("DeviceId", "Status")
+                        .HasDatabaseName("ix_device_security_update_install_records_device_status");
+
+                    b.HasIndex("DeviceId", "UpdateId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_device_security_update_install_records_device_update");
+
+                    b.ToTable("device_security_update_install_records", "endpoint_platform");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceSecurityUpdateSuppression", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreatedByDisplay")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("created_by_display");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("UpdateId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("update_id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_device_security_update_suppressions");
+
+                    b.HasIndex("DeviceId", "UpdateId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_device_security_update_suppressions_device_update");
+
+                    b.ToTable("device_security_update_suppressions", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceServiceEntry", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4969,6 +5108,26 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_device_security_updates_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceSecurityUpdateInstallRecord", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_device_security_update_install_records_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceSecurityUpdateSuppression", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_device_security_update_suppressions_devices_device_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Devices.DeviceServiceEntry", b =>

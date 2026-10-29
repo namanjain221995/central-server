@@ -161,6 +161,47 @@ public sealed class TaskExpirySweepTests(PostgresFixture fixture)
     }
 
     [Fact]
+    public async Task A_delivered_security_install_takes_its_late_result_and_cannot_be_rewritten_after()
+    {
+        var start = new DateTimeOffset(2026, 7, 2, 10, 0, 0, TimeSpan.Zero);
+        var time = new TestClock(start);
+
+        await using var db = _fixture.CreateDbContext();
+        var org = new Organization("S3S", ("u" + Guid.CreateVersion7().ToString("N")).Substring(0, 18));
+        db.Organizations.Add(org);
+        var token = new Domain.Enrollment.EnrollmentToken(org.Id, "t",
+            Guid.CreateVersion7().ToString("N") + Guid.CreateVersion7().ToString("N"),
+            Guid.CreateVersion7(), "a@b", start.AddHours(1), 9);
+        db.EnrollmentTokens.Add(token);
+        var device = Device.Enroll(org.Id, "SW3S", "m-" + Guid.CreateVersion7().ToString("N"), "1", null, token.Id, start);
+        db.Devices.Add(device);
+
+        var task = DeviceTask.Create(org.Id, device.Id, DeviceTaskType.InstallSecurityUpdate, null,
+            Guid.CreateVersion7(), "admin", start, TimeSpan.FromMinutes(15));
+        task.TryDeliver(start.AddMinutes(1)).ShouldBeTrue();
+        db.DeviceTasks.Add(task);
+        await db.SaveChangesAsync();
+
+        time.Advance(TimeSpan.FromMinutes(20));
+
+        var service = new DeviceTaskService(db, Audit(db, time), time, NullLogger<DeviceTaskService>.Instance);
+        await service.SweepExpiredAsync(batchSize: 500);
+
+        // The device provably had the install; its late report is the truth.
+        (await service.CompleteAsync(device.Id, task.Id, succeeded: true, "late", null)).ShouldBeTrue();
+
+        await using (var verify = _fixture.CreateDbContext())
+        {
+            var settled = await verify.DeviceTasks.SingleAsync(t => t.Id == task.Id);
+            settled.Status.ShouldBe(DeviceTaskStatus.Succeeded);
+            settled.ResultMessage.ShouldBe("late" + DeviceTask.LateResultSuffix);
+        }
+
+        // And once settled, a replay cannot rewrite it.
+        (await service.CompleteAsync(device.Id, task.Id, succeeded: false, "tampered", null)).ShouldBeFalse();
+    }
+
+    [Fact]
     public async Task A_second_sweep_finds_nothing_to_do()
     {
         var start = new DateTimeOffset(2026, 2, 1, 12, 0, 0, TimeSpan.Zero);

@@ -203,7 +203,7 @@ export function WindowsDriverUpdatesPage() {
         <div className="card stat-card">
           <div className="stat-label">Actionable updates</div>
           <div className="stat-value">{counts ? counts.actionable : '—'}</div>
-          <div className="stat-note">Pending updates the platform can install</div>
+          <div className="stat-note">Pending, not hidden or re-offered</div>
         </div>
         <div className={`card stat-card${counts && counts.cannotComplete > 0 ? ' tone-warn' : ''}`}>
           <div className="stat-label">Cannot complete</div>
@@ -510,10 +510,11 @@ function DeviceDriverUpdatesPanel({
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const [busy, setBusy] = useState(false)
-  // Whether the install we queued reported a reboot is now pending, read from
-  // the install task's own resultJson. The device detail's rebootPending (and
-  // any "Needs restart to finish" update) is the durable source; this is the
-  // immediate one, before the detail catches up.
+  // Whether the install we queued reported a reboot is now pending, read once
+  // from the install task's own resultJson when it settles. It only bridges the
+  // gap until the next detail read: from then on the detail's rebootPending (and
+  // any "Needs restart to finish" update) is the truth, so the banner goes away
+  // once the server has seen the restart.
   const [installReboot, setInstallReboot] = useState(false)
   const lastInstallTaskId = useRef<string | null>(null)
   // Follow-up polling gave up (15 minutes with no change); cleared by Refresh or
@@ -528,6 +529,8 @@ function DeviceDriverUpdatesPanel({
       setDetails(d)
       setError(null)
       if (!detailNeedsFollowUp(d)) setFollowGaveUp(false)
+      // The install's own reboot hint has been read; the durable detail wins now.
+      if (!lastInstallTaskId.current) setInstallReboot(false)
       // An update that is no longer pending (installed, or hidden) leaves the
       // selection too, so an install names only updates the device still offers.
       const ids = new Set(d.updates.map((u) => u.updateId))
@@ -551,8 +554,10 @@ function DeviceDriverUpdatesPanel({
     try {
       const tasks = await getDeviceTasks(device.deviceId)
       const t = tasks.find((x) => x.id === lastInstallTaskId.current)
-      if (t && t.status === 'Succeeded') {
-        setInstallReboot(installRebootRequired(t.resultJson ?? null))
+      if (t && t.status !== 'Queued' && t.status !== 'Delivered') {
+        // Read once: a later settle (the restart, a scan) must not raise it again.
+        lastInstallTaskId.current = null
+        setInstallReboot(t.status === 'Succeeded' && installRebootRequired(t.resultJson ?? null))
       }
     } catch {
       // The detail's rebootPending still covers this; a failed read is not fatal.
@@ -574,9 +579,14 @@ function DeviceDriverUpdatesPanel({
     void onChanged()
   })
 
-  async function onRefresh() {
+  /** Follows afresh: new work (or a Refresh) makes a schedule that gave up current again. */
+  function restartFollowUp() {
     setFollowGaveUp(false)
     setFollowRun((n) => n + 1)
+  }
+
+  async function onRefresh() {
+    restartFollowUp()
     await load()
     await onChanged()
   }
@@ -614,6 +624,7 @@ function DeviceDriverUpdatesPanel({
     try {
       const { taskId } = await scanDriverUpdates(device.deviceId)
       track(taskId, 'Scan for driver updates')
+      restartFollowUp()
       await load()
     } catch (e) {
       setError(e instanceof ApiError && e.detail ? e.detail : 'Could not queue the scan.')
@@ -631,6 +642,7 @@ function DeviceDriverUpdatesPanel({
       const { taskId } = await installDriverUpdates(device.deviceId, [...selected])
       lastInstallTaskId.current = taskId
       track(taskId, `Install ${selected.size} driver update${selected.size === 1 ? '' : 's'}`)
+      restartFollowUp()
       await load()
     } catch (e) {
       // 409 problem+json when none are eligible or the agent is too old.
