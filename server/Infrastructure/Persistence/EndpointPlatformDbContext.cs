@@ -101,6 +101,22 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     public DbSet<DeviceSecurityUpdate> DeviceSecurityUpdates => Set<DeviceSecurityUpdate>();
 
     /// <remarks>
+    /// The memory of each security-update install attempt per device -- outcome,
+    /// attempts, codes, and what the scans after it showed. Survives the wholesale
+    /// replacement of <see cref="DeviceSecurityUpdates"/> on purpose.
+    /// </remarks>
+    public DbSet<DeviceSecurityUpdateInstallRecord> DeviceSecurityUpdateInstallRecords =>
+        Set<DeviceSecurityUpdateInstallRecord>();
+
+    /// <remarks>
+    /// Security updates an operator hid on a device, with the reason they had to
+    /// give: out of the actionable list and never queued by "install all".
+    /// Platform-side only; nothing changes on Windows.
+    /// </remarks>
+    public DbSet<DeviceSecurityUpdateSuppression> DeviceSecurityUpdateSuppressions =>
+        Set<DeviceSecurityUpdateSuppression>();
+
+    /// <remarks>
     /// One row per device, upserted. A device without a row has never reported
     /// the Chrome section; one with a NotInstalled row has, and said no.
     /// </remarks>

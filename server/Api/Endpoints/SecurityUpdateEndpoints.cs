@@ -16,7 +16,10 @@ namespace EndpointPlatform.Api.Endpoints;
 /// <c>update.manage</c> and is high-risk, because it rewrites the operating system
 /// itself and usually ends in a reboot. A scan changes nothing on the endpoint, so
 /// it is a view-level action; an install patches the machine, so it is a
-/// manage-level one, the same split the driver updates draw.
+/// manage-level one, the same split the driver updates draw. Hiding an update
+/// (suppress / unsuppress) also rides on <c>update.manage</c>: it changes nothing on
+/// the machine, but it decides what install-all will put there -- and, unlike a
+/// hidden driver, a hidden security patch must carry a reason.
 /// </para>
 /// <para>
 /// Nothing here installs anything directly. Every device action queues a typed task
@@ -59,7 +62,121 @@ public static class SecurityUpdateEndpoints
             .WithName("InstallDeviceSecurityUpdates")
             .RequirePermission(Permissions.Update.Manage);
 
+        // Hiding decides what install-all will queue on the machine, so it carries
+        // the install permission, not the read one.
+        device.MapPost("/suppress", SuppressAsync)
+            .WithName("SuppressDeviceSecurityUpdate")
+            .RequirePermission(Permissions.Update.Manage);
+
+        device.MapPost("/unsuppress", UnsuppressAsync)
+            .WithName("UnsuppressDeviceSecurityUpdate")
+            .RequirePermission(Permissions.Update.Manage);
+
         return endpoints;
+    }
+
+    /// <summary>Longest Windows Update id accepted -- the same bound the pending list stores.</summary>
+    private const int MaxUpdateIdLength = 64;
+
+    public sealed record SuppressRequest(string? UpdateId, string? Reason);
+
+    public sealed record UnsuppressRequest(string? UpdateId);
+
+    /// <summary>
+    /// Hides one update on one device: out of the actionable list, never queued by
+    /// install-all. Idempotent -- hiding an already-hidden update is still 204 and
+    /// writes nothing. Platform-side only; nothing is sent to the device.
+    /// </summary>
+    /// <remarks>
+    /// The reason is REQUIRED (1-200 characters after trimming): leaving a machine
+    /// unpatched on purpose must be justified, and the justification is audited.
+    /// This is the one deliberate difference from the driver route, whose reason is
+    /// optional. Validated before the scope check, like the update id: a malformed
+    /// request is refused the same way whoever sends it.
+    /// </remarks>
+    private static async Task<IResult> SuppressAsync(
+        Guid deviceId,
+        SuppressRequest request,
+        SecurityUpdateService service,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (UpdateIdProblem(request.UpdateId) is { } problem)
+        {
+            return problem;
+        }
+
+        var reason = request.Reason?.Trim();
+        if (string.IsNullOrEmpty(reason))
+        {
+            return Results.Problem(
+                "Say why this security update is being hidden.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (reason.Length > Domain.Devices.DeviceSecurityUpdateSuppression.MaxReasonLength)
+        {
+            return Results.Problem(
+                $"The reason may be at most {Domain.Devices.DeviceSecurityUpdateSuppression.MaxReasonLength} characters.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var actor = AdminActor.Required(httpContext.User);
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
+        var result = await service.SuppressAsync(
+            actor.OrganizationId, deviceId, request.UpdateId!, reason, actor.UserId, actor.Email, cancellationToken);
+
+        return result == SecurityUpdateSuppressionResult.DeviceNotFound ? Results.NotFound() : Results.NoContent();
+    }
+
+    /// <summary>
+    /// Un-hides one update on one device. Idempotent -- un-hiding a visible update is
+    /// still 204 and writes nothing.
+    /// </summary>
+    private static async Task<IResult> UnsuppressAsync(
+        Guid deviceId,
+        UnsuppressRequest request,
+        SecurityUpdateService service,
+        DeviceScopeAuthorizer scope,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (UpdateIdProblem(request.UpdateId) is { } problem)
+        {
+            return problem;
+        }
+
+        var actor = AdminActor.Required(httpContext.User);
+        if (!await scope.CanActOnDeviceAsync(actor.UserId, actor.OrganizationId, deviceId, cancellationToken))
+        {
+            return Results.NotFound();
+        }
+
+        var result = await service.UnsuppressAsync(
+            actor.OrganizationId, deviceId, request.UpdateId!, actor.UserId, actor.Email, cancellationToken);
+
+        return result == SecurityUpdateSuppressionResult.DeviceNotFound ? Results.NotFound() : Results.NoContent();
+    }
+
+    private static IResult? UpdateIdProblem(string? updateId)
+    {
+        if (string.IsNullOrWhiteSpace(updateId))
+        {
+            return Results.Problem("Name the update to hide or un-hide.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return updateId.Trim().Length > MaxUpdateIdLength
+            ? Results.Problem(
+                $"An update id is at most {MaxUpdateIdLength} characters.", statusCode: StatusCodes.Status400BadRequest)
+            : null;
     }
 
     private static async Task<IResult> OverviewAsync(

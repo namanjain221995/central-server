@@ -923,6 +923,23 @@ public static class AgentEndpoints
                 device.Id);
         }
 
+        // The same questions for security-update installs -- above all "the restart a
+        // cumulative update was waiting for has happened" -- with the same bounds and
+        // the same one range-limited query on an ordinary heartbeat. Its own try/catch:
+        // one probe failing must not skip the other, and neither may fail the heartbeat.
+        try
+        {
+            await taskService.QueueSecurityFollowUpScanIfNeededAsync(device.OrganizationId, device.Id, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            // Nothing the probe half-staged may ride along on a later save.
+            dbContext.ChangeTracker.Clear();
+            loggerFactory.CreateLogger("EndpointPlatform.AgentApi.Heartbeat").LogWarning(ex,
+                "Security-update follow-up probe failed for device {DeviceId}; the heartbeat is unaffected and the next one retries.",
+                device.Id);
+        }
+
         var tasksPending = await dbContext.DeviceTasks
             .AnyAsync(t => t.DeviceId == device.Id
                            && t.Status == Domain.Tasks.DeviceTaskStatus.Queued, cancellationToken);

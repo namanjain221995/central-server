@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using EndpointAgent.Core.Abstractions;
 using EndpointAgent.Core.Drivers;
+using EndpointAgent.Core.Updates;
 using Microsoft.CSharp.RuntimeBinder;
 using Microsoft.Extensions.Logging;
 
@@ -36,7 +37,7 @@ namespace EndpointAgent.Windows;
 /// <c>Install()</c> it re-runs the same search in the same session and classifies
 /// every requested update -- Installed, InstalledUnverified, PendingReboot,
 /// ReOffered, Failed, NotOffered, SkippedPreview or EulaDeclined -- by the rules in
-/// <see cref="DriverUpdateOutcomeClassifier"/>. That search's offered set rides back
+/// <see cref="UpdateOutcomeClassifier"/>. That search's offered set rides back
 /// as the result's <c>postScan</c>, so one install round-trip refreshes the server's
 /// pending list. Still WUA COM only; nothing is launched.
 /// </para>
@@ -57,7 +58,7 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
     private const int ServerSelectionWindowsUpdate = 2;
 
     // OperationResultCode (per-update and overall install result). Success (2, and
-    // 3 = succeeded with errors) is DriverUpdateOutcomeClassifier.IsSuccess; this is
+    // 3 = succeeded with errors) is UpdateOutcomeClassifier.IsSuccess; this is
     // what an unreadable per-update result is taken to be.
     private const int OperationResultFailed = 4;
 
@@ -194,7 +195,7 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
         // here so an operation-level failure part-way still reports what is already
         // known instead of discarding it (Cause G: nothing the operator selected may
         // silently vanish from the result).
-        var outcomes = new List<DriverUpdateOutcome>();
+        var outcomes = new List<UpdateOutcome>();
 
         // Updates handed to the download/install pipeline whose outcome is not yet
         // decided; if the operation throws, these are what it took down with it.
@@ -244,7 +245,7 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                 if (DriverUpdatePreview.IsPreview(title, TryBool(() => (bool)update.IsBeta)))
                 {
                     // The platform excludes previews from installation as well as scanning.
-                    outcomes.Add(NotInstalled(normId, title, DriverUpdateOutcomeStatus.SkippedPreview));
+                    outcomes.Add(NotInstalled(normId, title, UpdateOutcomeStatus.SkippedPreview));
                     continue;
                 }
 
@@ -262,7 +263,7 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                     catch (Exception ex) when (ex is RuntimeBinderException or COMException)
                     {
                         _logger.LogDebug(ex, "Could not accept the EULA for a driver update; skipping it.");
-                        outcomes.Add(NotInstalled(normId, title, DriverUpdateOutcomeStatus.EulaDeclined));
+                        outcomes.Add(NotInstalled(normId, title, UpdateOutcomeStatus.EulaDeclined));
                         continue;
                     }
                 }
@@ -274,7 +275,7 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
 
             // Requested, but not in Windows Update's offered set at all: already
             // installed meanwhile, or no longer applicable. Itemized, never dropped.
-            outcomes.AddRange(DriverUpdateOutcomeClassifier.NotOffered(requestedIds, matched));
+            outcomes.AddRange(UpdateOutcomeClassifier.NotOffered(requestedIds, matched));
 
             if (selected.Count == 0)
             {
@@ -307,9 +308,9 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                 // silently fell out of the result; now it is a Failed outcome carrying
                 // the download's own per-update code when WUA will give it.
                 var (downloadCode, downloadHResult) = ReadOperationResult((object)downloadResult, i);
-                outcomes.Add(new DriverUpdateOutcome(
+                outcomes.Add(new UpdateOutcome(
                     selectedMeta[i].Id, selectedMeta[i].Title, downloadCode, downloadHResult,
-                    RebootRequired: false, DriverUpdateOutcomeStatus.Failed));
+                    RebootRequired: false, UpdateOutcomeStatus.Failed));
                 staged.Remove(selectedMeta[i]);
             }
 
@@ -344,7 +345,7 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                 // error says why. No code was produced, so none is invented.
                 foreach (var meta in installMeta)
                 {
-                    outcomes.Add(NotInstalled(meta.Id, meta.Title, DriverUpdateOutcomeStatus.Failed));
+                    outcomes.Add(NotInstalled(meta.Id, meta.Title, UpdateOutcomeStatus.Failed));
                 }
 
                 return DriverUpdateInstallResult.ForError(
@@ -396,7 +397,7 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
                 }
 
                 var item = new DriverUpdateInstallItem(installMeta[i].Id, installMeta[i].Title, resultCode, hresult);
-                if (DriverUpdateOutcomeClassifier.IsSuccess(resultCode))
+                if (UpdateOutcomeClassifier.IsSuccess(resultCode))
                 {
                     installed.Add(item);
                 }
@@ -416,10 +417,10 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
             foreach (var (item, itemReboot) in installerResults)
             {
                 bool? offeredAfter = stillOffered is null ? null : stillOffered.Contains(item.UpdateId);
-                var status = DriverUpdateOutcomeClassifier.Classify(
+                var status = UpdateOutcomeClassifier.Classify(
                     item.ResultCode, itemReboot || systemReboot, offeredAfter);
 
-                outcomes.Add(new DriverUpdateOutcome(
+                outcomes.Add(new UpdateOutcome(
                     item.UpdateId, item.Title, item.ResultCode, item.HResult, itemReboot, status));
             }
 
@@ -531,7 +532,7 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
     }
 
     /// <summary>A requested update that never reached an operation producing a result code.</summary>
-    private static DriverUpdateOutcome NotInstalled(string id, string title, DriverUpdateOutcomeStatus status) =>
+    private static UpdateOutcome NotInstalled(string id, string title, UpdateOutcomeStatus status) =>
         new(id, title, ResultCode: null, HResult: null, RebootRequired: false, status);
 
     /// <summary>
@@ -539,14 +540,14 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
     /// threw before the installer produced a per-update result for it, so it was not
     /// installed by this task. The HRESULT is the operation's, when it has one.
     /// </summary>
-    private static IReadOnlyList<DriverUpdateOutcome> WithStagedFailed(
-        List<DriverUpdateOutcome> outcomes, List<(string Id, string Title)> staged, int? hresult)
+    private static IReadOnlyList<UpdateOutcome> WithStagedFailed(
+        List<UpdateOutcome> outcomes, List<(string Id, string Title)> staged, int? hresult)
     {
-        var all = new List<DriverUpdateOutcome>(outcomes.Count + staged.Count);
+        var all = new List<UpdateOutcome>(outcomes.Count + staged.Count);
         all.AddRange(outcomes);
         foreach (var (id, title) in staged)
         {
-            all.Add(new DriverUpdateOutcome(id, title, ResultCode: null, hresult, RebootRequired: false, DriverUpdateOutcomeStatus.Failed));
+            all.Add(new UpdateOutcome(id, title, ResultCode: null, hresult, RebootRequired: false, UpdateOutcomeStatus.Failed));
         }
 
         return all;
@@ -569,11 +570,11 @@ public sealed class WindowsDriverUpdateService(ILogger<WindowsDriverUpdateServic
     }
 
     /// <summary>Why nothing could be staged, from the outcomes already itemized.</summary>
-    private static string DescribeNothingStaged(IReadOnlyList<DriverUpdateOutcome> outcomes)
+    private static string DescribeNothingStaged(IReadOnlyList<UpdateOutcome> outcomes)
     {
-        var notOffered = outcomes.Count(o => o.Status == DriverUpdateOutcomeStatus.NotOffered);
-        var preview = outcomes.Count(o => o.Status == DriverUpdateOutcomeStatus.SkippedPreview);
-        var eula = outcomes.Count(o => o.Status == DriverUpdateOutcomeStatus.EulaDeclined);
+        var notOffered = outcomes.Count(o => o.Status == UpdateOutcomeStatus.NotOffered);
+        var preview = outcomes.Count(o => o.Status == UpdateOutcomeStatus.SkippedPreview);
+        var eula = outcomes.Count(o => o.Status == UpdateOutcomeStatus.EulaDeclined);
 
         var reasons = new List<string>();
         if (notOffered > 0)

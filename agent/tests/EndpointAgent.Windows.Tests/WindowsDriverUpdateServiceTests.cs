@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 using EndpointAgent.Core.Abstractions;
-using EndpointAgent.Core.Drivers;
+using EndpointAgent.Core.Updates;
 using EndpointAgent.Windows;
 using Microsoft.CSharp.RuntimeBinder;
 
@@ -62,7 +62,7 @@ public sealed class WindowsDriverUpdateServiceTests
             () => throw new RuntimeBinderException("binder"), aggregateReboot: true);
         const bool systemReboot = false;
 
-        DriverUpdateOutcomeClassifier.Classify(2, itemReboot || systemReboot, stillOffered: true)
-            .ShouldBe(DriverUpdateOutcomeStatus.PendingReboot);
+        UpdateOutcomeClassifier.Classify(2, itemReboot || systemReboot, stillOffered: true)
+            .ShouldBe(UpdateOutcomeStatus.PendingReboot);
     }
 }

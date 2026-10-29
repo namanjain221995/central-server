@@ -1,6 +1,6 @@
 using System.Text.Json;
 using EndpointAgent.Core.Abstractions;
-using EndpointAgent.Core.Drivers;
+using EndpointAgent.Core.Updates;
 using EndpointPlatform.Contracts.Agent;
 using Microsoft.Extensions.Logging;
 
@@ -161,7 +161,7 @@ public sealed class InstallDriverUpdateExecutor(
 
         // A service that predates outcomes gets the conservative accounting (never
         // Installed or ReOffered without a verification search behind it).
-        var outcomes = report.Outcomes ?? DriverUpdateOutcomeClassifier.FromLegacy(report);
+        var outcomes = report.Outcomes ?? UpdateOutcomeClassifier.FromLegacy(report);
 
         var resultJson = BuildResultJson(report, outcomes, _time.GetUtcNow());
 
@@ -191,7 +191,7 @@ public sealed class InstallDriverUpdateExecutor(
     /// <param name="outcomes">The per-update accounting (the report's own, or the legacy derivation).</param>
     /// <param name="verifiedAt">The <c>scannedAt</c> stamped on <c>postScan</c>.</param>
     internal static string BuildResultJson(
-        DriverUpdateInstallResult report, IReadOnlyList<DriverUpdateOutcome> outcomes, DateTimeOffset verifiedAt) =>
+        DriverUpdateInstallResult report, IReadOnlyList<UpdateOutcome> outcomes, DateTimeOffset verifiedAt) =>
         JsonSerializer.Serialize(new
         {
             rebootRequired = report.RebootRequired,
@@ -204,7 +204,7 @@ public sealed class InstallDriverUpdateExecutor(
                 resultCode = o.ResultCode,
                 hresult = o.HResult,
                 rebootRequired = o.RebootRequired,
-                status = DriverUpdateOutcomeStatusNames.ToWire(o.Status),
+                status = UpdateOutcomeStatusNames.ToWire(o.Status),
             }),
             verified = report.Verified,
 
@@ -220,18 +220,18 @@ public sealed class InstallDriverUpdateExecutor(
     /// "Installed 1; 1 needs a restart to finish; 2 were re-offered by Windows Update
     /// and cannot be completed by the platform."
     /// </summary>
-    internal static string DescribeOutcomes(IReadOnlyList<DriverUpdateOutcome> outcomes)
+    internal static string DescribeOutcomes(IReadOnlyList<UpdateOutcome> outcomes)
     {
-        int Count(DriverUpdateOutcomeStatus status) => outcomes.Count(o => o.Status == status);
+        int Count(UpdateOutcomeStatus status) => outcomes.Count(o => o.Status == status);
 
-        var installed = Count(DriverUpdateOutcomeStatus.Installed);
-        var unverified = Count(DriverUpdateOutcomeStatus.InstalledUnverified);
-        var pendingReboot = Count(DriverUpdateOutcomeStatus.PendingReboot);
-        var reOffered = Count(DriverUpdateOutcomeStatus.ReOffered);
-        var failed = Count(DriverUpdateOutcomeStatus.Failed);
-        var notOffered = Count(DriverUpdateOutcomeStatus.NotOffered);
-        var preview = Count(DriverUpdateOutcomeStatus.SkippedPreview);
-        var eula = Count(DriverUpdateOutcomeStatus.EulaDeclined);
+        var installed = Count(UpdateOutcomeStatus.Installed);
+        var unverified = Count(UpdateOutcomeStatus.InstalledUnverified);
+        var pendingReboot = Count(UpdateOutcomeStatus.PendingReboot);
+        var reOffered = Count(UpdateOutcomeStatus.ReOffered);
+        var failed = Count(UpdateOutcomeStatus.Failed);
+        var notOffered = Count(UpdateOutcomeStatus.NotOffered);
+        var preview = Count(UpdateOutcomeStatus.SkippedPreview);
+        var eula = Count(UpdateOutcomeStatus.EulaDeclined);
 
         var parts = new List<string>();
         if (installed > 0)

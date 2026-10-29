@@ -373,7 +373,9 @@ public static class Program
             // executor reports what is offered (KB ids and MSRC severity included);
             // the install executor applies the selected updates and carries the
             // reboot-required flag back as success (the InstallDriverUpdate
-            // convention).
+            // convention). Since 1.28.0 the install also re-runs the search to
+            // verify, classifies every requested update (the classifier the driver
+            // install uses), and carries that search back as its postScan.
             builder.Services.AddSingleton<ISecurityUpdateService, WindowsSecurityUpdateService>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ScanSecurityUpdatesExecutor>();
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.InstallSecurityUpdateExecutor>();

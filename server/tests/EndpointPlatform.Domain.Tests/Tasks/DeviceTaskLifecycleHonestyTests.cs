@@ -29,11 +29,27 @@ public sealed class DeviceTaskLifecycleHonestyTests
         // it mid-search refused its result and had the probe ask again at once.
         DeviceTaskCatalog.Require(DeviceTaskType.ScanDriverUpdates).ExecutionGraceSeconds.ShouldBe(3600);
 
+        // The security-update twins carry their own grace (asserted below); every
+        // other type keeps its deadline.
         foreach (var definition in DeviceTaskCatalog.All.Values.Where(d =>
-                     d.Type is not (DeviceTaskType.InstallDriverUpdate or DeviceTaskType.ScanDriverUpdates)))
+                     d.Type is not (DeviceTaskType.InstallDriverUpdate or DeviceTaskType.ScanDriverUpdates
+                         or DeviceTaskType.InstallSecurityUpdate or DeviceTaskType.ScanSecurityUpdates)))
         {
             definition.ExecutionGraceSeconds.ShouldBe(0, $"{definition.Type} must keep today's deadline behaviour");
         }
+    }
+
+    [Fact]
+    public void The_security_install_and_scan_carry_execution_grace()
+    {
+        // A cumulative update is the largest download and the longest install
+        // Windows Update does: three hours from the claim, more than a driver's two.
+        DeviceTaskCatalog.Require(DeviceTaskType.InstallSecurityUpdate).ExecutionGraceSeconds.ShouldBe(10800);
+        DeviceTaskCatalog.Require(DeviceTaskType.ScanSecurityUpdates).ExecutionGraceSeconds.ShouldBe(3600);
+
+        // Old agents keep working: only the richness of what they report depends on version.
+        DeviceTaskCatalog.Require(DeviceTaskType.InstallSecurityUpdate).MinimumAgentVersion.ShouldBe("1.24.0");
+        DeviceTaskCatalog.Require(DeviceTaskType.ScanSecurityUpdates).MinimumAgentVersion.ShouldBe("1.24.0");
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using EndpointAgent.Core.Abstractions;
+using EndpointAgent.Core.Updates;
 using EndpointPlatform.Contracts.Agent;
 using Microsoft.Extensions.Logging;
 
@@ -63,24 +64,46 @@ public sealed class ScanSecurityUpdatesExecutor(
     }
 
     /// <summary>
+    /// Most updates one scan document carries -- the same ceiling the server's scan
+    /// ingestion applies, so nothing the agent sends is silently cut there instead.
+    /// </summary>
+    internal const int MaxReportedUpdates = 500;
+
+    /// <summary>
     /// The scan result document: when it ran and the updates offered. Matches the
     /// shape the server and dashboard parse exactly.
     /// </summary>
-    internal static string BuildResultJson(DateTimeOffset scannedAt, IReadOnlyList<SecurityUpdateInfo> updates) =>
-        JsonSerializer.Serialize(new
+    internal static string BuildResultJson(DateTimeOffset scannedAt, IReadOnlyList<SecurityUpdateInfo> updates)
+    {
+        var document = BuildScanDocument(scannedAt, updates);
+        return JsonSerializer.Serialize(document, document.GetType());
+    }
+
+    /// <summary>
+    /// The scan document as an object: the ONE code path for both a scan's result and
+    /// the <c>postScan</c> an install carries (agent 1.28.0+), so the server can feed
+    /// either to the same parser. Previews are excluded here (belt and braces) and the
+    /// list is capped at <see cref="MaxReportedUpdates"/>.
+    /// </summary>
+    internal static object BuildScanDocument(DateTimeOffset scannedAt, IEnumerable<SecurityUpdateInfo> updates) =>
+        new
         {
             scannedAt,
-            updates = updates.Select(u => new
-            {
-                updateId = u.UpdateId,
-                revision = u.Revision,
-                title = u.Title,
-                kbIds = u.KbIds,
-                severity = u.Severity,
-                isPreview = u.IsPreview,
-                sizeBytes = u.SizeBytes,
-            }),
-        });
+            updates = updates
+                .Where(u => !u.IsPreview)
+                .Take(MaxReportedUpdates)
+                .Select(u => new
+                {
+                    updateId = u.UpdateId,
+                    revision = u.Revision,
+                    title = u.Title,
+                    kbIds = u.KbIds,
+                    severity = u.Severity,
+                    isPreview = u.IsPreview,
+                    sizeBytes = u.SizeBytes,
+                })
+                .ToList(),
+        };
 }
 
 /// <summary>
@@ -101,13 +124,27 @@ public sealed class ScanSecurityUpdatesExecutor(
 /// convention. The task fails only when nothing installed and at least one update
 /// failed, or when the operation could not run at all.
 /// </para>
+/// <para>
+/// The result document is a SUPERSET (agent 1.28.0, security-update-truth contract
+/// section A): every pre-1.28.0 key keeps its name and meaning, so an older server
+/// reads it unchanged, and three keys are appended -- <c>outcomes</c> (one classified
+/// entry per requested update), <c>verified</c> (whether the post-install
+/// verification search ran) and <c>postScan</c> (that search's offered set, built by
+/// the very code that builds a scan result, or null when it could not run). The
+/// message is honest per class: what installed, what needs a restart, what Windows
+/// Update re-offered, what failed, and what was never offered. A security update
+/// almost always needs a restart, so "needs a restart to finish" is the common, and
+/// correct, outcome.
+/// </para>
 /// </remarks>
 public sealed class InstallSecurityUpdateExecutor(
     ISecurityUpdateService service,
-    ILogger<InstallSecurityUpdateExecutor> logger) : ITaskExecutor
+    ILogger<InstallSecurityUpdateExecutor> logger,
+    TimeProvider? timeProvider = null) : ITaskExecutor
 {
     private readonly ISecurityUpdateService _service = service ?? throw new ArgumentNullException(nameof(service));
     private readonly ILogger<InstallSecurityUpdateExecutor> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
 
     public string TaskType => "InstallSecurityUpdate";
 
@@ -123,7 +160,11 @@ public sealed class InstallSecurityUpdateExecutor(
 
         var report = await _service.InstallAsync(updateIds, cancellationToken);
 
-        var resultJson = BuildResultJson(report);
+        // A service that predates outcomes gets the conservative accounting (never
+        // Installed or ReOffered without a verification search behind it).
+        var outcomes = report.Outcomes ?? UpdateOutcomeClassifier.FromLegacy(report);
+
+        var resultJson = BuildResultJson(report, outcomes, _time.GetUtcNow());
 
         if (report.Error is not null)
         {
@@ -133,37 +174,112 @@ public sealed class InstallSecurityUpdateExecutor(
 
         // Success when at least one update installed, or when nothing failed. A
         // required restart is still a success -- the update is staged, it simply is
-        // not active yet.
+        // not active yet. Decided on the legacy split, exactly as before 1.28.0;
+        // the outcomes and the message carry the finer truth.
         var succeeded = report.Failed.Count == 0 || report.Installed.Count > 0;
 
-        var message = $"Installed {report.Installed.Count} security update(s)";
-        if (report.Failed.Count > 0)
-        {
-            message += $"; {report.Failed.Count} failed";
-        }
-
-        if (report.RebootRequired)
-        {
-            message += "; a restart is required before they take effect";
-        }
-
-        message += ".";
+        var message = DescribeOutcomes(outcomes);
 
         _logger.LogInformation("{Message}", message);
         return new AgentTaskResult(succeeded, message, resultJson);
     }
 
     /// <summary>
-    /// The install result document: the reboot flag and the per-update split. Matches
-    /// the shape the server and dashboard parse exactly.
+    /// The install result document. The first three keys are the pre-1.28.0 shape,
+    /// unchanged; <c>outcomes</c>, <c>verified</c> and <c>postScan</c> are appended.
     /// </summary>
-    internal static string BuildResultJson(SecurityUpdateInstallResult report) =>
+    /// <param name="report">The service's report.</param>
+    /// <param name="outcomes">The per-update accounting (the report's own, or the legacy derivation).</param>
+    /// <param name="verifiedAt">The <c>scannedAt</c> stamped on <c>postScan</c>.</param>
+    internal static string BuildResultJson(
+        SecurityUpdateInstallResult report, IReadOnlyList<UpdateOutcome> outcomes, DateTimeOffset verifiedAt) =>
         JsonSerializer.Serialize(new
         {
             rebootRequired = report.RebootRequired,
             installed = report.Installed.Select(ToJson),
             failed = report.Failed.Select(ToJson),
+            outcomes = outcomes.Select(o => new
+            {
+                updateId = o.UpdateId,
+                title = o.Title,
+                resultCode = o.ResultCode,
+                hresult = o.HResult,
+                rebootRequired = o.RebootRequired,
+                status = UpdateOutcomeStatusNames.ToWire(o.Status),
+            }),
+            verified = report.Verified,
+
+            // The SAME object a ScanSecurityUpdates result serializes, so the server can
+            // apply it with its existing scan parser. Null when verification failed.
+            postScan = report.PostScan is null
+                ? null
+                : ScanSecurityUpdatesExecutor.BuildScanDocument(verifiedAt, report.PostScan),
         });
+
+    /// <summary>
+    /// The operator-facing summary, one clause per outcome class that occurred, e.g.
+    /// "Installed 1; 1 needs a restart to finish; 2 were re-offered by Windows Update
+    /// and cannot be completed by the platform."
+    /// </summary>
+    internal static string DescribeOutcomes(IReadOnlyList<UpdateOutcome> outcomes)
+    {
+        int Count(UpdateOutcomeStatus status) => outcomes.Count(o => o.Status == status);
+
+        var installed = Count(UpdateOutcomeStatus.Installed);
+        var unverified = Count(UpdateOutcomeStatus.InstalledUnverified);
+        var pendingReboot = Count(UpdateOutcomeStatus.PendingReboot);
+        var reOffered = Count(UpdateOutcomeStatus.ReOffered);
+        var failed = Count(UpdateOutcomeStatus.Failed);
+        var notOffered = Count(UpdateOutcomeStatus.NotOffered);
+        var preview = Count(UpdateOutcomeStatus.SkippedPreview);
+        var eula = Count(UpdateOutcomeStatus.EulaDeclined);
+
+        var parts = new List<string>();
+        if (installed > 0)
+        {
+            parts.Add($"Installed {installed}");
+        }
+
+        if (unverified > 0)
+        {
+            parts.Add($"{unverified} reported installed but could not be verified");
+        }
+
+        if (pendingReboot > 0)
+        {
+            parts.Add($"{pendingReboot} {(pendingReboot == 1 ? "needs" : "need")} a restart to finish");
+        }
+
+        if (reOffered > 0)
+        {
+            parts.Add($"{reOffered} {(reOffered == 1 ? "was" : "were")} re-offered by Windows Update "
+                + "and cannot be completed by the platform");
+        }
+
+        if (failed > 0)
+        {
+            parts.Add($"{failed} failed");
+        }
+
+        if (notOffered > 0)
+        {
+            parts.Add($"{notOffered} not offered by Windows Update");
+        }
+
+        if (preview > 0)
+        {
+            parts.Add($"{preview} skipped as a preview");
+        }
+
+        if (eula > 0)
+        {
+            parts.Add($"{eula} skipped because the licence could not be accepted");
+        }
+
+        return parts.Count == 0
+            ? "No security updates were installed."
+            : string.Join("; ", parts) + ".";
+    }
 
     private static object ToJson(SecurityUpdateInstallItem item) => new
     {

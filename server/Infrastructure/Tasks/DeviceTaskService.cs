@@ -194,7 +194,9 @@ public sealed partial class DeviceTaskService(
     /// install the device claimed and never answered also gets a follow-up scan
     /// queued, so the console learns the machine's real state without anyone asking
     /// -- and its message then says what actually became of that scan (queued,
-    /// already pending, or could not be queued), never a blanket "queued".
+    /// already pending, or could not be queued), never a blanket "queued". A
+    /// security-update install is followed up exactly the same way, with a security
+    /// scan.
     /// </remarks>
     public async Task<int> SweepExpiredAsync(int batchSize, CancellationToken cancellationToken = default)
     {
@@ -215,12 +217,18 @@ public sealed partial class DeviceTaskService(
 
         var expired = 0;
         var silentInstalls = new List<DeviceTask>();
+        var silentSecurityInstalls = new List<DeviceTask>();
         foreach (var task in stale)
         {
             // A driver install the device claimed and then went silent on may well
             // have finished: the platform's answer is to look, so the first thing it
             // learns when the device is back is what is actually installed.
             var silentInstall = task.Type == DeviceTaskType.InstallDriverUpdate
+                && task.Status == DeviceTaskStatus.Delivered;
+
+            // The same for a security-update install: a cumulative update that ran
+            // past its deadline has often finished and is waiting for its restart.
+            var silentSecurityInstall = task.Type == DeviceTaskType.InstallSecurityUpdate
                 && task.Status == DeviceTaskStatus.Delivered;
 
             // No follow-up note yet: what the platform did about it is only known
@@ -231,6 +239,11 @@ public sealed partial class DeviceTaskService(
                 if (silentInstall)
                 {
                     silentInstalls.Add(task);
+                }
+
+                if (silentSecurityInstall)
+                {
+                    silentSecurityInstalls.Add(task);
                 }
             }
         }
@@ -251,6 +264,13 @@ public sealed partial class DeviceTaskService(
             var (outcome, _) = await TryQueueFollowUpScanAsync(
                 install, install.DeliveredAt ?? now, "the install expired without a result", cancellationToken);
             await NoteExpiryFollowUpAsync(install.Id, outcome, cancellationToken);
+        }
+
+        foreach (var install in silentSecurityInstalls)
+        {
+            var (outcome, _) = await TryQueueSecurityFollowUpScanAsync(
+                install, install.DeliveredAt ?? now, "the install expired without a result", cancellationToken);
+            await NoteSecurityExpiryFollowUpAsync(install.Id, outcome, cancellationToken);
         }
 
         return expired;
@@ -328,13 +348,13 @@ public sealed partial class DeviceTaskService(
     /// one: unknown to this device, never delivered, or already settled.
     /// </summary>
     /// <remarks>
-    /// A delivered driver install the sweeper already expired still takes its
-    /// result, marked as late (<see cref="DeviceTask.TryCompleteLate"/>), and goes
-    /// through exactly the same ingestion as an on-time one -- the device's report
-    /// is the truth, whenever it lands. Every other task type keeps refusing a late
-    /// result: for those an expiry has been a settled answer since day one (a late
-    /// restart "success" in particular must not resurrect an expired restart), and
-    /// widening that is its own decision, not a side effect of the driver fix.
+    /// A delivered driver or security-update install the sweeper already expired
+    /// still takes its result, marked as late (<see cref="DeviceTask.TryCompleteLate"/>),
+    /// and goes through exactly the same ingestion as an on-time one -- the device's
+    /// report is the truth, whenever it lands. Every other task type keeps refusing a
+    /// late result: for those an expiry has been a settled answer since day one (a
+    /// late restart "success" in particular must not resurrect an expired restart),
+    /// and widening that is its own decision, not a side effect of the install fixes.
     /// </remarks>
     public async Task<bool> CompleteAsync(
         Guid deviceId,
@@ -352,11 +372,17 @@ public sealed partial class DeviceTaskService(
             return false;
         }
 
+        // Agent-supplied text bound for PostgreSQL, which cannot store a NUL in text
+        // or jsonb: drop it here, before anything is stored or parsed, so one stray
+        // character cannot turn an honest result into a 500 the agent re-posts forever.
+        message = UntrustedResultText.WithoutNul(message);
+        resultJson = UntrustedResultText.JsonWithoutNul(resultJson);
+
         var now = _timeProvider.GetUtcNow();
 
         if (!task.TryComplete(succeeded, message, resultJson, now))
         {
-            if (task.Type != DeviceTaskType.InstallDriverUpdate
+            if (task.Type is not (DeviceTaskType.InstallDriverUpdate or DeviceTaskType.InstallSecurityUpdate)
                 || !task.TryCompleteLate(succeeded, message, resultJson, now))
             {
                 _logger.LogWarning(
@@ -400,7 +426,14 @@ public sealed partial class DeviceTaskService(
 
         if (task.Type == DeviceTaskType.ScanSecurityUpdates && succeeded)
         {
-            await ApplySecurityUpdateScanAsync(deviceId, resultJson, now, cancellationToken);
+            await ApplySecurityUpdateScanAsync(task, deviceId, resultJson, now, cancellationToken);
+        }
+
+        // The same for a security-update install: success AND failure are remembered.
+        FollowUpScanNeed? securityInstallFollowUp = null;
+        if (task.Type == DeviceTaskType.InstallSecurityUpdate)
+        {
+            securityInstallFollowUp = await ApplySecurityUpdateInstallAsync(task, deviceId, resultJson, now, cancellationToken);
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -419,6 +452,13 @@ public sealed partial class DeviceTaskService(
         if (installFollowUp is { } need)
         {
             await TryQueueFollowUpScanAsync(task, need.ObserveAfter, need.Why, cancellationToken);
+        }
+
+        // Likewise for a security-update install (agents before 1.28.0 never carry
+        // the fresh list).
+        if (securityInstallFollowUp is { } securityNeed)
+        {
+            await TryQueueSecurityFollowUpScanAsync(task, securityNeed.ObserveAfter, securityNeed.Why, cancellationToken);
         }
 
         return true;
@@ -564,8 +604,11 @@ public sealed partial class DeviceTaskService(
             // The update id is Windows Update's identity for the update and is a
             // GUID, so an absent one or one too long to be a GUID is a malformed
             // item, not an update. A missing title likewise -- there is nothing to
-            // show the operator.
-            if (string.IsNullOrWhiteSpace(item.UpdateId) || item.UpdateId.Length > 64
+            // show the operator. A null element is malformed too: the deserializer
+            // does not enforce the list's nullability, so "updates":[null] arrives
+            // as a null item and must be skipped, not dereferenced.
+            if (item is null
+                || string.IsNullOrWhiteSpace(item.UpdateId) || item.UpdateId.Length > 64
                 || string.IsNullOrWhiteSpace(item.Title))
             {
                 continue;
@@ -615,10 +658,11 @@ public sealed partial class DeviceTaskService(
     /// accepts, the first of any duplicate update id wins, and the list is capped. A
     /// result that will not parse leaves the previous list untouched and is logged,
     /// not thrown -- a malformed scan should not fail the task completion that
-    /// carried it.
+    /// carried it. Once the list is replaced, the device's install memory is
+    /// reconciled against it (<see cref="ReconcileSecurityInstallRecordsAsync"/>).
     /// </remarks>
     private async Task ApplySecurityUpdateScanAsync(
-        Guid deviceId, string? resultJson, DateTimeOffset now, CancellationToken cancellationToken)
+        DeviceTask scan, Guid deviceId, string? resultJson, DateTimeOffset now, CancellationToken cancellationToken)
     {
         SecurityUpdateScanReport? report;
         try
@@ -643,6 +687,26 @@ public sealed partial class DeviceTaskService(
             return;
         }
 
+        var pending = await ReplaceSecurityPendingRowsAsync(deviceId, report, now, cancellationToken);
+
+        // The scan ran when the device claimed it, on the server's clock; that is
+        // when the offered list it reports was true. It judges only attempts
+        // strictly before that: an install claimed in the same batch shares the
+        // claim time and may have run after the scan.
+        await ReconcileSecurityInstallRecordsAsync(
+            deviceId, pending, observedAt: scan.DeliveredAt ?? now, now, records: null, ownInstallTaskId: null, cancellationToken);
+    }
+
+    /// <summary>
+    /// Replaces the device's pending security-update rows with what a scan-shaped
+    /// report says Windows Update offers. The one implementation behind both a
+    /// <c>ScanSecurityUpdates</c> result and the verification list an
+    /// <c>InstallSecurityUpdate</c> result carries (<c>postScan</c>), so the two can
+    /// never disagree on what they trust. Returns the new rows (not yet saved).
+    /// </summary>
+    private async Task<IReadOnlyList<DeviceSecurityUpdate>> ReplaceSecurityPendingRowsAsync(
+        Guid deviceId, SecurityUpdateScanReport report, DateTimeOffset now, CancellationToken cancellationToken)
+    {
         var existing = await _dbContext.DeviceSecurityUpdates
             .Where(u => u.DeviceId == deviceId)
             .ToListAsync(cancellationToken);
@@ -665,8 +729,11 @@ public sealed partial class DeviceTaskService(
             // The update id is Windows Update's identity for the update and is a
             // GUID, so an absent one or one too long to be a GUID is a malformed
             // item, not an update. A missing title likewise -- there is nothing to
-            // show the operator.
-            if (string.IsNullOrWhiteSpace(item.UpdateId) || item.UpdateId.Length > 64
+            // show the operator. A null element is malformed too: the deserializer
+            // does not enforce the list's nullability, so "updates":[null] arrives
+            // as a null item and must be skipped, not dereferenced.
+            if (item is null
+                || string.IsNullOrWhiteSpace(item.UpdateId) || item.UpdateId.Length > 64
                 || string.IsNullOrWhiteSpace(item.Title))
             {
                 continue;
@@ -696,9 +763,19 @@ public sealed partial class DeviceTaskService(
 
         _logger.LogInformation(
             "Security-update scan for device {DeviceId}: {Count} update(s) pending.", deviceId, reported.Count);
+
+        return reported;
     }
 
-    /// <summary>Caps a string to <paramref name="max"/> characters, preserving null.</summary>
-    private static string? Truncate(string? value, int max) =>
-        string.IsNullOrEmpty(value) || value.Length <= max ? value : value[..max];
+    /// <summary>
+    /// Caps a string to <paramref name="max"/> characters, preserving null, and drops
+    /// any NUL character first (PostgreSQL cannot store one). <see cref="CompleteAsync"/>
+    /// already strips NULs from the whole result; this keeps every stored field safe
+    /// on its own as well.
+    /// </summary>
+    private static string? Truncate(string? value, int max)
+    {
+        value = UntrustedResultText.WithoutNul(value);
+        return string.IsNullOrEmpty(value) || value.Length <= max ? value : value[..max];
+    }
 }

@@ -1,5 +1,5 @@
 using EndpointAgent.Core.Abstractions;
-using EndpointAgent.Core.Drivers;
+using EndpointAgent.Core.Updates;
 
 namespace EndpointAgent.Core.Tests.Drivers;
 
@@ -17,29 +17,29 @@ public sealed class DriverUpdateOutcomeClassifierTests
 
     [Theory]
     // Succeeded, no restart: the verification search decides.
-    [InlineData(2, false, false, DriverUpdateOutcomeStatus.Installed)]
-    [InlineData(3, false, false, DriverUpdateOutcomeStatus.Installed)]
-    [InlineData(2, false, true, DriverUpdateOutcomeStatus.ReOffered)]
-    [InlineData(3, false, true, DriverUpdateOutcomeStatus.ReOffered)]
+    [InlineData(2, false, false, UpdateOutcomeStatus.Installed)]
+    [InlineData(3, false, false, UpdateOutcomeStatus.Installed)]
+    [InlineData(2, false, true, UpdateOutcomeStatus.ReOffered)]
+    [InlineData(3, false, true, UpdateOutcomeStatus.ReOffered)]
     // Succeeded, verification unavailable: unverified, never a guess either way.
-    [InlineData(2, false, null, DriverUpdateOutcomeStatus.InstalledUnverified)]
-    [InlineData(3, false, null, DriverUpdateOutcomeStatus.InstalledUnverified)]
+    [InlineData(2, false, null, UpdateOutcomeStatus.InstalledUnverified)]
+    [InlineData(3, false, null, UpdateOutcomeStatus.InstalledUnverified)]
     // Succeeded with a restart required: PendingReboot whatever the search said --
     // still offered is NOT re-offered until a post-reboot scan says so.
-    [InlineData(2, true, true, DriverUpdateOutcomeStatus.PendingReboot)]
-    [InlineData(2, true, false, DriverUpdateOutcomeStatus.PendingReboot)]
-    [InlineData(2, true, null, DriverUpdateOutcomeStatus.PendingReboot)]
-    [InlineData(3, true, true, DriverUpdateOutcomeStatus.PendingReboot)]
+    [InlineData(2, true, true, UpdateOutcomeStatus.PendingReboot)]
+    [InlineData(2, true, false, UpdateOutcomeStatus.PendingReboot)]
+    [InlineData(2, true, null, UpdateOutcomeStatus.PendingReboot)]
+    [InlineData(3, true, true, UpdateOutcomeStatus.PendingReboot)]
     // Anything but success is Failed, reboot flag and search notwithstanding.
-    [InlineData(4, false, false, DriverUpdateOutcomeStatus.Failed)]
-    [InlineData(4, true, true, DriverUpdateOutcomeStatus.Failed)]
-    [InlineData(5, false, null, DriverUpdateOutcomeStatus.Failed)]
-    [InlineData(0, false, true, DriverUpdateOutcomeStatus.Failed)]
-    [InlineData(1, false, false, DriverUpdateOutcomeStatus.Failed)]
+    [InlineData(4, false, false, UpdateOutcomeStatus.Failed)]
+    [InlineData(4, true, true, UpdateOutcomeStatus.Failed)]
+    [InlineData(5, false, null, UpdateOutcomeStatus.Failed)]
+    [InlineData(0, false, true, UpdateOutcomeStatus.Failed)]
+    [InlineData(1, false, false, UpdateOutcomeStatus.Failed)]
     public void Each_installer_result_lands_in_exactly_one_status(
-        int resultCode, bool rebootRequired, bool? stillOffered, DriverUpdateOutcomeStatus expected)
+        int resultCode, bool rebootRequired, bool? stillOffered, UpdateOutcomeStatus expected)
     {
-        DriverUpdateOutcomeClassifier.Classify(resultCode, rebootRequired, stillOffered).ShouldBe(expected);
+        UpdateOutcomeClassifier.Classify(resultCode, rebootRequired, stillOffered).ShouldBe(expected);
     }
 
     [Fact]
@@ -49,8 +49,8 @@ public sealed class DriverUpdateOutcomeClassifierTests
         // restart is still offered by the search, and must not read "cannot complete".
         foreach (var resultCode in new[] { 2, 3 })
         {
-            DriverUpdateOutcomeClassifier.Classify(resultCode, rebootRequired: true, stillOffered: true)
-                .ShouldNotBe(DriverUpdateOutcomeStatus.ReOffered);
+            UpdateOutcomeClassifier.Classify(resultCode, rebootRequired: true, stillOffered: true)
+                .ShouldNotBe(UpdateOutcomeStatus.ReOffered);
         }
     }
 
@@ -59,11 +59,11 @@ public sealed class DriverUpdateOutcomeClassifierTests
     {
         var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { IdB.ToUpperInvariant() };
 
-        var outcomes = DriverUpdateOutcomeClassifier.NotOffered([IdC, IdB, IdA, IdC], matched);
+        var outcomes = UpdateOutcomeClassifier.NotOffered([IdC, IdB, IdA, IdC], matched);
 
         // Unmatched ids, in request order, each once; matching is case-insensitive.
         outcomes.Select(o => o.UpdateId).ToArray().ShouldBe([IdC, IdA]);
-        outcomes.ShouldAllBe(o => o.Status == DriverUpdateOutcomeStatus.NotOffered);
+        outcomes.ShouldAllBe(o => o.Status == UpdateOutcomeStatus.NotOffered);
         outcomes.ShouldAllBe(o => o.ResultCode == null && o.HResult == null, "it never reached the installer");
         outcomes.ShouldAllBe(o => !o.RebootRequired);
         outcomes.ShouldAllBe(o => !string.IsNullOrWhiteSpace(o.Title), "a strict reader must never trip on an empty title");
@@ -74,14 +74,14 @@ public sealed class DriverUpdateOutcomeClassifierTests
     {
         var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { IdA, IdB };
 
-        DriverUpdateOutcomeClassifier.NotOffered([IdA, IdB], matched).ShouldBeEmpty();
+        UpdateOutcomeClassifier.NotOffered([IdA, IdB], matched).ShouldBeEmpty();
     }
 
     [Fact]
     public void The_wire_names_are_exactly_the_contract_strings()
     {
-        Enum.GetValues<DriverUpdateOutcomeStatus>()
-            .Select(DriverUpdateOutcomeStatusNames.ToWire)
+        Enum.GetValues<UpdateOutcomeStatus>()
+            .Select(UpdateOutcomeStatusNames.ToWire)
             .ShouldBe(
                 ["Installed", "InstalledUnverified", "PendingReboot", "ReOffered", "Failed", "NotOffered", "SkippedPreview", "EulaDeclined"],
                 ignoreOrder: true);
@@ -95,13 +95,13 @@ public sealed class DriverUpdateOutcomeClassifierTests
             Installed: [new DriverUpdateInstallItem(IdA, "Intel Ethernet", 2, 0)],
             Failed: [new DriverUpdateInstallItem(IdB, "Realtek Audio", 4, unchecked((int)0x80240022))]);
 
-        var outcomes = DriverUpdateOutcomeClassifier.FromLegacy(noReboot);
-        outcomes.Single(o => o.UpdateId == IdA).Status.ShouldBe(DriverUpdateOutcomeStatus.InstalledUnverified);
-        outcomes.Single(o => o.UpdateId == IdB).Status.ShouldBe(DriverUpdateOutcomeStatus.Failed);
+        var outcomes = UpdateOutcomeClassifier.FromLegacy(noReboot);
+        outcomes.Single(o => o.UpdateId == IdA).Status.ShouldBe(UpdateOutcomeStatus.InstalledUnverified);
+        outcomes.Single(o => o.UpdateId == IdB).Status.ShouldBe(UpdateOutcomeStatus.Failed);
         outcomes.Single(o => o.UpdateId == IdB).HResult.ShouldBe(unchecked((int)0x80240022));
 
         var withReboot = noReboot with { RebootRequired = true };
-        DriverUpdateOutcomeClassifier.FromLegacy(withReboot)
-            .Single(o => o.UpdateId == IdA).Status.ShouldBe(DriverUpdateOutcomeStatus.PendingReboot);
+        UpdateOutcomeClassifier.FromLegacy(withReboot)
+            .Single(o => o.UpdateId == IdA).Status.ShouldBe(UpdateOutcomeStatus.PendingReboot);
     }
 }

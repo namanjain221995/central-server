@@ -2379,13 +2379,33 @@ export async function unsuppressDriverUpdate(deviceId: string, updateId: string)
 // Windows via getDeviceTasks and useTaskTracker -- it never claims an install
 // is done merely because the server accepted the request.
 
+// The "security-update truth" read model, the twin of the driver one above: the
+// server remembers every install attempt per update (records survive the scan
+// that rebuilds the pending list), derives a per-update installStatus from them,
+// and owns every follow-up rescan. The new fields below are ADDITIVE and typed
+// optional so a page served against a server from before that change still
+// renders (absent = "none" / empty).
+
 export interface SecurityUpdateOverviewSummary {
   /** Active devices whose last scan found at least one pending security update. */
   devicesWithPending: number
-  /** Total pending security updates across those devices. */
+  /**
+   * Total pending security updates across those devices. Counts ACTIONABLE
+   * updates: hidden (suppressed) ones are excluded. Unlike drivers, re-offered
+   * (rolled back after a restart) updates are INCLUDED -- a retry usually works --
+   * and are also counted in `cannotCompleteCount`.
+   */
   totalPending: number
   /** Devices whose last security update install left a reboot pending. */
   devicesRebootPending: number
+  /** Security updates installed but waiting for a restart to finish (PendingReboot records). */
+  needsRestartCount?: number
+  /**
+   * Security updates that need attention: re-offered by Windows after an install
+   * (usually rolled back during the restart), or hidden. Overlaps `totalPending`
+   * on purpose for the re-offered ones.
+   */
+  cannotCompleteCount?: number
 }
 
 /** One device's line in the security-updates overview, as the server computes it. */
@@ -2395,18 +2415,42 @@ export interface SecurityUpdateDeviceRow {
   displayName: string | null
   isOnline: boolean
   lastSeenAt: string | null
-  /** Pending security updates the last scan found. */
+  /**
+   * Pending security updates the last scan found -- ACTIONABLE: hidden ones are
+   * excluded; re-offered (rolled-back) ones are included and also counted in
+   * `cannotCompleteCount`.
+   */
   pendingCount: number
   /** Of those, how many are preview/optional, so the UI can offer "non-preview only". */
   previewCount: number
   lastScanAt: string | null
+  /** Any security update awaiting a restart, or (fallback) the inventory's reboot flag. */
   rebootPending: boolean
+  /** Security updates installed but waiting for a restart to finish. */
+  needsRestartCount?: number
+  /** Needs attention: re-offered by Windows after an install (usually a rollback), plus hidden. */
+  cannotCompleteCount?: number
 }
 
 export interface SecurityUpdateOverview {
   summary: SecurityUpdateOverviewSummary
   devices: SecurityUpdateDeviceRow[]
 }
+
+/**
+ * Where the platform stands on one pending security update, derived server-side
+ * from its install records -- the server is the source of truth, so the UI
+ * renders an unrecognised value as-is rather than guessing.
+ *
+ * - `none`          never attempted (or nothing known): plain pending
+ * - `installing`    named by an install task still Queued/Delivered
+ * - `verifying`     Windows reported success; the follow-up scan has not confirmed it yet
+ * - `pendingReboot` installed, needs a restart to finish (the common outcome for security updates)
+ * - `reOffered`     Windows offered it again after the install -- usually a rollback during the
+ *                   restart; still actionable, a retry after fixing the cause usually works
+ * - `failed`        Windows reported a failure (see `lastHresult`)
+ */
+export type SecurityInstallStatus = 'none' | 'installing' | 'verifying' | 'pendingReboot' | 'reOffered' | 'failed'
 
 /** One pending security update Windows Update is offering a device. */
 export interface SecurityUpdateItem {
@@ -2420,12 +2464,52 @@ export interface SecurityUpdateItem {
   /** A preview/optional update; "auto-select non-preview" leaves these unchecked. */
   isPreview: boolean
   sizeBytes: number | null
+  /** The platform's install state for this update; absent on older servers (= "none"). */
+  installStatus?: SecurityInstallStatus
+  /** How many times the platform has tried to install it. */
+  attempts?: number
+  lastAttemptAt?: string | null
+  /** The HRESULT of the last attempt, when Windows gave one. */
+  lastHresult?: number | null
+}
+
+/** The security install task in flight for a device, so "installing" survives a page reload. */
+export interface SecurityActiveInstall {
+  taskId: string
+  status: 'Queued' | 'Delivered'
+  updateIds: string[]
+  queuedAt: string
+}
+
+/**
+ * A security update an administrator hid on this device; excluded from
+ * `updates`. Hiding one requires a reason, so `reason` is normally set; it stays
+ * nullable to match the server's suppression record.
+ */
+export interface HiddenSecurityUpdate {
+  updateId: string
+  title: string
+  reason: string | null
+  hiddenBy: string | null
+  hiddenAt: string
+}
+
+/** A security update confirmed installed (no longer offered) within the last 7 days. */
+export interface RecentSecurityInstall {
+  updateId: string
+  title: string
+  confirmedAt: string
 }
 
 export interface DeviceSecurityUpdates {
   lastScanAt: string | null
+  /** Any update awaiting a restart (PendingReboot), or (fallback) the inventory's reboot flag. */
   rebootPending: boolean
+  /** Pending updates, excluding hidden ones (those are in `hidden`). */
   updates: SecurityUpdateItem[]
+  activeInstall?: SecurityActiveInstall | null
+  hidden?: HiddenSecurityUpdate[]
+  recentInstalls?: RecentSecurityInstall[]
 }
 
 /** What the server accepted when a security update scan or install was queued. */
@@ -2470,6 +2554,32 @@ export function scanAllSecurityUpdates(): Promise<{ queued: number }> {
 /** Queues a non-preview install on every device that has pending security updates. */
 export function installAllSecurityUpdates(): Promise<{ queued: number }> {
   return request<{ queued: number }>('/admin/v1/security-updates/install-all', { method: 'POST' })
+}
+
+/**
+ * Hides one security update on one device (per device: Windows Update offers
+ * are per device). Platform-side only -- it is never hidden in Windows Update on
+ * the device itself. 204; idempotent. A refusal's problem `detail` reaches the
+ * caller on ApiError.
+ *
+ * Unlike a driver, a security update is never hidden without a reason: `reason`
+ * is required (1-200 characters after trimming) and is always sent, trimmed.
+ * The server enforces that rule (400 when blank); the page only keeps a blank
+ * reason from being submitted.
+ */
+export async function suppressSecurityUpdate(deviceId: string, updateId: string, reason: string): Promise<void> {
+  await request<void>(`/admin/v1/devices/${encodeURIComponent(deviceId)}/security-updates/suppress`, {
+    method: 'POST',
+    body: JSON.stringify({ updateId, reason: reason.trim() }),
+  })
+}
+
+/** Unhides one security update on one device. 204; idempotent. */
+export async function unsuppressSecurityUpdate(deviceId: string, updateId: string): Promise<void> {
+  await request<void>(`/admin/v1/devices/${encodeURIComponent(deviceId)}/security-updates/unsuppress`, {
+    method: 'POST',
+    body: JSON.stringify({ updateId }),
+  })
 }
 
 export interface PackageRow {
