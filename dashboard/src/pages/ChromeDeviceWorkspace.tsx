@@ -598,11 +598,12 @@ function ProfileList({
         return (
           // The select button and the Remove button are siblings, not nested:
           // a button inside a button is invalid HTML and unreachable by keyboard.
-          <div key={p.profileId} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          // The actions sit on their own row under the profile: beside it, in a
+          // 300px column, they squeezed the name and e-mail until they overlapped.
+          <div key={p.profileId} className="profile-row">
             <button
               type="button"
               className="list-item"
-              style={{ flex: 1, minWidth: 0 }}
               aria-selected={selectedProfile?.profileId === p.profileId}
               onClick={() => onSelect(p.profileId)}
             >
@@ -620,7 +621,7 @@ function ProfileList({
               </div>
             </button>
             {canManage && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0, alignItems: 'stretch' }}>
+              <div className="profile-actions">
                 <button
                   type="button"
                   // Dormant profiles are the cleanup target, so their Remove is
