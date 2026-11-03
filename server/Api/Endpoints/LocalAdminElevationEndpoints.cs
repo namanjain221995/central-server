@@ -133,6 +133,14 @@ public static class LocalAdminElevationEndpoints
             actor.OrganizationId, deviceId, request.TargetSid!, request.Justification!,
             duration, actor.UserId, actor.Email, cancellationToken);
 
+        // Approved on the spot: tell the endpoint now. A pending request
+        // authorizes nothing yet, so it has nothing to push.
+        if (outcome == ElevationOutcome.Success && elevation!.State == LocalAdminElevationState.Approved)
+        {
+            await service.QueueElevationPushAsync(
+                actor.OrganizationId, deviceId, actor.UserId, actor.Email, cancellationToken);
+        }
+
         return outcome switch
         {
             ElevationOutcome.Success => Results.Ok(new
@@ -203,6 +211,12 @@ public static class LocalAdminElevationEndpoints
             actor.OrganizationId, elevationId, TimeSpan.FromMinutes(request.DurationMinutes),
             actor.UserId, actor.Email, cancellationToken);
 
+        if (outcome == ElevationOutcome.Success)
+        {
+            await service.QueueElevationPushAsync(
+                actor.OrganizationId, deviceId.Value, actor.UserId, actor.Email, cancellationToken);
+        }
+
         return outcome switch
         {
             ElevationOutcome.Success => Results.Ok(new
@@ -259,6 +273,14 @@ public static class LocalAdminElevationEndpoints
 
         var outcome = await service.RevokeAsync(
             actor.OrganizationId, elevationId, request?.Note, actor.UserId, actor.Email, cancellationToken);
+
+        // The pushed set no longer contains this elevation, so the endpoint removes
+        // the rights now instead of waiting for the deadline.
+        if (outcome == ElevationOutcome.Success)
+        {
+            await service.QueueElevationPushAsync(
+                actor.OrganizationId, deviceId.Value, actor.UserId, actor.Email, cancellationToken);
+        }
 
         return outcome switch
         {

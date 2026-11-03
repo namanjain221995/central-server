@@ -327,6 +327,12 @@ public sealed class LocalAdminElevationService(
     /// is already durable, and the endpoint withdraws rights on its own when the
     /// deadline passes regardless of whether this message ever arrives. Losing
     /// the push delays a change; it never widens access.
+    /// <para>
+    /// Called by the request (when it approves at once), approve and revoke
+    /// endpoints. Until 2026-11 nothing called it, so an approved elevation was
+    /// recorded but never reached the endpoint and read "Not applied yet" until
+    /// it lapsed.
+    /// </para>
     /// </remarks>
     public async Task<DeviceTask?> QueueElevationPushAsync(
         Guid organizationId,
@@ -335,14 +341,33 @@ public sealed class LocalAdminElevationService(
         string actorDisplay,
         CancellationToken cancellationToken = default)
     {
-        var now = _timeProvider.GetUtcNow();
-        var desired = await BuildDesiredElevationsAsync(deviceId, now, cancellationToken);
+        try
+        {
+            var now = _timeProvider.GetUtcNow();
+            var desired = await BuildDesiredElevationsAsync(deviceId, now, cancellationToken);
 
-        var payload = new TaskPayloads.ApplyLocalAdminElevation(desired, now);
+            var payload = new TaskPayloads.ApplyLocalAdminElevation(desired, now);
 
-        return await _taskService.QueueAsync(
-            organizationId, deviceId, DeviceTaskType.ApplyLocalAdminElevation, payload,
-            actorId, actorDisplay, cancellationToken);
+            var task = await _taskService.QueueAsync(
+                organizationId, deviceId, DeviceTaskType.ApplyLocalAdminElevation, payload,
+                actorId, actorDisplay, cancellationToken);
+
+            if (task is null)
+            {
+                // Retired device, or an agent too old to carry the executor; the
+                // task service has already logged which.
+                _logger.LogWarning(
+                    "The elevation set for device {DeviceId} was not pushed; the device cannot take the task.",
+                    deviceId);
+            }
+
+            return task;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Pushing the elevation set to device {DeviceId} failed.", deviceId);
+            return null;
+        }
     }
 
     /// <summary>

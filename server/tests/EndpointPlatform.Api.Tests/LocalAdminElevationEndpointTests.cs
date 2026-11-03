@@ -285,6 +285,72 @@ public sealed class LocalAdminElevationEndpointTests(AdminApiPostgresFixture fix
         stored.ExpiresAt!.Value.ShouldBe(firstExpiry, TimeSpan.FromSeconds(1));
     }
 
+    // ---- delivery to the endpoint -------------------------------------------
+    //
+    // Until 2026-11 an approved elevation was recorded and never sent: no route
+    // queued the ApplyLocalAdminElevation task, so the endpoint never added the
+    // account and the console read "Not applied yet" until the deadline.
+
+    /// <summary>The ApplyLocalAdminElevation tasks queued for a device, oldest first, as their SID sets.</summary>
+    private async Task<List<string[]>> PushedSetsAsync(Guid deviceId)
+    {
+        await using var db = _fixture.CreateDbContext();
+        var payloads = await db.DeviceTasks.AsNoTracking()
+            .Where(t => t.DeviceId == deviceId && t.Type == Domain.Tasks.DeviceTaskType.ApplyLocalAdminElevation)
+            .OrderBy(t => t.CreatedAt)
+            .Select(t => t.PayloadJson)
+            .ToListAsync();
+
+        return payloads
+            .Select(p => JsonDocument.Parse(p!).RootElement.GetProperty("elevations").EnumerateArray()
+                .Select(e => e.GetProperty("sid").GetString()!).ToArray())
+            .ToList();
+    }
+
+    [Fact]
+    public async Task A_self_approved_request_is_sent_to_the_endpoint_at_once()
+    {
+        var deviceId = await SeedDeviceAsync();
+        using var client = await ClientAsync(AdminApiPostgresFixture.ItAdminEmail);
+
+        (await client.PostAsync(Elevations(deviceId), RequestBody(minutes: 60))).StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        (await PushedSetsAsync(deviceId)).ShouldHaveSingleItem().ShouldBe([StandardSid]);
+    }
+
+    [Fact]
+    public async Task A_pending_request_sends_nothing_until_it_is_approved()
+    {
+        var deviceId = await SeedDeviceAsync();
+        using var client = await ClientAsync(AdminApiPostgresFixture.ItAdminEmail);
+
+        var created = await (await client.PostAsync(Elevations(deviceId), RequestBody(minutes: null)))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        (await PushedSetsAsync(deviceId)).ShouldBeEmpty();
+
+        (await client.PostAsync(Approve(created.GetProperty("id").GetGuid()), JsonContent.Create(new { durationMinutes = 60 })))
+            .StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        (await PushedSetsAsync(deviceId)).ShouldHaveSingleItem().ShouldBe([StandardSid]);
+    }
+
+    [Fact]
+    public async Task Revoking_sends_the_endpoint_a_set_without_the_account()
+    {
+        var deviceId = await SeedDeviceAsync();
+        using var client = await ClientAsync(AdminApiPostgresFixture.ItAdminEmail);
+
+        var created = await (await client.PostAsync(Elevations(deviceId), RequestBody()))
+            .Content.ReadFromJsonAsync<JsonElement>();
+        (await client.PostAsync(Revoke(created.GetProperty("id").GetGuid()), JsonContent.Create(new { note = "Done." })))
+            .StatusCode.ShouldBe(HttpStatusCode.NoContent);
+
+        var pushed = await PushedSetsAsync(deviceId);
+        pushed.Count.ShouldBe(2);
+        pushed[0].ShouldBe([StandardSid]);
+        pushed[1].ShouldBeEmpty();
+    }
+
     [Fact]
     public async Task Revoking_ends_the_elevation_and_a_second_revoke_is_refused()
     {
