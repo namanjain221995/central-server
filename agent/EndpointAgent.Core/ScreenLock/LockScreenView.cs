@@ -14,9 +14,6 @@ public static class LockScreenView
     /// <summary>Fixed. The label above the administrator's message.</summary>
     public const string MessageLabel = "Message from your IT administrator";
 
-    /// <summary>Fixed. The hint that tells IT staff how to unlock on the device.</summary>
-    public const string UnlockHint = "IT staff: press Ctrl+Alt+U to enter the unlock code.";
-
     /// <summary>Fixed. The caption on the passphrase prompt.</summary>
     public const string PromptCaption = "Enter the IT unlock code";
 

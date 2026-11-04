@@ -202,7 +202,8 @@ internal sealed class LockOverlayController : IDisposable
         _contactLabel = Text(string.Empty, 12f, FontStyle.Regular, Color.Silver, topMargin: 10);
         stack.Controls.Add(_contactLabel);
 
-        stack.Controls.Add(Text(LockScreenView.UnlockHint, 10f, FontStyle.Italic, Color.DimGray, topMargin: 40));
+        // No on-screen hint for the unlock chord: employees should not be told how
+        // to reach the prompt. IT staff know Ctrl+Alt+U from the dashboard.
 
         _promptPanel = BuildPrompt();
         stack.Controls.Add(_promptPanel);
