@@ -629,10 +629,36 @@ public static class TaskPayloads
     /// Hard ceiling on the archive. The agent stops and reports the result truncated
     /// rather than exceeding it.
     /// </param>
+    /// <param name="SelectedPaths">
+    /// Optional. When present, only these entries are collected — each a path relative
+    /// to a root (e.g. "Desktop/report.docx" or a folder "Downloads/invoices"); a
+    /// selected folder is taken recursively. Null or empty means the whole of
+    /// <paramref name="RootKeys"/>. The agent validates every path stays within the
+    /// user's profile and never trusts one blindly. Only agents 1.30.0+ honour it, so
+    /// the server refuses a selection against an older agent rather than over-collecting.
+    /// </param>
     public sealed record CollectFiles(
         string TransferId,
         string RecipientPublicKey,
         string UserSid,
         IReadOnlyList<string> RootKeys,
-        long MaxBytes);
+        long MaxBytes,
+        IReadOnlyList<string>? SelectedPaths = null);
+
+    /// <summary>
+    /// List a Windows user's Desktop/Downloads/Documents tree (names and sizes) and
+    /// send it, end-to-end encrypted, through the relay so the operator can browse and
+    /// choose files. Carries no secret (the recipient key is public).
+    /// </summary>
+    /// <param name="TransferId">Correlates the task, the agent's upload and the browser's stream.</param>
+    /// <param name="RecipientPublicKey">The browser's one-time ECDH P-256 public key (base64 raw point).</param>
+    /// <param name="UserSid">Whose folders to list; resolved to a real profile, refused otherwise.</param>
+    /// <param name="RootKeys">Which folders: any of "Desktop", "Downloads", "Documents".</param>
+    /// <param name="MaxEntries">Upper bound on how many entries the listing may contain before it is truncated.</param>
+    public sealed record ListUserFolder(
+        string TransferId,
+        string RecipientPublicKey,
+        string UserSid,
+        IReadOnlyList<string> RootKeys,
+        int MaxEntries);
 }

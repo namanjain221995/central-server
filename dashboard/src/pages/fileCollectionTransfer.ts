@@ -198,39 +198,13 @@ export async function downloadCollection(
   sink: DownloadSink,
   onProgress?: (bytesWritten: number) => void,
 ): Promise<CollectionOutcome> {
-  const base = `/api/admin/v1/devices/${encodeURIComponent(deviceId)}/file-collections/${encodeURIComponent(transferId)}`
-
-  const response = await fetch(`${base}/stream`, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-  if (!response.ok || !response.body) {
-    const problem = await response.json().catch(() => null)
-    throw new ApiError(
-      response.status,
-      problem?.title ?? problem?.detail ?? `The device did not start the collection (HTTP ${response.status}).`,
-      response.headers.get('X-Correlation-Id'),
-    )
-  }
-
-  const reader = new FrameReader(response.body.getReader())
-
-  const headerBytes = await reader.next()
-  if (headerBytes === null) {
-    throw new ApiError(0, 'The collection ended before any data arrived.', null)
-  }
-  const header = JSON.parse(new TextDecoder().decode(headerBytes)) as CollectionHeader
-  const key = await deriveAesKey(privateKey, header)
-
   let bytesWritten = 0
-  let frameIndex = 0
   try {
-    while (true) {
-      const frame = await reader.next()
-      if (frame === null) break
-      const plaintext = await decryptFrame(key, frameIndex, frame)
-      await sink.write(plaintext)
-      bytesWritten += plaintext.length
-      frameIndex += 1
+    await streamDecrypted(deviceId, transferId, privateKey, async (chunk) => {
+      await sink.write(chunk)
+      bytesWritten += chunk.length
       onProgress?.(bytesWritten)
-    }
+    })
     await sink.close()
   } catch (error) {
     try {
@@ -241,15 +215,102 @@ export async function downloadCollection(
     throw error
   }
 
-  let result: CollectionResult | null = null
+  return { bytesWritten, streamedToDisk: sink.streamedToDisk, result: await fetchStatus(deviceId, transferId) }
+}
+
+/** One entry in a browse listing, as the agent reports it. */
+export interface FileEntry {
+  /** Relative path including the root key, e.g. "Desktop/report.docx". */
+  path: string
+  isDirectory: boolean
+  sizeBytes: number
+}
+
+export interface FileListing {
+  truncated: boolean
+  entries: FileEntry[]
+}
+
+/**
+ * Starts nothing itself: given a browse transfer the caller already started, streams
+ * the encrypted listing, decrypts it in memory and returns the file tree. The listing
+ * is small, so it is buffered rather than streamed to disk.
+ */
+export async function browseListing(
+  deviceId: string,
+  transferId: string,
+  privateKey: CryptoKey,
+): Promise<FileListing> {
+  const chunks: Uint8Array[] = []
+  await streamDecrypted(deviceId, transferId, privateKey, async (chunk) => {
+    chunks.push(chunk)
+  })
+
+  const total = chunks.reduce((n, c) => n + c.length, 0)
+  const buffer = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset)
+    offset += chunk.length
+  }
+
+  return JSON.parse(new TextDecoder().decode(buffer)) as FileListing
+}
+
+function transferBase(deviceId: string, transferId: string): string {
+  return `/api/admin/v1/devices/${encodeURIComponent(deviceId)}/file-collections/${encodeURIComponent(transferId)}`
+}
+
+/**
+ * The shared core: open the transfer stream, read the header, derive the key and hand
+ * each decrypted frame to <paramref />onPlaintext. The collection writes it to disk;
+ * the browse accumulates it into the listing.
+ */
+async function streamDecrypted(
+  deviceId: string,
+  transferId: string,
+  privateKey: CryptoKey,
+  onPlaintext: (chunk: Uint8Array) => Promise<void>,
+): Promise<void> {
+  const response = await fetch(`${transferBase(deviceId, transferId)}/stream`, {
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+  })
+  if (!response.ok || !response.body) {
+    const problem = await response.json().catch(() => null)
+    throw new ApiError(
+      response.status,
+      problem?.title ?? problem?.detail ?? `The device did not start the transfer (HTTP ${response.status}).`,
+      response.headers.get('X-Correlation-Id'),
+    )
+  }
+
+  const reader = new FrameReader(response.body.getReader())
+  const headerBytes = await reader.next()
+  if (headerBytes === null) {
+    throw new ApiError(0, 'The transfer ended before any data arrived.', null)
+  }
+  const header = JSON.parse(new TextDecoder().decode(headerBytes)) as CollectionHeader
+  const key = await deriveAesKey(privateKey, header)
+
+  let frameIndex = 0
+  while (true) {
+    const frame = await reader.next()
+    if (frame === null) break
+    await onPlaintext(await decryptFrame(key, frameIndex, frame))
+    frameIndex += 1
+  }
+}
+
+async function fetchStatus(deviceId: string, transferId: string): Promise<CollectionResult | null> {
   try {
-    const status = await fetch(`${base}/status`, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    const status = await fetch(`${transferBase(deviceId, transferId)}/status`, {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    })
     if (status.ok && status.status !== 204) {
-      result = (await status.json()) as CollectionResult
+      return (await status.json()) as CollectionResult
     }
   } catch {
     // The archive is already on disk; a missing status only costs the success note.
   }
-
-  return { bytesWritten, streamedToDisk: sink.streamedToDisk, result }
+  return null
 }

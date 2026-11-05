@@ -418,4 +418,24 @@ public enum DeviceTaskType
     /// </para>
     /// </remarks>
     CollectFiles = 63,
+
+    /// <summary>
+    /// List a Windows user's Desktop/Downloads/Documents tree (file and folder names
+    /// and sizes) and send it, end-to-end encrypted, to the administrator who asked,
+    /// so they can browse and pick exactly which files to collect.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The agent enumerates the folders in-process (no shell — ADR-0005), bounded by a
+    /// maximum entry count, encrypts the listing to the browser's one-time key and
+    /// sends it through the relay. Like the collection itself, the listing never lands
+    /// in the database — file names reach only the operator's browser, which is the
+    /// whole point of browsing, and nothing else.
+    /// </para>
+    /// <para>
+    /// Gated on the agent that carries the listing executor; an older one would fail it
+    /// as an unknown type, which reads exactly like the browse failing.
+    /// </para>
+    /// </remarks>
+    ListUserFolder = 64,
 }

@@ -124,7 +124,24 @@ public sealed class CollectFilesExecutor : ITaskExecutor
                 return false;
             }
 
-            job = new CollectFilesJob(transferId, recipientKey, userSid, roots, maxBytes);
+            List<string>? selected = null;
+            if (root.TryGetProperty("selectedPaths", out var paths) && paths.ValueKind == JsonValueKind.Array)
+            {
+                selected = [];
+                foreach (var element in paths.EnumerateArray())
+                {
+                    if (element.ValueKind == JsonValueKind.String)
+                    {
+                        var value = element.GetString();
+                        if (!string.IsNullOrWhiteSpace(value))
+                        {
+                            selected.Add(value);
+                        }
+                    }
+                }
+            }
+
+            job = new CollectFilesJob(transferId, recipientKey, userSid, roots, maxBytes, selected);
             return true;
         }
         catch (JsonException ex)

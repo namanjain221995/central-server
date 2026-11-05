@@ -38,6 +38,7 @@ public static class FileCollectionEndpoints
             .RequirePermission(Permissions.Files.Collect);
 
         group.MapPost("/", StartAsync).WithName("StartFileCollection");
+        group.MapPost("/list", StartListAsync).WithName("StartFileCollectionListing");
         group.MapGet("/{transferId}/stream", StreamAsync).WithName("StreamFileCollection");
         group.MapGet("/{transferId}/status", StatusAsync).WithName("GetFileCollectionStatus");
 
@@ -49,7 +50,13 @@ public static class FileCollectionEndpoints
         string? UserSid,
         IReadOnlyList<string>? RootKeys,
         string? CurrentPassword,
-        string? Justification);
+        string? Justification,
+        IReadOnlyList<string>? SelectedPaths = null);
+
+    public sealed record StartFileListingRequest(
+        string? RecipientPublicKey,
+        string? UserSid,
+        IReadOnlyList<string>? RootKeys);
 
     private static async Task<IResult> StartAsync(
         Guid deviceId,
@@ -61,10 +68,29 @@ public static class FileCollectionEndpoints
         var actor = AdminActor.Required(httpContext.User);
         var result = await service.StartAsync(
             actor.OrganizationId, deviceId, actor.UserId, actor.Email,
-            request.RecipientPublicKey, request.UserSid, request.RootKeys,
+            request.RecipientPublicKey, request.UserSid, request.RootKeys, request.SelectedPaths,
             request.CurrentPassword, request.Justification, cancellationToken);
 
-        return result.Status switch
+        return ToResult(result, "Could not start the collection.");
+    }
+
+    private static async Task<IResult> StartListAsync(
+        Guid deviceId,
+        StartFileListingRequest request,
+        FileCollectionService service,
+        HttpContext httpContext,
+        CancellationToken cancellationToken)
+    {
+        var actor = AdminActor.Required(httpContext.User);
+        var result = await service.StartListAsync(
+            actor.OrganizationId, deviceId, actor.UserId, actor.Email,
+            request.RecipientPublicKey, request.UserSid, request.RootKeys, cancellationToken);
+
+        return ToResult(result, "Could not start the listing.");
+    }
+
+    private static IResult ToResult(FileCollectionStartResult result, string genericError) =>
+        result.Status switch
         {
             FileCollectionStartStatus.Started => Results.Ok(new { transferId = result.TransferId }),
             FileCollectionStartStatus.BadRequest =>
@@ -74,9 +100,8 @@ public static class FileCollectionEndpoints
             FileCollectionStartStatus.NotFound => Results.NotFound(),
             FileCollectionStartStatus.AgentUnavailable =>
                 Results.Problem(result.Error, statusCode: StatusCodes.Status409Conflict),
-            _ => Results.Problem("Could not start the collection.", statusCode: StatusCodes.Status500InternalServerError),
+            _ => Results.Problem(genericError, statusCode: StatusCodes.Status500InternalServerError),
         };
-    }
 
     private static async Task<IResult> StreamAsync(
         Guid deviceId,

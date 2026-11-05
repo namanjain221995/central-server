@@ -438,6 +438,8 @@ public static class Program
                 sp.GetRequiredService<EndpointAgent.Core.FileCollection.CollectFilesWorker>());
             builder.Services.AddSingleton<
                 EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.CollectFilesExecutor>();
+            builder.Services.AddSingleton<
+                EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.ListUserFolderExecutor>();
 
             builder.Services.AddHttpClient<IAgentApiClient, AgentApiClient>((serviceProvider, client) =>
                 {
