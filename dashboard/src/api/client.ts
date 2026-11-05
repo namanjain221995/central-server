@@ -3208,6 +3208,60 @@ export function getFleetStorageSummary(): Promise<FleetStorageSummary> {
 }
 
 // ---------------------------------------------------------------------------
+// File collection
+//
+// Start a transfer that downloads a device user's Desktop/Downloads/Documents
+// straight to the operator's machine. The archive is end-to-end encrypted
+// (see fileCollectionTransfer.ts for the key handling and the streamed download);
+// this call only starts it, which the server re-confirms with a password step-up.
+// ---------------------------------------------------------------------------
+
+export interface StartFileCollectionBody {
+  /** The browser's one-time ECDH P-256 public key (base64 raw point). */
+  recipientPublicKey: string
+  /** Which Windows user's folders to collect. */
+  userSid: string
+  /** A subset of "Desktop", "Downloads", "Documents". */
+  rootKeys: string[]
+  /** Step-up: the operator's current password. */
+  currentPassword: string
+  /** Step-up: why the files are being collected (recorded in the audit log). */
+  justification: string
+}
+
+/**
+ * Starts a collection and returns its transfer id. Uses a direct fetch rather than
+ * the shared helper so the server's own reason is surfaced — a wrong step-up password
+ * (403), an agent too old or an unreachable device (409), a bad request (400).
+ */
+export async function startFileCollection(
+  deviceId: string,
+  body: StartFileCollectionBody,
+): Promise<{ transferId: string }> {
+  const response = await fetch(
+    `/api/admin/v1/devices/${encodeURIComponent(deviceId)}/file-collections`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify(body),
+    },
+  )
+
+  if (response.status === 401) sessionExpiredEvent.dispatchEvent(new Event('expired'))
+
+  if (!response.ok) {
+    const problem = await response.json().catch(() => null)
+    throw new ApiError(
+      response.status,
+      problem?.title ?? problem?.detail ?? `Could not start the collection (HTTP ${response.status}).`,
+      response.headers.get('X-Correlation-Id'),
+    )
+  }
+
+  return (await response.json()) as { transferId: string }
+}
+
+// ---------------------------------------------------------------------------
 // Pending agent enrollment
 //
 // A Windows PC that has installed the MSI asks to be managed and then waits.
