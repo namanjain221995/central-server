@@ -136,6 +136,7 @@ public sealed class Program
             app.MapPlatformHealthChecks();
 
             app.MapAgentEndpoints();
+            app.MapAgentFileCollectionEndpoints();
 
             app.MapGet("/", () => new ServiceInfoResponse(
                     Service: "agent-api",
