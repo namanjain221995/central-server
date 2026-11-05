@@ -21,7 +21,8 @@ namespace EndpointAgent.Core.Communication;
 /// credential material never are.
 /// </para>
 /// </remarks>
-public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient> logger) : IAgentApiClient
+public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient> logger)
+    : IAgentApiClient, IFileCollectionApiClient
 {
     private readonly HttpClient _httpClient = httpClient
         ?? throw new ArgumentNullException(nameof(httpClient));
@@ -191,6 +192,79 @@ public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient
         // 404 is told apart here: it means the server has no such task for this
         // device, so the dispatcher drops the result instead of spooling it for retry.
         return await SendNoContentAsync(message, "task-result", cancellationToken, distinguishNotFound: true);
+    }
+
+    public async Task<AgentApiResult<Unit>> PostFileCollectionHeaderAsync(
+        string transferId,
+        AgentFileCollectionHeader header,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transferId);
+        ArgumentNullException.ThrowIfNull(header);
+        ArgumentNullException.ThrowIfNull(credential);
+
+        using var message = new HttpRequestMessage(HttpMethod.Post, FileCollectionRoute(transferId, AgentProtocol.Routes.FileCollectionHeaderSuffix))
+        {
+            Content = JsonContent.Create(header),
+        };
+        AddFileCollectionHeaders(message, credential);
+
+        return await SendNoContentAsync(message, "file-collection-header", cancellationToken, distinguishNotFound: true);
+    }
+
+    public async Task<AgentApiResult<Unit>> UploadFileCollectionChunkAsync(
+        string transferId,
+        long seq,
+        byte[] frame,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transferId);
+        ArgumentNullException.ThrowIfNull(frame);
+        ArgumentNullException.ThrowIfNull(credential);
+
+        var content = new ByteArrayContent(frame);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post,
+            FileCollectionRoute(transferId, AgentProtocol.Routes.FileCollectionChunkSuffix) + $"?seq={seq}")
+        {
+            Content = content,
+        };
+        AddFileCollectionHeaders(message, credential);
+
+        return await SendNoContentAsync(message, "file-collection-chunk", cancellationToken, distinguishNotFound: true);
+    }
+
+    public async Task<AgentApiResult<Unit>> PostFileCollectionResultAsync(
+        string transferId,
+        AgentFileCollectionResult result,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(transferId);
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(credential);
+
+        using var message = new HttpRequestMessage(HttpMethod.Post, FileCollectionRoute(transferId, AgentProtocol.Routes.FileCollectionCompleteSuffix))
+        {
+            Content = JsonContent.Create(result),
+        };
+        AddFileCollectionHeaders(message, credential);
+
+        return await SendNoContentAsync(message, "file-collection-result", cancellationToken, distinguishNotFound: true);
+    }
+
+    private static string FileCollectionRoute(string transferId, string suffix) =>
+        $"{AgentProtocol.RoutePrefix}{AgentProtocol.Routes.FileCollections}/{transferId}{suffix}";
+
+    private static void AddFileCollectionHeaders(HttpRequestMessage message, DeviceCredential credential)
+    {
+        AddProtocolHeaders(message, Core.AgentVersion.Current);
+        message.Headers.Add(AgentProtocol.Headers.Credential, credential.ToHeaderValue());
+        message.Headers.Add(AgentProtocol.Headers.DeviceId, credential.DeviceId.ToString());
     }
 
     public async Task<AgentApiResult<AgentPolicyListResponse>> GetPoliciesAsync(
