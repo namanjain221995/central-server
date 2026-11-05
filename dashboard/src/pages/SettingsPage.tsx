@@ -7,8 +7,17 @@ import { AdministratorsPanel } from './AdministratorsPanel'
 import { AppearancePanel } from './AppearancePanel'
 import { NetworkAccessPanel } from './NetworkAccessPanel'
 import { SecurityPanel } from './SecurityPanel'
+import { WorkTimeSettingsPanel } from './WorkTimeSettingsPanel'
+import { ServerStoragePanel } from './ServerStoragePanel'
 
-type Tab = 'administrators' | 'access-levels' | 'network-access' | 'security' | 'appearance'
+type Tab =
+  | 'administrators'
+  | 'access-levels'
+  | 'network-access'
+  | 'work-time'
+  | 'server-storage'
+  | 'security'
+  | 'appearance'
 
 /**
  * Who may use this console, and what each of them can do.
@@ -27,19 +36,25 @@ export function SettingsPage() {
   const { hasPermission } = useAuth()
   const canViewAdministrators = hasPermission('platform.user.view')
   const canManagePlatformSettings = hasPermission('platform.settings.manage')
+  const canViewWorkTime = hasPermission('activity.view')
 
   // Opens on whichever tab the signed-in administrator can actually use, so the
   // page never opens on a panel they are not allowed to see.
-  // ?tab=appearance (or security) opens that tab directly; the two ungated tabs
-  // are the only ones a link may choose, so a link cannot open a gated panel.
+  // A link may open the two ungated tabs (appearance, security) and the two
+  // permission-gated feature tabs, but only when the caller actually holds the
+  // permission — so a link can never open a panel the server would 403.
   const [searchParams] = useSearchParams()
   const linked = searchParams.get('tab')
-  const [tab, setTab] = useState<Tab>(
+  const linkedTab: Tab | null =
     linked === 'appearance' || linked === 'security'
       ? linked
-      : canViewAdministrators
-        ? 'administrators'
-        : 'access-levels',
+      : linked === 'work-time' && canViewWorkTime
+        ? 'work-time'
+        : linked === 'server-storage' && canManagePlatformSettings
+          ? 'server-storage'
+          : null
+  const [tab, setTab] = useState<Tab>(
+    linkedTab ?? (canViewAdministrators ? 'administrators' : 'access-levels'),
   )
 
   return (
@@ -79,6 +94,30 @@ export function SettingsPage() {
             Network access
           </button>
         )}
+        {canViewWorkTime && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'work-time'}
+            className={tab === 'work-time' ? 'active' : undefined}
+            onClick={() => setTab('work-time')}
+          >
+            <Icon name="clock" size={14} />
+            Work time
+          </button>
+        )}
+        {canManagePlatformSettings && (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'server-storage'}
+            className={tab === 'server-storage' ? 'active' : undefined}
+            onClick={() => setTab('server-storage')}
+          >
+            <Icon name="storage" size={14} />
+            Server storage
+          </button>
+        )}
         {/* Ungated: it shows only the signed-in administrator's own second factor. */}
         <button
           type="button"
@@ -105,6 +144,11 @@ export function SettingsPage() {
 
       {tab === 'security' && <SecurityPanel />}
       {tab === 'appearance' && <AppearancePanel />}
+      {/* Both feature tabs fall back to the ungated panel if the permission was
+          lost mid-session, matching the network-access convention above. */}
+      {tab === 'work-time' && (canViewWorkTime ? <WorkTimeSettingsPanel /> : <AccessLevelsPanel />)}
+      {tab === 'server-storage' &&
+        (canManagePlatformSettings ? <ServerStoragePanel /> : <AccessLevelsPanel />)}
       {/* A gated tab somebody lost the permission for mid-session falls back to
           the ungated panel rather than rendering a view that can only 403. */}
       {tab === 'network-access' &&

@@ -1,6 +1,7 @@
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { ThemeProvider } from './theme/ThemeContext'
+import { WorkTimeProvider } from './components/WorkTimeContext'
 import { AppShell } from './components/AppShell'
 import { DashboardPage } from './pages/DashboardPage'
 import { DeviceDetailPage } from './pages/DeviceDetailPage'
@@ -26,6 +27,7 @@ import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage'
 import { MfaEnrolmentPage } from './pages/MfaEnrolmentPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { WorkTimePage } from './pages/WorkTimePage'
 import { TasksPage } from './pages/TasksPage'
 import { AgentReleasesPage } from './pages/AgentReleasesPage'
 import { AuditLogPage } from './pages/AuditLogPage'
@@ -74,7 +76,8 @@ function AuthGate() {
   }
 
   return (
-    <BrowserRouter>
+    <WorkTimeProvider>
+      <BrowserRouter>
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<DashboardPage />} />
@@ -120,6 +123,7 @@ function AuthGate() {
           <Route path="usb-access" element={<UsbAccessPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="audit" element={<AuditLogPage />} />
+          <Route path="work-time" element={<WorkTimePage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route
             path="*"
@@ -127,6 +131,7 @@ function AuthGate() {
           />
         </Route>
       </Routes>
-    </BrowserRouter>
+      </BrowserRouter>
+    </WorkTimeProvider>
   )
 }

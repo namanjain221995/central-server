@@ -4248,3 +4248,113 @@ export function updateNetworkAccessPolicy(
     body: JSON.stringify(input),
   })
 }
+
+// ------------------------------------------------------------------- work time
+
+/**
+ * The org-wide work-time (attendance) configuration.
+ *
+ * `enabled` is the master switch: off by default, and while it is off the server
+ * records nothing and the Time Management page and its navigation entry are
+ * hidden. Minutes are minutes-of-day in the shift's local time
+ * (`utcOffsetMinutes` from UTC); a shift whose end is at or before its start
+ * crosses midnight. `shiftLengthMinutes` is derived by the server.
+ */
+export interface WorkTimeSettings {
+  enabled: boolean
+  shiftStartMinutes: number
+  shiftEndMinutes: number
+  idleThresholdMinutes: number
+  breakMinutes: number
+  utcOffsetMinutes: number
+  shiftLengthMinutes: number
+}
+
+export type WorkTimeSettingsUpdate = Omit<WorkTimeSettings, 'shiftLengthMinutes'>
+
+/** One person's work time on one shift day. All three figures are whole minutes. */
+export interface WorkTimeReportRow {
+  shiftDate: string
+  deviceId: string
+  hostname: string
+  groupName: string
+  userName: string
+  /** Minutes logged in and sampled during the shift — the measured gross. */
+  presentMinutes: number
+  /** Of those, minutes with keyboard/mouse activity — the actual working time. */
+  activeMinutes: number
+  /** Present minutes with no activity — counted as break. */
+  idleMinutes: number
+}
+
+export interface WorkTimeReport {
+  settings: WorkTimeSettings
+  rows: WorkTimeReportRow[]
+  /** True when the range hit the server's row cap; narrow the dates if so. */
+  truncated: boolean
+}
+
+export interface WorkTimeReportQuery {
+  /** Inclusive shift-date bounds, yyyy-MM-dd. Omit to let the server default. */
+  from?: string
+  to?: string
+  groupId?: string
+}
+
+export function getWorkTimeSettings(): Promise<WorkTimeSettings> {
+  return request<WorkTimeSettings>('/admin/v1/settings/work-time')
+}
+
+/** Saves the whole configuration. Needs activity.configure; 400 on bad input. */
+export function updateWorkTimeSettings(input: WorkTimeSettingsUpdate): Promise<void> {
+  return request<void>('/admin/v1/settings/work-time', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  })
+}
+
+function workTimeQuery(query: WorkTimeReportQuery): string {
+  const params = new URLSearchParams()
+  if (query.from) params.set('from', query.from)
+  if (query.to) params.set('to', query.to)
+  if (query.groupId) params.set('groupId', query.groupId)
+  const s = params.toString()
+  return s ? `?${s}` : ''
+}
+
+export function getWorkTimeReport(query: WorkTimeReportQuery = {}): Promise<WorkTimeReport> {
+  return request<WorkTimeReport>(`/admin/v1/work-time/report${workTimeQuery(query)}`)
+}
+
+/**
+ * Starts a native browser download of the report as CSV. An anchor to the API,
+ * like the agent-release download: the cookie rides the navigation and the
+ * server names the file via Content-Disposition, so the SPA route never changes.
+ */
+export function downloadWorkTimeReportCsv(query: WorkTimeReportQuery = {}): void {
+  const anchor = document.createElement('a')
+  anchor.href = `/api/admin/v1/work-time/report.csv${workTimeQuery(query)}`
+  anchor.download = ''
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
+// -------------------------------------------------------------- server storage
+
+/** One table's on-disk footprint: the table plus its indexes and TOAST. */
+export interface TableStorage {
+  name: string
+  totalBytes: number
+  rowEstimate: number
+}
+
+/** The server database's storage, by table, biggest first. */
+export interface ServerStorageSummary {
+  databaseBytes: number
+  tables: TableStorage[]
+}
+
+export function getServerStorage(): Promise<ServerStorageSummary> {
+  return request<ServerStorageSummary>('/admin/v1/server-storage')
+}
