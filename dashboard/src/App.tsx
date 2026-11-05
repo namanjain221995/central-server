@@ -30,6 +30,7 @@ import { TasksPage } from './pages/TasksPage'
 import { AgentReleasesPage } from './pages/AgentReleasesPage'
 import { AuditLogPage } from './pages/AuditLogPage'
 import { AccountsPage } from './pages/AccountsPage'
+import { StoragePage } from './pages/StoragePage'
 
 export default function App() {
   return (
@@ -101,6 +102,7 @@ function AuthGate() {
           />
           <Route path="groups" element={<GroupsPage />} />
           <Route path="accounts" element={<AccountsPage />} />
+          <Route path="storage" element={<StoragePage />} />
           <Route path="software" element={<SoftwarePage />} />
           <Route path="company-apps" element={<CompanyAppsPage />} />
           <Route path="policies" element={<PoliciesPage />} />

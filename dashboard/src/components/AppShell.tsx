@@ -51,6 +51,11 @@ const NAV_SECTIONS: NavSection[] = [
       // Create or reset a local Windows account across the fleet, a group, or a
       // selection — the estate-wide counterpart to a single device's Users tab.
       { to: '/accounts', label: 'Accounts', icon: 'key' },
+      // Estate-wide disk health: which machines are running low on free space,
+      // from the hardware inventory the agent already reports. Here rather than
+      // under a device's Hardware tab because the point is to see the fleet at
+      // once and spot the machine about to fill up.
+      { to: '/storage', label: 'Storage', icon: 'storage' },
     ],
   },
   {

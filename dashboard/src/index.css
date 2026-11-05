@@ -535,6 +535,58 @@ h1, h2, h3 { color: var(--color-text); }
   box-shadow: var(--shadow-sm);
 }
 
+/* Frosted "glass" surface: an opt-in modifier on .card. The base .card keeps a
+   solid background, so where backdrop-filter is unavailable the card simply stays
+   opaque rather than becoming an unreadable translucent panel. Deeper shadow and a
+   stronger border give it the sense of floating above the canvas. */
+.glass-card {
+  position: relative;
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-md);
+  transition: transform var(--transition), box-shadow var(--transition);
+}
+.glass-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-lg);
+}
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass-card {
+    background: color-mix(in srgb, var(--color-surface) 76%, transparent);
+    -webkit-backdrop-filter: blur(10px) saturate(1.1);
+    backdrop-filter: blur(10px) saturate(1.1);
+  }
+}
+/* A hairline highlight along the top edge reads as a glass sheen. */
+.glass-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.22), transparent);
+  pointer-events: none;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .glass-card {
+    background: var(--color-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .glass-card { transition: none; }
+  .glass-card:hover { transform: none; }
+}
+
+/* Device rows that need attention: a faint warm (Low) or red (Critical) wash and a
+   left accent bar, so a filling disk is visible before the badge is even read. */
+.table tbody tr.row-attention { background: var(--color-warn-bg); }
+.table tbody tr.row-attention:hover { background: var(--color-warn-bg); }
+.table tbody tr.row-attention td:first-child { box-shadow: inset 3px 0 0 var(--color-warn); }
+.table tbody tr.row-critical { background: var(--color-crit-bg); }
+.table tbody tr.row-critical:hover { background: var(--color-crit-bg); }
+.table tbody tr.row-critical td:first-child { box-shadow: inset 3px 0 0 var(--color-crit); }
+
 .card h2 {
   font-size: 13.5px;
   font-weight: 650;
