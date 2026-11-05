@@ -29,6 +29,7 @@ public sealed class WorkTimeSetting : AuditableEntity
     public WorkTimeSetting(Guid organizationId)
     {
         OrganizationId = Guard.NotEmpty(organizationId);
+        Enabled = false; // opt-in: off until an administrator turns it on
         ShiftStartMinutes = DefaultShiftStartMinutes;
         ShiftEndMinutes = DefaultShiftEndMinutes;
         IdleThresholdMinutes = DefaultIdleThresholdMinutes;
@@ -37,6 +38,13 @@ public sealed class WorkTimeSetting : AuditableEntity
     }
 
     public Guid OrganizationId { get; private set; }
+
+    /// <summary>
+    /// Whether work-time tracking is on. Off (the default) hides the feature in the
+    /// dashboard and makes the server discard any activity a device still uploads, so
+    /// turning it off genuinely stops collection.
+    /// </summary>
+    public bool Enabled { get; private set; }
 
     /// <summary>
     /// The organization's UTC offset in minutes (e.g. 330 for IST). Samples are stored
@@ -63,8 +71,9 @@ public sealed class WorkTimeSetting : AuditableEntity
     public int ShiftLengthMinutes =>
         CrossesMidnight ? (MinutesPerDay - ShiftStartMinutes) + ShiftEndMinutes : ShiftEndMinutes - ShiftStartMinutes;
 
-    public void Update(int shiftStartMinutes, int shiftEndMinutes, int idleThresholdMinutes, int breakMinutes, int utcOffsetMinutes)
+    public void Update(bool enabled, int shiftStartMinutes, int shiftEndMinutes, int idleThresholdMinutes, int breakMinutes, int utcOffsetMinutes)
     {
+        Enabled = enabled;
         ShiftStartMinutes = ValidateMinuteOfDay(shiftStartMinutes, nameof(shiftStartMinutes));
         ShiftEndMinutes = ValidateMinuteOfDay(shiftEndMinutes, nameof(shiftEndMinutes));
         IdleThresholdMinutes = ValidateRange(idleThresholdMinutes, 1, 120, nameof(idleThresholdMinutes));

@@ -31,6 +31,7 @@ public sealed class WorkTimeSettingService(EndpointPlatformDbContext dbContext, 
         Guid organizationId,
         Guid actorId,
         string actorDisplay,
+        bool enabled,
         int shiftStartMinutes,
         int shiftEndMinutes,
         int idleThresholdMinutes,
@@ -50,7 +51,7 @@ public sealed class WorkTimeSettingService(EndpointPlatformDbContext dbContext, 
         }
 
         // Validates ranges and the non-zero shift length; throws on bad input.
-        setting.Update(shiftStartMinutes, shiftEndMinutes, idleThresholdMinutes, breakMinutes, utcOffsetMinutes);
+        setting.Update(enabled, shiftStartMinutes, shiftEndMinutes, idleThresholdMinutes, breakMinutes, utcOffsetMinutes);
 
         _auditWriter.Stage(
             organizationId, AuditActorType.PlatformUser, actorId, actorDisplay,
@@ -63,6 +64,7 @@ public sealed class WorkTimeSettingService(EndpointPlatformDbContext dbContext, 
     private static string Snapshot(WorkTimeSetting s) =>
         System.Text.Json.JsonSerializer.Serialize(new
         {
+            s.Enabled,
             s.ShiftStartMinutes,
             s.ShiftEndMinutes,
             s.IdleThresholdMinutes,

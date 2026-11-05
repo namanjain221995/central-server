@@ -43,6 +43,7 @@ namespace EndpointPlatform.Migrations.Schema
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     organization_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    enabled = table.Column<bool>(type: "boolean", nullable: false),
                     utc_offset_minutes = table.Column<int>(type: "integer", nullable: false),
                     shift_start_minutes = table.Column<int>(type: "integer", nullable: false),
                     shift_end_minutes = table.Column<int>(type: "integer", nullable: false),

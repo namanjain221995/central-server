@@ -227,6 +227,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<WorkTime.WorkTimeSettingService>();
         services.AddScoped<WorkTime.ActivityIngestService>();
         services.AddScoped<WorkTime.WorkTimeReportService>();
+        services.AddScoped<Diagnostics.ServerStorageReadService>();
         services.AddScoped<Security.DeviceScopeAuthorizer>();
         // The file-collection relay is used by both APIs: the admin API queues and
         // streams, the agent API uploads. It holds no state beyond the shared Redis

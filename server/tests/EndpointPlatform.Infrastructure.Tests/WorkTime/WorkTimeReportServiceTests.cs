@@ -76,7 +76,7 @@ public sealed class WorkTimeReportServiceTests(PostgresFixture fixture)
 
         // Persist a 2-minute threshold for this org.
         var setting = new WorkTimeSetting(orgId);
-        setting.Update(shiftStartMinutes: (19 * 60) + 30, shiftEndMinutes: (4 * 60) + 30,
+        setting.Update(enabled: true, shiftStartMinutes: (19 * 60) + 30, shiftEndMinutes: (4 * 60) + 30,
             idleThresholdMinutes: 2, breakMinutes: 60, utcOffsetMinutes: 330);
         db.WorkTimeSettings.Add(setting);
 

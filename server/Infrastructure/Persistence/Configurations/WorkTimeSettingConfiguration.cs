@@ -13,6 +13,7 @@ internal sealed class WorkTimeSettingConfiguration : IEntityTypeConfiguration<Wo
         builder.HasKey(s => s.Id);
 
         builder.Property(s => s.OrganizationId).IsRequired();
+        builder.Property(s => s.Enabled).IsRequired();
         builder.Property(s => s.ShiftStartMinutes).IsRequired();
         builder.Property(s => s.ShiftEndMinutes).IsRequired();
         builder.Property(s => s.IdleThresholdMinutes).IsRequired();

@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace EndpointPlatform.Migrations.Schema
 {
     [DbContext(typeof(EndpointPlatformDbContext))]
-    [Migration("20261105154133_WorkTime")]
+    [Migration("20261105161152_WorkTime")]
     partial class WorkTime
     {
         /// <inheritdoc />
@@ -4898,6 +4898,10 @@ namespace EndpointPlatform.Migrations.Schema
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
 
                     b.Property<int>("IdleThresholdMinutes")
                         .HasColumnType("integer")

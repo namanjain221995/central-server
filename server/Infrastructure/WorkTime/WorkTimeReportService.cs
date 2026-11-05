@@ -172,11 +172,12 @@ public sealed class WorkTimeReportService(EndpointPlatformDbContext dbContext)
     }
 
     private static WorkTimeSettingDto ToDto(WorkTimeSetting s) => new(
-        s.ShiftStartMinutes, s.ShiftEndMinutes, s.IdleThresholdMinutes, s.BreakMinutes, s.UtcOffsetMinutes, s.ShiftLengthMinutes);
+        s.Enabled, s.ShiftStartMinutes, s.ShiftEndMinutes, s.IdleThresholdMinutes, s.BreakMinutes, s.UtcOffsetMinutes, s.ShiftLengthMinutes);
 }
 
 /// <summary>The work-time configuration, with the derived shift length for the dashboard.</summary>
 public sealed record WorkTimeSettingDto(
+    bool Enabled,
     int ShiftStartMinutes,
     int ShiftEndMinutes,
     int IdleThresholdMinutes,

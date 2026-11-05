@@ -17,6 +17,7 @@ public sealed class WorkTimeSettingTests
         setting.ShiftEndMinutes.ShouldBe((4 * 60) + 30);
         setting.IdleThresholdMinutes.ShouldBe(5);
         setting.UtcOffsetMinutes.ShouldBe(330);
+        setting.Enabled.ShouldBeFalse(); // opt-in: off until an administrator enables it
         setting.CrossesMidnight.ShouldBeTrue();
         setting.ShiftLengthMinutes.ShouldBe(9 * 60); // 19:30 -> 04:30 is nine hours
     }
@@ -25,8 +26,9 @@ public sealed class WorkTimeSettingTests
     public void A_day_shift_does_not_cross_midnight_and_measures_its_own_span()
     {
         var setting = new WorkTimeSetting(Guid.NewGuid());
-        setting.Update(shiftStartMinutes: 9 * 60, shiftEndMinutes: 17 * 60, idleThresholdMinutes: 10, breakMinutes: 30, utcOffsetMinutes: 330);
+        setting.Update(enabled: true, shiftStartMinutes: 9 * 60, shiftEndMinutes: 17 * 60, idleThresholdMinutes: 10, breakMinutes: 30, utcOffsetMinutes: 330);
 
+        setting.Enabled.ShouldBeTrue();
         setting.CrossesMidnight.ShouldBeFalse();
         setting.ShiftLengthMinutes.ShouldBe(8 * 60);
     }
@@ -40,13 +42,13 @@ public sealed class WorkTimeSettingTests
     public void Out_of_range_values_are_refused(int start, int end, int idle, int brk, int offset)
     {
         var setting = new WorkTimeSetting(Guid.NewGuid());
-        Should.Throw<Exception>(() => setting.Update(start, end, idle, brk, offset));
+        Should.Throw<Exception>(() => setting.Update(true, start, end, idle, brk, offset));
     }
 
     [Fact]
     public void A_zero_length_shift_is_refused()
     {
         var setting = new WorkTimeSetting(Guid.NewGuid());
-        Should.Throw<ArgumentException>(() => setting.Update(9 * 60, 9 * 60, 5, 60, 330));
+        Should.Throw<ArgumentException>(() => setting.Update(true, 9 * 60, 9 * 60, 5, 60, 330));
     }
 }

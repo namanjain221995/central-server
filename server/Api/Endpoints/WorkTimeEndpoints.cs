@@ -40,12 +40,12 @@ public static class WorkTimeEndpoints
         var actor = AdminActor.Required(httpContext.User);
         var setting = await service.GetAsync(actor.OrganizationId, cancellationToken);
         return Results.Ok(new WorkTimeSettingDto(
-            setting.ShiftStartMinutes, setting.ShiftEndMinutes, setting.IdleThresholdMinutes,
+            setting.Enabled, setting.ShiftStartMinutes, setting.ShiftEndMinutes, setting.IdleThresholdMinutes,
             setting.BreakMinutes, setting.UtcOffsetMinutes, setting.ShiftLengthMinutes));
     }
 
     public sealed record WorkTimeSettingUpdate(
-        int ShiftStartMinutes, int ShiftEndMinutes, int IdleThresholdMinutes, int BreakMinutes, int UtcOffsetMinutes);
+        bool Enabled, int ShiftStartMinutes, int ShiftEndMinutes, int IdleThresholdMinutes, int BreakMinutes, int UtcOffsetMinutes);
 
     private static async Task<IResult> PutSettingsAsync(
         WorkTimeSettingUpdate request,
@@ -57,7 +57,7 @@ public static class WorkTimeEndpoints
         try
         {
             await service.SetAsync(
-                actor.OrganizationId, actor.UserId, actor.Email,
+                actor.OrganizationId, actor.UserId, actor.Email, request.Enabled,
                 request.ShiftStartMinutes, request.ShiftEndMinutes, request.IdleThresholdMinutes,
                 request.BreakMinutes, request.UtcOffsetMinutes, cancellationToken);
         }

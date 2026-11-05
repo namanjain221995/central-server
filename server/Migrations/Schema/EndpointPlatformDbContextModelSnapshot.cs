@@ -4896,6 +4896,10 @@ namespace EndpointPlatform.Migrations.Schema
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
                     b.Property<int>("IdleThresholdMinutes")
                         .HasColumnType("integer")
                         .HasColumnName("idle_threshold_minutes");

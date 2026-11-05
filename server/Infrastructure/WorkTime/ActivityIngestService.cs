@@ -27,6 +27,18 @@ public sealed class ActivityIngestService(EndpointPlatformDbContext dbContext, I
             return 0;
         }
 
+        // Respect the toggle: if work-time is off for this device's organization (or was
+        // never turned on), discard whatever a device still uploads, so "off" genuinely
+        // stops collection. The device's agent keeps spooling harmlessly until it is on.
+        var enabled = await _dbContext.Devices.AsNoTracking()
+            .Where(d => d.Id == deviceId)
+            .Join(_dbContext.WorkTimeSettings, d => d.OrganizationId, s => s.OrganizationId, (_, s) => s.Enabled)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (!enabled)
+        {
+            return 0;
+        }
+
         // Normalise: trim/bound the user name, truncate to the minute, clamp idle, and
         // collapse duplicate minutes within the batch (last one wins).
         var normalized = samples
