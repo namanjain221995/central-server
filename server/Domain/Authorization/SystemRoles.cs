@@ -107,6 +107,10 @@ public static class SystemRoles
         Permissions.RemoteSupport.View,
         Permissions.RemoteSupport.Configure,
         Permissions.RemoteSupport.Connect,
+        // Deliberately not granted to Helpdesk. Downloading an employee's personal
+        // files is a data-access decision like reading a BitLocker recovery key or
+        // starting a remote-control session, not a first-line support action.
+        Permissions.Files.Collect,
         // Live chat IS a first-line support activity, so unlike remote support it is
         // held by Helpdesk too -- the administrator roles get it as well.
         Permissions.Chat.View,

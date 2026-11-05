@@ -261,6 +261,15 @@ public static class DeviceTaskCatalog
             // the clean "update the agent" refusal instead.
             new(DeviceTaskType.RemoveChromeProfile, Permissions.Chrome.Manage, HighRisk: true, 3600,
                 MinimumAgentVersion: "1.26.0"),
+
+            // High risk: it downloads an employee's personal files. A long execution
+            // grace (3h) because zipping and uploading a Documents folder over a slow
+            // uplink takes time, and a claim late in the TTL must not let the sweeper
+            // expire the task mid-transfer and refuse the device's honest result.
+            // Gated on the agent that carries the collection executor; an older one
+            // would fail it as unknown, which reads exactly like the collection failing.
+            new(DeviceTaskType.CollectFiles, Permissions.Files.Collect, HighRisk: true, 3600,
+                MinimumAgentVersion: "1.29.0", ExecutionGraceSeconds: 10800),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

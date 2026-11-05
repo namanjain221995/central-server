@@ -98,6 +98,10 @@ public sealed class SystemRoleTests
     // "Chrome is broken" calls get diagnosed. Removing or forcing one reaches
     // into every user's web session and stays with IT Administrator.
     [InlineData(Permissions.Chrome.Manage)]
+    // Downloading an employee's personal files is a data-access decision like
+    // reading a BitLocker recovery key, not a first-line support action, so it
+    // stays with IT Administrator and never reaches Helpdesk.
+    [InlineData(Permissions.Files.Collect)]
     [InlineData(Permissions.Platform.UserManage)]
     [InlineData(Permissions.Platform.RoleManage)]
     [InlineData(Permissions.Platform.SettingsManage)]
@@ -131,6 +135,7 @@ public sealed class SystemRoleTests
         itAdmin.ShouldContain(Permissions.Group.Manage);
         itAdmin.ShouldContain(Permissions.Software.Deploy);
         itAdmin.ShouldContain(Permissions.Chrome.Manage);
+        itAdmin.ShouldContain(Permissions.Files.Collect);
         itAdmin.ShouldContain(Permissions.Task.Execute);
     }
 

@@ -146,5 +146,21 @@ public static class AgentProtocol
 
         /// <summary>Suffix for a chat session's message collection, under <see cref="Chat"/>/{sessionId}.</summary>
         public const string ChatMessagesSuffix = "/messages";
+
+        /// <summary>
+        /// File collection: the agent publishes the encryption header, then uploads
+        /// ciphertext frames, then reports completion, all under one transfer id. The
+        /// server relays the bytes to the waiting browser without storing them.
+        /// </summary>
+        public const string FileCollections = "/file-collections";
+
+        /// <summary>POST the agent's ephemeral public key + salt so the browser can derive the key.</summary>
+        public const string FileCollectionHeaderSuffix = "/header";
+
+        /// <summary>POST one ciphertext frame (binary body; the <c>?seq=</c> query gives its order).</summary>
+        public const string FileCollectionChunkSuffix = "/chunk";
+
+        /// <summary>POST the final result (succeeded, byte and frame counts, truncation).</summary>
+        public const string FileCollectionCompleteSuffix = "/complete";
     }
 }
