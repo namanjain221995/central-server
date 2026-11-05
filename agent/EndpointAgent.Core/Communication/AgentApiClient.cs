@@ -22,7 +22,7 @@ namespace EndpointAgent.Core.Communication;
 /// </para>
 /// </remarks>
 public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient> logger)
-    : IAgentApiClient, IFileCollectionApiClient
+    : IAgentApiClient, IFileCollectionApiClient, IActivityApiClient
 {
     private readonly HttpClient _httpClient = httpClient
         ?? throw new ArgumentNullException(nameof(httpClient));
@@ -255,6 +255,24 @@ public sealed class AgentApiClient(HttpClient httpClient, ILogger<AgentApiClient
         AddFileCollectionHeaders(message, credential);
 
         return await SendNoContentAsync(message, "file-collection-result", cancellationToken, distinguishNotFound: true);
+    }
+
+    public async Task<AgentApiResult<Unit>> UploadActivityAsync(
+        IReadOnlyList<ActivitySampleDto> samples,
+        DeviceCredential credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        ArgumentNullException.ThrowIfNull(credential);
+
+        using var message = new HttpRequestMessage(
+            HttpMethod.Post, AgentProtocol.RoutePrefix + AgentProtocol.Routes.Activity)
+        {
+            Content = JsonContent.Create(new ActivityReportRequest(samples)),
+        };
+        AddFileCollectionHeaders(message, credential);
+
+        return await SendNoContentAsync(message, "activity", cancellationToken);
     }
 
     private static string FileCollectionRoute(string transferId, string suffix) =>
