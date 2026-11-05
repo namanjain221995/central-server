@@ -29,11 +29,16 @@ public sealed class DeviceTaskLifecycleHonestyTests
         // it mid-search refused its result and had the probe ask again at once.
         DeviceTaskCatalog.Require(DeviceTaskType.ScanDriverUpdates).ExecutionGraceSeconds.ShouldBe(3600);
 
-        // The security-update twins carry their own grace (asserted below); every
-        // other type keeps its deadline.
+        // A file collection zips and uploads a whole folder; a claim late in the TTL
+        // must not let the sweeper expire it mid-transfer and refuse the device's result.
+        DeviceTaskCatalog.Require(DeviceTaskType.CollectFiles).ExecutionGraceSeconds.ShouldBe(10800);
+
+        // The security-update twins and the file collection carry their own grace
+        // (asserted above/below); every other type keeps its deadline.
         foreach (var definition in DeviceTaskCatalog.All.Values.Where(d =>
                      d.Type is not (DeviceTaskType.InstallDriverUpdate or DeviceTaskType.ScanDriverUpdates
-                         or DeviceTaskType.InstallSecurityUpdate or DeviceTaskType.ScanSecurityUpdates)))
+                         or DeviceTaskType.InstallSecurityUpdate or DeviceTaskType.ScanSecurityUpdates
+                         or DeviceTaskType.CollectFiles)))
         {
             definition.ExecutionGraceSeconds.ShouldBe(0, $"{definition.Type} must keep today's deadline behaviour");
         }
