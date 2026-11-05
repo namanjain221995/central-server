@@ -270,6 +270,13 @@ public static class DeviceTaskCatalog
             // would fail it as unknown, which reads exactly like the collection failing.
             new(DeviceTaskType.CollectFiles, Permissions.Files.Collect, HighRisk: true, 3600,
                 MinimumAgentVersion: "1.29.0", ExecutionGraceSeconds: 10800),
+
+            // Browsing a user's folders to pick files. Same permission as the download,
+            // but not high-risk and no execution grace: it only lists names and sizes
+            // (no content leaves the device) and returns quickly, so it keeps the
+            // default deadline. Gated on the agent with the listing executor (1.30.0).
+            new(DeviceTaskType.ListUserFolder, Permissions.Files.Collect, HighRisk: false, 600,
+                MinimumAgentVersion: "1.30.0"),
         }.ToFrozenDictionary(d => d.Type);
 
     /// <summary>

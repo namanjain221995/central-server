@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { startFileCollection } from '../../api/client'
+import { startFileCollection, startFileListing } from '../../api/client'
 
 /**
  * The start-collection client reaches the mapped route with exactly one `/api`
@@ -40,5 +40,28 @@ describe('File collection API path', () => {
     const body = JSON.parse(String(calls[0].init?.body))
     expect(body.rootKeys).toEqual(['Desktop', 'Downloads'])
     expect(body.userSid).toBe('S-1-5-21-1-2-3-1001')
+  })
+
+  it('startFileListing POSTs to the /list route with one /api prefix', async () => {
+    const urls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        urls.push(typeof input === 'string' ? input : input.toString())
+        return new Response(JSON.stringify({ transferId: 't2' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    await startFileListing('dev-123', {
+      recipientPublicKey: 'KEY',
+      userSid: 'S-1-5-21-1-2-3-1001',
+      rootKeys: ['Documents'],
+    })
+
+    expect(urls).toEqual(['/api/admin/v1/devices/dev-123/file-collections/list'])
+    expect(urls[0].includes('/api/api')).toBe(false)
   })
 })

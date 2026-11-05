@@ -57,4 +57,31 @@ public sealed class FileCollectionCatalogTests
         DeviceTaskCatalog.IsSupportedBy(Collect, "1.29.0").ShouldBeTrue();
         DeviceTaskCatalog.IsSupportedBy(Collect, null).ShouldBeFalse();
     }
+
+    private static DeviceTaskDefinition List =>
+        DeviceTaskCatalog.Require(DeviceTaskType.ListUserFolder);
+
+    [Fact]
+    public void Listing_keeps_its_wire_number_and_rides_files_collect()
+    {
+        ((int)DeviceTaskType.ListUserFolder).ShouldBe(64);
+        List.RequiredPermission.ShouldBe(Permissions.Files.Collect);
+    }
+
+    [Fact]
+    public void Listing_is_not_high_risk_and_keeps_its_deadline()
+    {
+        // It only reveals names and sizes — no content leaves the device — and returns
+        // quickly, so unlike the collection it is neither high-risk nor granted grace.
+        List.HighRisk.ShouldBeFalse();
+        List.ExecutionGraceSeconds.ShouldBe(0);
+    }
+
+    [Fact]
+    public void Listing_is_gated_on_the_1_30_0_agent()
+    {
+        List.MinimumAgentVersion.ShouldBe("1.30.0");
+        DeviceTaskCatalog.IsSupportedBy(List, "1.29.0").ShouldBeFalse();
+        DeviceTaskCatalog.IsSupportedBy(List, "1.30.0").ShouldBeTrue();
+    }
 }

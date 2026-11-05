@@ -3227,6 +3227,26 @@ export interface StartFileCollectionBody {
   currentPassword: string
   /** Step-up: why the files are being collected (recorded in the audit log). */
   justification: string
+  /**
+   * Optional. When set, only these entries are collected (each a path like
+   * "Desktop/report.docx" or a folder "Downloads/sub"). Omit for the whole folder.
+   * Needs agent 1.30.0+; the server refuses a selection against an older agent.
+   */
+  selectedPaths?: string[]
+}
+
+/** Starts a browse: the agent lists the chosen folders and sends the tree E2E-encrypted. */
+export interface StartFileListingBody {
+  recipientPublicKey: string
+  userSid: string
+  rootKeys: string[]
+}
+
+export function startFileListing(
+  deviceId: string,
+  body: StartFileListingBody,
+): Promise<{ transferId: string }> {
+  return fileCollectionPost(deviceId, '/list', body)
 }
 
 /**
@@ -3234,12 +3254,20 @@ export interface StartFileCollectionBody {
  * the shared helper so the server's own reason is surfaced — a wrong step-up password
  * (403), an agent too old or an unreachable device (409), a bad request (400).
  */
-export async function startFileCollection(
+export function startFileCollection(
   deviceId: string,
   body: StartFileCollectionBody,
 ): Promise<{ transferId: string }> {
+  return fileCollectionPost(deviceId, '', body)
+}
+
+async function fileCollectionPost(
+  deviceId: string,
+  suffix: string,
+  body: unknown,
+): Promise<{ transferId: string }> {
   const response = await fetch(
-    `/api/admin/v1/devices/${encodeURIComponent(deviceId)}/file-collections`,
+    `/api/admin/v1/devices/${encodeURIComponent(deviceId)}/file-collections${suffix}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
@@ -3253,7 +3281,7 @@ export async function startFileCollection(
     const problem = await response.json().catch(() => null)
     throw new ApiError(
       response.status,
-      problem?.title ?? problem?.detail ?? `Could not start the collection (HTTP ${response.status}).`,
+      problem?.title ?? problem?.detail ?? `Could not start the transfer (HTTP ${response.status}).`,
       response.headers.get('X-Correlation-Id'),
     )
   }
