@@ -111,6 +111,10 @@ public static class SystemRoles
         // files is a data-access decision like reading a BitLocker recovery key or
         // starting a remote-control session, not a first-line support action.
         Permissions.Files.Collect,
+        // Work-time reports and their configuration are management/attendance
+        // functions, not first-line support, so Helpdesk does not hold them.
+        Permissions.Activity.View,
+        Permissions.Activity.Configure,
         // Live chat IS a first-line support activity, so unlike remote support it is
         // held by Helpdesk too -- the administrator roles get it as well.
         Permissions.Chat.View,
@@ -191,6 +195,9 @@ public static class SystemRoles
         Permissions.Policy.View,
         Permissions.Task.View,
         Permissions.Audit.View,
+        // Read-only: attendance reports are exactly the kind of record an audit reads.
+        // activity.configure is absent, like every mutating permission.
+        Permissions.Activity.View,
         Permissions.Platform.UserView,
         Permissions.Platform.EnrollmentTokenView,
     ];

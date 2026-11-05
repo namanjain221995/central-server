@@ -239,6 +239,26 @@ public static class Permissions
     }
 
     /// <summary>
+    /// Work-time / attendance reporting: how long employees' devices were active vs
+    /// idle during the shift.
+    /// </summary>
+    /// <remarks>
+    /// Aggregate activity-presence data (keyboard/mouse active vs idle — never content,
+    /// apps or screenshots), for attendance and payroll on consented company devices.
+    /// Viewing is management reporting; configuring the shift and idle threshold is a
+    /// policy decision. Neither is a first-line support task, so Helpdesk does not hold
+    /// them; Auditor may read the reports.
+    /// </remarks>
+    public static class Activity
+    {
+        /// <summary>See the work-time / attendance reports.</summary>
+        public const string View = "activity.view";
+
+        /// <summary>Change the shift timing, idle threshold and break allowance.</summary>
+        public const string Configure = "activity.configure";
+    }
+
+    /// <summary>
     /// Broadcasting short notices to device screens. Its own permission rather
     /// than part of <see cref="Task"/>: writing to every screen in the estate is
     /// a communication authority, and the people trusted to queue maintenance
@@ -354,6 +374,9 @@ public static class Permissions
         // High risk: it reaches an employee's personal files. Never held by Helpdesk
         // or Auditor; every download additionally re-confirms with a password step-up.
         new(Files.Collect, "Files", "Download a device user's Desktop, Downloads or Documents folder", HighRisk: true),
+
+        new(Activity.View, "Work time", "View work-time and attendance reports", HighRisk: false),
+        new(Activity.Configure, "Work time", "Configure the shift timing, idle threshold and break", HighRisk: false),
 
         // High risk: it interrupts every signed-in user on the targeted machines
         // at once, so the UI confirms it and the audit log records it elevated.

@@ -100,6 +100,13 @@ public sealed class EndpointPlatformDbContext(DbContextOptions<EndpointPlatformD
     /// </remarks>
     public DbSet<DeviceSecurityUpdate> DeviceSecurityUpdates => Set<DeviceSecurityUpdate>();
 
+    /// <summary>Per-minute activity-presence samples reported by devices, for work-time reporting.</summary>
+    public DbSet<Domain.WorkTime.DeviceActivitySample> DeviceActivitySamples =>
+        Set<Domain.WorkTime.DeviceActivitySample>();
+
+    /// <summary>One work-time configuration row per organization (shift window, idle threshold, break).</summary>
+    public DbSet<Domain.WorkTime.WorkTimeSetting> WorkTimeSettings => Set<Domain.WorkTime.WorkTimeSetting>();
+
     /// <remarks>
     /// The memory of each security-update install attempt per device -- outcome,
     /// attempts, codes, and what the scans after it showed. Survives the wholesale

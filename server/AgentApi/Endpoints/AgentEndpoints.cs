@@ -56,6 +56,9 @@ public static class AgentEndpoints
         group.MapPost(AgentProtocol.Routes.Inventory, InventoryAsync)
             .WithName("AgentInventory");
 
+        group.MapPost(AgentProtocol.Routes.Activity, PostActivityAsync)
+            .WithName("AgentActivity");
+
         group.MapPost(AgentProtocol.Routes.Usb, UsbReportAsync)
             .WithName("AgentUsbReport");
 
@@ -523,6 +526,41 @@ public static class AgentEndpoints
             auth.Device!.Id, taskId, result.Succeeded, result.Message, result.ResultJson, cancellationToken);
 
         return applied ? Results.NoContent() : Results.NotFound();
+    }
+
+    /// <summary>
+    /// Stores a batch of activity-presence samples (how long since last keyboard/mouse
+    /// input per minute) for the authenticated device. Best-effort telemetry: an
+    /// oversized batch is refused, but a duplicate (re-sent) batch is accepted idempotently.
+    /// </summary>
+    private static async Task<IResult> PostActivityAsync(
+        [FromBody] ActivityReportRequest request,
+        [FromHeader(Name = AgentProtocol.Headers.Credential)] string? credentialHeader,
+        [FromHeader(Name = AgentProtocol.Headers.ProtocolVersion)] int? protocolVersion,
+        AgentAuthenticationService authenticationService,
+        Infrastructure.WorkTime.ActivityIngestService ingestService,
+        CancellationToken cancellationToken)
+    {
+        if (protocolVersion != AgentProtocol.Version)
+        {
+            return Results.Problem(title: "Unsupported agent protocol version.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var auth = await authenticationService.AuthenticateAsync(credentialHeader, cancellationToken);
+        if (!auth.Success)
+        {
+            return Results.Unauthorized();
+        }
+
+        if (request.Samples.Count > Infrastructure.WorkTime.ActivityIngestService.MaxBatch)
+        {
+            return Results.Problem(title: "Too many samples in one batch.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        await ingestService.IngestAsync(auth.Device!.Id, request.Samples, cancellationToken);
+        return Results.NoContent();
     }
 
     /// <summary>

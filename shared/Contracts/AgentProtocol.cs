@@ -162,5 +162,8 @@ public static class AgentProtocol
 
         /// <summary>POST the final result (succeeded, byte and frame counts, truncation).</summary>
         public const string FileCollectionCompleteSuffix = "/complete";
+
+        /// <summary>Agent uploads a batch of activity-presence samples (POST) here.</summary>
+        public const string Activity = "/activity";
     }
 }
