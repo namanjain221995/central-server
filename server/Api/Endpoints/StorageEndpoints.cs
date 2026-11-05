@@ -1,6 +1,7 @@
 using EndpointPlatform.Api.Security;
 using EndpointPlatform.Domain.Authorization;
 using EndpointPlatform.Infrastructure.Devices;
+using EndpointPlatform.Infrastructure.Diagnostics;
 using EndpointPlatform.Infrastructure.Security;
 
 namespace EndpointPlatform.Api.Endpoints;
@@ -23,8 +24,18 @@ public static class StorageEndpoints
             .WithName("GetStorageFleetSummary")
             .RequirePermission(Permissions.Device.View);
 
+        // The server's own database storage, by table — an infrastructure diagnostic,
+        // so it rides the platform-settings permission (Super Administrator).
+        endpoints.MapGet("/admin/v1/server-storage", ServerStorageAsync)
+            .WithName("GetServerStorage")
+            .RequirePermission(Permissions.Platform.SettingsManage);
+
         return endpoints;
     }
+
+    private static async Task<IResult> ServerStorageAsync(
+        ServerStorageReadService readService, CancellationToken cancellationToken) =>
+        Results.Ok(await readService.GetAsync(cancellationToken));
 
     private static async Task<IResult> FleetSummaryAsync(
         FleetStorageReadService readService,

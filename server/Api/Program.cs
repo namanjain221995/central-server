@@ -335,6 +335,7 @@ public sealed class Program
             app.MapBulkLocalAccountEndpoints();
             app.MapStorageEndpoints();
             app.MapFileCollectionEndpoints();
+            app.MapWorkTimeEndpoints();
             app.MapLocalAdminElevationEndpoints();
             app.MapDriverEndpoints();
             app.MapDriverUpdateEndpoints();

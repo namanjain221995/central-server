@@ -430,6 +430,21 @@ public static class Program
             builder.Services.AddTransient<EndpointAgent.Core.Abstractions.IFileCollectionApiClient>(
                 sp => (EndpointAgent.Core.Abstractions.IFileCollectionApiClient)
                     sp.GetRequiredService<EndpointAgent.Core.Abstractions.IAgentApiClient>());
+
+            // Work-time activity tracking: the in-session sampler (in SessionNotice.exe)
+            // sends presence minutes to the service's pipe server, which spools them
+            // durably; the upload worker ships the spool to the server, offline-safe.
+            builder.Services.AddSingleton<
+                EndpointAgent.Core.WorkTime.IActivitySpool, EndpointAgent.Core.WorkTime.FileActivitySpool>();
+            builder.Services.AddSingleton<EndpointAgent.Windows.WorkTime.ActivityPipeServer>();
+            builder.Services.AddHostedService(sp =>
+                sp.GetRequiredService<EndpointAgent.Windows.WorkTime.ActivityPipeServer>());
+            builder.Services.AddSingleton<EndpointAgent.Core.WorkTime.ActivityUploadWorker>();
+            builder.Services.AddHostedService(sp =>
+                sp.GetRequiredService<EndpointAgent.Core.WorkTime.ActivityUploadWorker>());
+            builder.Services.AddTransient<EndpointAgent.Core.Abstractions.IActivityApiClient>(
+                sp => (EndpointAgent.Core.Abstractions.IActivityApiClient)
+                    sp.GetRequiredService<EndpointAgent.Core.Abstractions.IAgentApiClient>());
             builder.Services.AddSingleton<
                 EndpointAgent.Core.FileCollection.IUserFolderResolver,
                 EndpointAgent.Windows.WindowsUserFolderResolver>();

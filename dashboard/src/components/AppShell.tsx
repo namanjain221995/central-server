@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
+import { useWorkTime } from './WorkTimeContext'
 import { getPendingEnrollments } from '../api/client'
 import { AgentDownloadButton } from './AgentDownloadButton'
 import { Icon, type IconName } from './Icon'
@@ -121,6 +122,9 @@ const NAV_SECTIONS: NavSection[] = [
   {
     heading: 'Operations',
     items: [
+      // Attendance from device activity — present, working and idle time per
+      // person per shift. Shown here only while the feature is switched on in
+      // Settings; see buildNavSections.
       { to: '/tasks', label: 'Tasks', icon: 'tasks' },
       { to: '/audit', label: 'Audit Logs', icon: 'audit' },
       { to: '/settings', label: 'Settings', icon: 'settings' },
@@ -128,11 +132,29 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ]
 
-const NAV_ITEMS = NAV_SECTIONS.flatMap((section) => section.items)
+/**
+ * The work-time entry is not in NAV_SECTIONS because it is conditional: it
+ * appears only while the feature is enabled, and vanishes when it is turned off.
+ * Inserted at the head of Operations so it sits with the other cross-cutting
+ * views rather than among the per-device configuration pages.
+ */
+const WORK_TIME_ITEM: NavItem = { to: '/work-time', label: 'Time Management', icon: 'clock' }
 
-const TITLES: Record<string, string> = Object.fromEntries(
-  NAV_ITEMS.map((item) => [item.to, item.label]),
-)
+function buildNavSections(workTimeEnabled: boolean): NavSection[] {
+  if (!workTimeEnabled) return NAV_SECTIONS
+  return NAV_SECTIONS.map((section) =>
+    section.heading === 'Operations'
+      ? { ...section, items: [WORK_TIME_ITEM, ...section.items] }
+      : section,
+  )
+}
+
+const TITLES: Record<string, string> = {
+  ...Object.fromEntries(NAV_SECTIONS.flatMap((s) => s.items).map((item) => [item.to, item.label])),
+  // Kept out of the conditional nav but still needed for the topbar heading when
+  // the page is open (including by direct link while the feature is off).
+  [WORK_TIME_ITEM.to]: WORK_TIME_ITEM.label,
+}
 
 /** Slow poll — this is an ambient count, not the Pending Enrollments page itself. */
 const PENDING_POLL_MS = 30_000
@@ -140,6 +162,8 @@ const PENDING_POLL_MS = 30_000
 export function AppShell() {
   const location = useLocation()
   const { user, logout, hasPermission } = useAuth()
+  const { enabled: workTimeEnabled } = useWorkTime()
+  const navSections = useMemo(() => buildNavSections(workTimeEnabled), [workTimeEnabled])
   const title = TITLES[location.pathname] ?? 'Endpoint Platform'
   const pendingCount = usePendingEnrollmentCount(hasPermission('device.enroll'))
   const [collapsed, setCollapsed] = useState(() =>
@@ -172,7 +196,7 @@ export function AppShell() {
         </div>
 
         <nav id="primary-nav" className="sidebar-nav" aria-label="Primary">
-          {NAV_SECTIONS.map((section, index) => (
+          {navSections.map((section, index) => (
             <div key={section.heading ?? `section-${index}`}>
               {section.heading && <div className="nav-group">{section.heading}</div>}
               {section.items.map((item) => (

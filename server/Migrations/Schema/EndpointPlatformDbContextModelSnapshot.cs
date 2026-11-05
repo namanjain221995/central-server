@@ -4835,6 +4835,105 @@ namespace EndpointPlatform.Migrations.Schema
                     b.ToTable("device_tasks", "endpoint_platform");
                 });
 
+            modelBuilder.Entity("EndpointPlatform.Domain.WorkTime.DeviceActivitySample", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("device_id");
+
+                    b.Property<int>("IdleSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("idle_seconds");
+
+                    b.Property<DateTimeOffset>("SampledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("sampled_at");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("UserName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("user_name");
+
+                    b.HasKey("Id")
+                        .HasName("pk_device_activity_samples");
+
+                    b.HasIndex("DeviceId", "SampledAt")
+                        .HasDatabaseName("ix_device_activity_samples_device_sampled");
+
+                    b.HasIndex("DeviceId", "UserName", "SampledAt")
+                        .IsUnique()
+                        .HasDatabaseName("ux_device_activity_samples_device_user_minute");
+
+                    b.ToTable("device_activity_samples", "endpoint_platform");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.WorkTime.WorkTimeSetting", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("BreakMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("break_minutes");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("enabled");
+
+                    b.Property<int>("IdleThresholdMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("idle_threshold_minutes");
+
+                    b.Property<Guid>("OrganizationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("organization_id");
+
+                    b.Property<int>("ShiftEndMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("shift_end_minutes");
+
+                    b.Property<int>("ShiftStartMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("shift_start_minutes");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("UtcOffsetMinutes")
+                        .HasColumnType("integer")
+                        .HasColumnName("utc_offset_minutes");
+
+                    b.HasKey("Id")
+                        .HasName("pk_work_time_settings");
+
+                    b.HasIndex("OrganizationId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_work_time_settings_organization_id");
+
+                    b.ToTable("work_time_settings", "endpoint_platform");
+                });
+
             modelBuilder.Entity("EndpointPlatform.Domain.Announcements.AnnouncementDevice", b =>
                 {
                     b.HasOne("EndpointPlatform.Domain.Announcements.Announcement", null)
@@ -5558,6 +5657,26 @@ namespace EndpointPlatform.Migrations.Schema
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_device_tasks_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.WorkTime.DeviceActivitySample", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Devices.Device", null)
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_device_activity_samples_devices_device_id");
+                });
+
+            modelBuilder.Entity("EndpointPlatform.Domain.WorkTime.WorkTimeSetting", b =>
+                {
+                    b.HasOne("EndpointPlatform.Domain.Identity.Organization", null)
+                        .WithMany()
+                        .HasForeignKey("OrganizationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_work_time_settings_organizations_organization_id");
                 });
 
             modelBuilder.Entity("EndpointPlatform.Domain.Identity.PlatformUser", b =>

@@ -47,12 +47,18 @@ internal static class Program
         // -- the service has gone -- the window closes and this process ends.
         var reading = Task.Run(() => reader.RunAsync(stop.Token));
 
+        // The activity sampler also runs here, in the user's session: once a minute it
+        // measures how long since the last input (presence only) and sends it to the
+        // service. It outlives a service restart, so unsent minutes bridge the gap.
+        var sampler = new EndpointAgent.Windows.WorkTime.SessionActivitySampler();
+        var sampling = Task.Run(() => sampler.RunAsync(stop.Token));
+
         var exitCode = NoticeWindow.Run(() => reader.Latest, () => reader.LatestAnnouncement, () => reading.IsCompleted);
 
         stop.Cancel();
         try
         {
-            reading.Wait(TimeSpan.FromSeconds(2));
+            Task.WaitAll([reading, sampling], TimeSpan.FromSeconds(2));
         }
         catch (AggregateException)
         {
