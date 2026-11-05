@@ -81,11 +81,21 @@ public sealed class FleetStorageReadService(
 
         // Left join so a device that has not uploaded hardware yet still appears, as a
         // row with no volumes and Unknown severity, rather than silently vanishing.
+        // The hardware side is projected through an explicit null guard: CollectedAt is
+        // a non-nullable DateTimeOffset on the entity, and reading it straight from the
+        // optional side of the join throws "Nullable object must have a value" the
+        // moment a device has no hardware row, so it is lifted to DateTimeOffset? here.
         var rows = await (
             from d in devicesQuery
             join h in _dbContext.DeviceHardware.AsNoTracking() on d.Id equals h.DeviceId into hj
             from h in hj.DefaultIfEmpty()
-            select new { d.Id, d.Hostname, h.DisksJson, h.CollectedAt })
+            select new
+            {
+                d.Id,
+                d.Hostname,
+                DisksJson = h != null ? h.DisksJson : null,
+                CollectedAt = h != null ? (DateTimeOffset?)h.CollectedAt : null,
+            })
             .ToListAsync(cancellationToken);
 
         var truncated = false;
