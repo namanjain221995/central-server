@@ -86,6 +86,7 @@ public sealed class Program
 
             builder.Services.AddScoped<AdminAuthService>();
             builder.Services.AddScoped<EndpointPlatform.Infrastructure.Identity.PlatformUserService>();
+            builder.Services.AddScoped<EndpointPlatform.Infrastructure.FileCollection.FileCollectionService>();
 
             // Singleton, like RevealRateLimiter: it holds only the Redis
             // multiplexer and a clock, and the counters live in Redis so nothing
@@ -333,6 +334,7 @@ public sealed class Program
             app.MapLocalAccountEndpoints();
             app.MapBulkLocalAccountEndpoints();
             app.MapStorageEndpoints();
+            app.MapFileCollectionEndpoints();
             app.MapLocalAdminElevationEndpoints();
             app.MapDriverEndpoints();
             app.MapDriverUpdateEndpoints();

@@ -422,6 +422,23 @@ public static class Program
                 sp.GetRequiredService<EndpointAgent.Core.ChromeProfiles.ChromeProfileRemovalWorker>());
             builder.Services.AddSingleton<EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.RemoveChromeProfileExecutor>();
 
+            // File collection: resolve a user's folders (Windows), then zip, encrypt
+            // and upload off the heartbeat thread (the worker); the executor only
+            // enqueues the job and returns at once.
+            // The upload calls live on a separate interface the same typed HttpClient
+            // implements, so none of IAgentApiClient's many test fakes had to change.
+            builder.Services.AddTransient<EndpointAgent.Core.Abstractions.IFileCollectionApiClient>(
+                sp => (EndpointAgent.Core.Abstractions.IFileCollectionApiClient)
+                    sp.GetRequiredService<EndpointAgent.Core.Abstractions.IAgentApiClient>());
+            builder.Services.AddSingleton<
+                EndpointAgent.Core.FileCollection.IUserFolderResolver,
+                EndpointAgent.Windows.WindowsUserFolderResolver>();
+            builder.Services.AddSingleton<EndpointAgent.Core.FileCollection.CollectFilesWorker>();
+            builder.Services.AddHostedService(sp =>
+                sp.GetRequiredService<EndpointAgent.Core.FileCollection.CollectFilesWorker>());
+            builder.Services.AddSingleton<
+                EndpointAgent.Core.Tasks.ITaskExecutor, EndpointAgent.Core.Tasks.CollectFilesExecutor>();
+
             builder.Services.AddHttpClient<IAgentApiClient, AgentApiClient>((serviceProvider, client) =>
                 {
                     var options = serviceProvider.GetRequiredService<IOptions<AgentOptions>>().Value;

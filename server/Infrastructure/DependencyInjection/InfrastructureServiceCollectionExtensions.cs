@@ -225,6 +225,10 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<Devices.FleetAccountReadService>();
         services.AddScoped<Devices.FleetStorageReadService>();
         services.AddScoped<Security.DeviceScopeAuthorizer>();
+        // The file-collection relay is used by both APIs: the admin API queues and
+        // streams, the agent API uploads. It holds no state beyond the shared Redis
+        // connection, so it lives wherever the infrastructure does.
+        services.AddScoped<FileCollection.FileCollectionRelay>();
         services.AddSingleton<Security.ISecretProtector, Security.AesGcmSecretProtector>();
         services.AddScoped<Security.EphemeralSecretStore>();
 

@@ -399,4 +399,23 @@ public enum DeviceTaskType
     /// </para>
     /// </remarks>
     RemoveChromeProfile = 62,
+
+    /// <summary>
+    /// Collect a Windows user's Desktop, Downloads or Documents folder from the
+    /// device and stream it, end-to-end encrypted, to the administrator who asked.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The agent zips the chosen folders in-process — never by launching a shell or
+    /// an external archiver (ADR-0005) — encrypts the archive to a public key the
+    /// browser generated for this one transfer, and uploads the ciphertext in bounded
+    /// chunks that the server relays to the browser without keeping a readable or a
+    /// whole-file copy. Only the browser that started the transfer can decrypt it.
+    /// </para>
+    /// <para>
+    /// Gated on the agent that carries the collection executor; an older one would
+    /// fail it as an unknown type, which reads exactly like the collection failing.
+    /// </para>
+    /// </remarks>
+    CollectFiles = 63,
 }

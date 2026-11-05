@@ -30,6 +30,7 @@ import {
 import { useAuth } from '../auth/AuthContext'
 import { RowActionsMenu } from '../components/RowActionsMenu'
 import { DeviceUsersPanel } from './DeviceUsersPanel'
+import { DeviceFileCollectionPanel } from './DeviceFileCollectionPanel'
 import { DeviceGroupsPanel } from './DeviceGroupsPanel'
 import { DeviceServicesPanel } from './DeviceServicesPanel'
 import { DeviceProcessesPanel } from './DeviceProcessesPanel'
@@ -72,6 +73,8 @@ interface FeatureSpec {
   desc: string
   /** Omitted where the device has not reported anything to count. */
   count?: number
+  /** When set, the card shows only if the viewer holds this permission. */
+  perm?: string
 }
 
 /**
@@ -393,6 +396,9 @@ export function DeviceDetailPage() {
       count: device.services.length },
     { key: 'processes', label: 'Processes', icon: 'tasks', desc: 'running procs',
       count: device.processes.length },
+    // Shown only to roles that may collect files: it downloads an employee's
+    // personal folders, so the card is hidden unless the viewer holds files.collect.
+    { key: 'files', label: 'Files', icon: 'download', desc: 'collect files', perm: 'files.collect' },
     { key: 'actions', label: 'Actions', icon: 'key', desc: 'device actions' },
     { key: 'tasks', label: 'Tasks', icon: 'audit', desc: 'task history', count: tasks.length },
   ]
@@ -702,7 +708,7 @@ export function DeviceDetailPage() {
         <>
           <h2 className="section-label">Device features</h2>
           <div className="feature-grid">
-            {features.map((f) => (
+            {features.filter((f) => !f.perm || hasPermission(f.perm)).map((f) => (
               <button
                 key={f.key}
                 type="button"
@@ -1023,6 +1029,7 @@ export function DeviceDetailPage() {
       {tab === 'drivers' && <DeviceDriversPanel deviceId={device.id} />}
 
       {tab === 'bitlocker' && <DeviceBitLockerPanel deviceId={device.id} />}
+      {tab === 'files' && <DeviceFileCollectionPanel deviceId={device.id} deviceName={device.hostname} />}
 
       {tab === 'security' && (
         <>

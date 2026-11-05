@@ -27,6 +27,7 @@ export const MODULES = [
   'updates',
   'services',
   'processes',
+  'files',
   'actions',
   'tasks',
 ] as const

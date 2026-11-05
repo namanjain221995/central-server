@@ -36,7 +36,7 @@ describe('device module routing', () => {
   it.each([
     'overview', 'hardware', 'network', 'users', 'groups', 'software',
     'security', 'usb', 'drivers', 'bitlocker', 'updates', 'services',
-    'processes', 'actions', 'tasks',
+    'processes', 'files', 'actions', 'tasks',
   ])('keeps the %s module reachable', (key) => {
     expect(isModule(key)).toBe(true)
   })

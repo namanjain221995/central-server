@@ -1,0 +1,60 @@
+using EndpointPlatform.Domain.Authorization;
+using EndpointPlatform.Domain.Tasks;
+
+namespace EndpointPlatform.Domain.Tests.Tasks;
+
+/// <summary>
+/// The file-collection task's catalogue entry and agent gate.
+/// </summary>
+/// <remarks>
+/// The entry is the authorization decision for a capability that downloads an
+/// employee's personal files, so it is pinned the same way the Chrome removal and
+/// security-update entries are, rather than left to whatever a future edit types.
+/// </remarks>
+public sealed class FileCollectionCatalogTests
+{
+    private static DeviceTaskDefinition Collect =>
+        DeviceTaskCatalog.Require(DeviceTaskType.CollectFiles);
+
+    /// <summary>
+    /// The enum number appears in device_tasks rows and the audit entries copied
+    /// from them, so it can never be reused or renumbered.
+    /// </summary>
+    [Fact]
+    public void The_task_type_keeps_its_wire_number()
+    {
+        ((int)DeviceTaskType.CollectFiles).ShouldBe(63);
+    }
+
+    [Fact]
+    public void Collecting_files_requires_files_collect_and_is_high_risk()
+    {
+        Collect.RequiredPermission.ShouldBe(Permissions.Files.Collect);
+        Collect.HighRisk.ShouldBeTrue("it downloads an employee's personal files");
+    }
+
+    /// <summary>
+    /// A long execution grace: zipping and uploading a Documents folder over a slow
+    /// uplink can take a long time, and a claim late in the TTL must not let the
+    /// sweeper expire the task mid-transfer and refuse the device's honest result.
+    /// </summary>
+    [Fact]
+    public void The_collection_task_has_a_long_execution_grace()
+    {
+        Collect.DefaultTimeToLiveSeconds.ShouldBe(3600);
+        Collect.ExecutionGraceSeconds.ShouldBe(10800);
+    }
+
+    /// <summary>
+    /// Gated on the agent that carries the collection executor; an older one would
+    /// fail it as an unknown type, which reads exactly like the collection failing.
+    /// </summary>
+    [Fact]
+    public void The_collection_task_is_gated_on_the_agent_with_the_executor()
+    {
+        Collect.MinimumAgentVersion.ShouldBe("1.29.0");
+        DeviceTaskCatalog.IsSupportedBy(Collect, "1.28.0").ShouldBeFalse();
+        DeviceTaskCatalog.IsSupportedBy(Collect, "1.29.0").ShouldBeTrue();
+        DeviceTaskCatalog.IsSupportedBy(Collect, null).ShouldBeFalse();
+    }
+}

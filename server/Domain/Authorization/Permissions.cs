@@ -222,6 +222,23 @@ public static class Permissions
     }
 
     /// <summary>
+    /// Collecting files from a managed device.
+    /// </summary>
+    /// <remarks>
+    /// Downloading a Windows user's Desktop, Downloads or Documents folder straight
+    /// to the operator's own machine. High risk and never held by Helpdesk or
+    /// Auditor: it reaches an employee's personal files. The archive is end-to-end
+    /// encrypted browser-to-agent and the server keeps no readable copy; this
+    /// permission only authorises starting a transfer, which every download then
+    /// re-confirms with a password step-up and records in the audit log.
+    /// </remarks>
+    public static class Files
+    {
+        /// <summary>Download a device user's Desktop/Downloads/Documents to the operator's machine.</summary>
+        public const string Collect = "files.collect";
+    }
+
+    /// <summary>
     /// Broadcasting short notices to device screens. Its own permission rather
     /// than part of <see cref="Task"/>: writing to every screen in the estate is
     /// a communication authority, and the people trusted to queue maintenance
@@ -333,6 +350,10 @@ public static class Permissions
 
         new(Chrome.View, "Chrome", "View Chrome installations, profiles and extensions", HighRisk: false),
         new(Chrome.Manage, "Chrome", "Manage Chrome extensions and updates on devices", HighRisk: true),
+
+        // High risk: it reaches an employee's personal files. Never held by Helpdesk
+        // or Auditor; every download additionally re-confirms with a password step-up.
+        new(Files.Collect, "Files", "Download a device user's Desktop, Downloads or Documents folder", HighRisk: true),
 
         // High risk: it interrupts every signed-in user on the targeted machines
         // at once, so the UI confirms it and the audit log records it elevated.
