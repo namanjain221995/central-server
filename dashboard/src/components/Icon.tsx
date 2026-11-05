@@ -49,8 +49,18 @@ export type IconName =
   | 'megaphone'
   | 'lock'
   | 'remote'
+  | 'storage'
 
 const PATHS: Record<IconName, ReactNode> = {
+  // Stacked database cylinder: the universal "stored data / disk" glyph, for the
+  // fleet storage overview.
+  storage: (
+    <>
+      <ellipse cx="12" cy="5" rx="8" ry="3" />
+      <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+      <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
+    </>
+  ),
   // A monitor with a broadcast mark: a display on its stand, and a corner dot
   // radiating two signal arcs. IT Remote Support reaches a managed screen from
   // afar, and the glyph says "a device, reached over a connection" without

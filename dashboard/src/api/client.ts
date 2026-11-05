@@ -3155,6 +3155,59 @@ export function getFleetAccountSummary(): Promise<FleetAccountSummary> {
 }
 
 // ---------------------------------------------------------------------------
+// Fleet storage overview
+//
+// How full each managed device's fixed volumes are, read from the hardware
+// inventory the agent already uploads. Read-only and rides device.view -- the
+// same permission that shows a single device's disks -- so no new authority.
+// ---------------------------------------------------------------------------
+
+/** How urgently a volume or device needs disk attention; mirrors the server enum. */
+export type StorageSeverity = 'Unknown' | 'Ok' | 'Low' | 'Critical'
+
+/** One fixed volume on a device, as of its last inventory. */
+export interface VolumeStorageRow {
+  /** Volume name / mount point, e.g. "C:". */
+  name: string
+  fileSystem: string | null
+  sizeBytes: number
+  freeBytes: number
+  /** Free space as a percentage of size, one decimal. */
+  freePercent: number
+  severity: StorageSeverity
+}
+
+/** One device's storage, worst-volume severity promoted to the row. */
+export interface DeviceStorageRow {
+  deviceId: string
+  hostname: string
+  /** When the inventory behind these volumes was collected; null if the device never reported hardware. */
+  collectedAt: string | null
+  severity: StorageSeverity
+  volumes: VolumeStorageRow[]
+}
+
+/** Fleet-wide roll-up: the fullest (worst) devices first. */
+export interface FleetStorageSummary {
+  activeDevices: number
+  /** Of those, how many have reported at least one volume. */
+  devicesReporting: number
+  lowDiskDeviceCount: number
+  criticalDiskDeviceCount: number
+  /** Below this free percent a volume is Critical (server-decided, shown for labels). */
+  criticalFreePercent: number
+  /** Below this free percent a volume is Low. */
+  lowFreePercent: number
+  /** True when the server capped the device listing; counts stay true. */
+  truncated: boolean
+  devices: DeviceStorageRow[]
+}
+
+export function getFleetStorageSummary(): Promise<FleetStorageSummary> {
+  return request<FleetStorageSummary>('/admin/v1/storage/fleet-summary')
+}
+
+// ---------------------------------------------------------------------------
 // Pending agent enrollment
 //
 // A Windows PC that has installed the MSI asks to be managed and then waits.
